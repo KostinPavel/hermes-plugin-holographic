@@ -142,7 +142,11 @@ FACT_FEEDBACK_SCHEMA = {
 # Auto-extraction: (patterns, category) — preferences -> user_pref, decisions -> project. Matched per sentence; the
 # sentence is stored, not the whole message.
 _EXTRACT_CATEGORIES = (
-    ([re.compile(r'\bI\s+(?:prefer|like|love|use|want|need)\s+\S', re.IGNORECASE),
+    # "want"/"need" are deliberately NOT here: they state a one-off intent ("I want to ask you about the
+    # date", "I need the 2023 production"), and a user who pastes a model's English draft to translate it
+    # sends that draft as role="user", so the model's own reasoning sentences got stored as user_pref facts.
+    # prefer/like/love/use keep the durable-preference signal without it.
+    ([re.compile(r'\bI\s+(?:prefer|like|love|use)\s+\S', re.IGNORECASE),
       re.compile(r'\bmy\s+(?:favorite|favourite|preferred|default)\s+\w+\s+is\s+\S', re.IGNORECASE),
       re.compile(r'\bI\s+(?:always|never|usually)\s+\S', re.IGNORECASE),
       re.compile(r'(?:^|\s)я\s+(?:предпочитаю|люблю|использую|пользуюсь|хочу|обычно|всегда|никогда|не\s+ем|не\s+пью)\s+\S', re.IGNORECASE),
