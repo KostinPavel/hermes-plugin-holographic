@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.17.5 — 2026-10-21
 
 Failures said where someone looks, instead of swallowed, and the same rules kept in one place (a review of the code
 against ten principles of good code for AI agents, 2026-10-21). Recall, storage and the screens behave as in 0.17.4.

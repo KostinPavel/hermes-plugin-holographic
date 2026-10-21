@@ -102,7 +102,7 @@ are in `plans/2026-10-21-*`):
 
 ## Open work
 
-- Review of 2026-10-21 (`plans/2026-10-21-plan-pravki-10-principov.md`): waves 1, 3 and 4 are in `Unreleased`; a
+- Review of 2026-10-21 (`plans/2026-10-21-plan-pravki-10-principov.md`): waves 1, 3 and 4 are released as 0.17.5; a
   Codex review of that diff found two things, both fixed with a test (a non-numeric setting no longer quotes its
   value, `recall_error` is reset when another store becomes active); a second one three more (a failure is named
   by its kind, never its text: SQLite quotes a column's value; `entities_not_linked` gives positions, not the
