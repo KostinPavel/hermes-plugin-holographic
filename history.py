@@ -103,6 +103,10 @@ class HistoryUnavailable(RuntimeError):
     """History is read in a context that may not migrate (a subagent or cron job) before any writer set it up."""
 
 
+class NotFound(KeyError):
+    """No such fact or entity: an answer to give the agent, not a missing argument (a KeyError from args[...])."""
+
+
 class HistoryTooNew(RuntimeError):
     """The file carries a history schema this version does not know: a newer release wrote it. A writer refuses
     to open it (its migration would stamp the schema back and could mis-read new columns); readers still read."""
@@ -168,7 +172,7 @@ def _check_after_end(start: str | None, ended) -> None:
 
 
 class HistoryMixin:
-    """The history half of MemoryStore. Expects _conn, _tx, _one, _write, _meta, _entry, default_trust, tz and the
+    """The history half of MemoryStore. Expects _conn, _tx, _one, _write, _meta, _set_meta, _entry, default_trust, tz and the
     fact-row helpers of MemoryStore."""
 
     tz = None  # tzinfo of Hermes's configured timezone; None = UTC
@@ -181,6 +185,10 @@ class HistoryMixin:
 
     def _today(self) -> str:
         return datetime.now(self.tz or timezone.utc).date().isoformat()
+
+    def today(self) -> str:
+        """Today in Hermes's timezone: the latest date a fact's history accepts (parse_day)."""
+        return self._today()
 
     def _local_day(self, timestamp) -> str:
         """Local date of a UTC timestamp written by SQLite; today when it is missing or unreadable."""
@@ -220,8 +228,7 @@ class HistoryMixin:
                                 f"version knows {HISTORY_SCHEMA_VERSION}): update the plugin; not opened for writing")
         self._tombstone_key()
         self._reconcile_history()
-        self._write("INSERT INTO meta (key, value) VALUES ('history_schema', ?) "
-                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (str(HISTORY_SCHEMA_VERSION),))
+        self._set_meta("history_schema", str(HISTORY_SCHEMA_VERSION))
 
     def _reconcile_history(self) -> None:
         """Bring the versions in line with ``facts`` after an older version of the plugin wrote the file (see
@@ -252,8 +259,7 @@ class HistoryMixin:
         for fact_id in gone:  # an older `remove` or `supersedes`: the user wanted it gone, history included
             self._erase(fact_id)
         if gone:
-            self._write("INSERT INTO meta (key, value) VALUES ('scrub_pending', '1') "
-                        "ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+            self._set_meta("scrub_pending", "1")
 
     # -- version rows ----------------------------------------------------------------------------------------------
 
@@ -389,7 +395,7 @@ class HistoryMixin:
     def _resume(self, fact_id, content, start, category, tags, entities, source) -> dict:
         last = self._head_version(fact_id)
         if last is None or last["status"] != "ended":
-            raise KeyError(f"fact_id {fact_id} not found")
+            raise NotFound(f"fact_id {fact_id} not found")
         _check_after_end(start, last)
         other = self._one("SELECT fact_id FROM facts WHERE content = ?", (content,))
         if other is not None:  # what it holds as again is already a fact of its own
@@ -419,7 +425,7 @@ class HistoryMixin:
                 last = self._head_version(fact_id)
                 if last is not None and last["status"] == "ended":
                     raise ValueError(f"fact #{fact_id} already ended ({last['valid_to']})")
-                raise KeyError(f"fact_id {fact_id} not found")
+                raise NotFound(f"fact_id {fact_id} not found")
             cur = self._current_version(fact_id)
             if end and cur["valid_from"] and end <= cur["valid_from"]:
                 raise ValueError(f"valid_to {end} is not after the fact's start ({cur['valid_from']})")
@@ -447,7 +453,7 @@ class HistoryMixin:
                 last = self._head_version(fact_id)
                 if last is not None and last["status"] == "ended":
                     raise ValueError(f"fact #{fact_id} has ended; revert the end first, then correct it")
-                raise KeyError(f"fact_id {fact_id} not found")
+                raise NotFound(f"fact_id {fact_id} not found")
             cur = self._current_version(fact_id)
             if start is not None and start != cur["valid_from"]:  # a resume's start may not reach into its end
                 _check_after_end(start, self._ended_before(cur))
@@ -477,10 +483,10 @@ class HistoryMixin:
             fact = self._one("SELECT * FROM facts WHERE fact_id = ?", (fact_id,))
             last = self._head_version(fact_id)
             if last is None:
-                raise KeyError(f"fact_id {fact_id} not found")
+                raise NotFound(f"fact_id {fact_id} not found")
             if fact is None:  # undo an end
                 if last["status"] != "ended":
-                    raise KeyError(f"fact_id {fact_id} not found")
+                    raise NotFound(f"fact_id {fact_id} not found")
                 if self._one("SELECT 1 FROM facts WHERE content = ?", (last["content"],)):
                     raise ValueError("another current fact already says this; forget one of them instead")
                 self._write("UPDATE fact_versions SET status = 'current', valid_to = NULL, valid_to_exact = 1, "
@@ -522,12 +528,11 @@ class HistoryMixin:
                 self._one("SELECT 1 FROM fact_versions WHERE fact_id = ?", (fact_id,))
             already = not known and self._one("SELECT 1 FROM forgotten WHERE fact_id = ?", (fact_id,)) is not None
             if not known and not already:
-                raise KeyError(f"fact_id {fact_id} not found")
+                raise NotFound(f"fact_id {fact_id} not found")
             versions = 0
             if not already:
                 versions = self._erase(fact_id)
-                self._write("INSERT INTO meta (key, value) VALUES ('scrub_pending', '1') "
-                            "ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+                self._set_meta("scrub_pending", "1")
         result = {"fact_id": fact_id, "forgotten": True, "versions": versions,
                   "scrub": "done" if self.scrub() else "pending"}
         if already:
@@ -630,7 +635,7 @@ class HistoryMixin:
                     {"version": 1, "content": fact[0][0], "status": "current", "valid_from": "unknown",
                      "valid_to": None, "recorded_at": fact[0][1], "source": "legacy (written outside this version; "
                      "its history starts with the next change)"}]}
-            raise KeyError(f"fact_id {fact_id} not found")
+            raise NotFound(f"fact_id {fact_id} not found")
         seqs = {r["version_id"]: r["seq"] for r in rows}
         versions = []
         for r in rows:
@@ -671,9 +676,6 @@ class HistoryMixin:
                 maybe.setdefault(r["fact_id"], {**entry, "reason": why})
         undetermined = [e for fid, e in maybe.items() if fid not in held]
         return {"as_of": day, "facts": list(held.values())[:limit], "undetermined": undetermined[:limit]}
-
-    def forgotten_ids(self) -> list[dict]:
-        return [dict(r) for r in self.read("SELECT fact_id, forgotten_at FROM forgotten ORDER BY fact_id")]
 
     def history_counts(self) -> dict:
         if not self.history_ready():
@@ -766,7 +768,7 @@ class HistoryMixin:
         with self._tx():
             row = self._one("SELECT trust_score FROM facts WHERE fact_id = ?", (fact_id,))
             if row is None:
-                raise KeyError(f"fact_id {fact_id} not found")
+                raise NotFound(f"fact_id {fact_id} not found")
             again = bool(self._one("SELECT 1 FROM fact_confirmations WHERE fact_id = ? AND session_id = ?",
                                    (fact_id, session)))
             trust = row["trust_score"]
@@ -801,5 +803,5 @@ class HistoryMixin:
         return out
 
 
-__all__ = ["HISTORY_SCHEMA", "HistoryMixin", "HistoryUnavailable", "HistoryTooNew", "CLOSED", "ORIGINS", "SOURCE_FIELDS", "normalize",
+__all__ = ["HISTORY_SCHEMA", "HistoryMixin", "HistoryUnavailable", "HistoryTooNew", "NotFound", "CLOSED", "ORIGINS", "SOURCE_FIELDS", "normalize",
            "parse_day", "version_state", "source_of"]

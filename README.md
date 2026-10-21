@@ -73,6 +73,12 @@ In `config.yaml` under `plugins.hermes-memory-store`:
 | `embeddings` | `off` | `on`: search by meaning through an embeddings API you name (`embedding_url`, `embedding_model`, `embedding_key_env`, …) — ONLINE: fact texts and messages are sent there. See [Search by meaning](#search-by-meaning-optional-online) |
 | `scope` | `profile` | `user`: a separate database per user (`holographic-users/<platform>-<user id>.db` next to `db_path`); in a shared chat the store follows the author of each turn, and with no user identity nothing is recalled or written. `chat`: a separate database per chat (`holographic-chats/<platform>-<chat id>.db`) — for one bot serving many unrelated groups; `thread`: per forum topic / thread (`…-t<thread id>.db`), the chat's own database outside threads. Without a chat (CLI, cron, subagents) nothing is recalled or written. File names: an id made only of `A-Z a-z 0-9 _ . -` is used as is (Telegram's `-1001234567890`); any other character becomes `_`, the name is cut to 60 characters, and `-<first 10 hex of sha256(the original "platform-id")>` is appended, so distinct ids never share a file |
 
+A number that is not one (`hrr_dim: abc`, `min_trust_threshold: high`) turns memory off for the session: the system
+prompt and every `fact_store` call name the key and what it holds, and no database is opened or written until it is
+fixed. The `embedding_*` numbers are replaced by their default, or brought into their range, with a warning in the
+gateway log that names the key. A `config.yaml` the plugin cannot read at all leaves the defaults, also with a warning
+(the error's type only: a YAML error quotes the line it stopped at, which may hold a key).
+
 ## Tools
 
 | Tool | Description |
@@ -88,7 +94,9 @@ In `config.yaml` under `plugins.hermes-memory-store`:
   Facts are framed as data (`#id [trust] text`), one line each.
 - **add** takes `entities` (who the fact is about; needed for one-word names such as a first name, so later facts
   mentioning it in any form link to it), `keywords` (see [Synonyms](#synonyms-and-other-roots-keywords)) and
-  `valid_from` (the date it started to hold, when the message says). Its answer lists `similar` facts,
+  `valid_from` (the date it started to hold, when the message says). A name in `entities` that cannot be one (a
+  path, a URL, `key=value`, a single letter, not a string) is not linked, and the answer of add, update, change and
+  correct lists it under `entities_not_linked` with the reason; the fact is stored all the same. Its answer lists `similar` facts,
   `possible_conflicts` (same subject, a different claim) and `past_versions`; the agent decides. Text that is not a
   fact (JSON, tool or chat-role markup, instruction-like phrasing, a credential with its value or a token whose shape
   alone says it is one — an API key prefix, a Telegram bot token (also inside a Bot API address), a JWT, a private key
@@ -116,7 +124,8 @@ In `config.yaml` under `plugins.hermes-memory-store`:
   and logged once; `search`, `list` and `history` still show it, so it can be changed or forgotten. A quoted
   instruction to the assistant (a note quoted as telling it to drop its rules) may be stored as a report of what
   something says, but recall leaves it out too (0.14.3): in the prompt it reads the same as the bare instruction.
-- **stats** (what is stored and how much of it was ever recalled), **export** (Markdown view), **review**
+- **stats** (what is stored and how much of it was ever recalled; `recall_error` while recall before a turn fails, so a
+  broken store does not pass for one with nothing relevant), **export** (Markdown view), **review**
   (clean-up candidates: low trust, never recalled for 60 days, near-duplicates), **enrich** (facts without keywords,
   most recalled first, to give keywords with `update`).
 - **entities** lists names with their aliases, fact counts and standing (0.16.0): `established` when someone named
@@ -872,8 +881,8 @@ Tests import Hermes core from a checkout, as an installed plugin does:
 HERMES_AGENT_REPO=~/.hermes/hermes-agent PYTHONPATH=~/.hermes/hermes-agent python -m pytest -q
 ```
 
-CI runs the suite on Linux, macOS and Windows against hermes-agent `main`, plus `hermes plugins validate`, the check
-the plugin catalog runs at admission. 0.11.0: 612 tests pass without the core (2 skipped; the auto-extraction tests
+CI runs the suite on Linux, macOS and Windows against hermes-agent `main`, `ruff check .` with the rules in
+`pyproject.toml`, and `hermes plugins validate`, the check the plugin catalog runs at admission. 0.11.0: 612 tests pass without the core (2 skipped; the auto-extraction tests
 need it), 600 with snowballstemmer 2.2.0 (14 skipped: no Polish stemmer). Maintenance notes are in [HANDOFF.md](HANDOFF.md).
 
 Original plugin by dusterbloom (hermes-agent PR #2351); its history is in hermes-agent

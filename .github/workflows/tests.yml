@@ -45,6 +45,18 @@ jobs:
           HERMES_AGENT_REPO: ${{ github.workspace }}/hermes-agent
         run: python -m pytest -q
 
+  # Lint: the rules in pyproject.toml (pyflakes, pycodestyle, bugbear); a test proves behaviour, this catches an
+  # unused import or a mutable default before review does.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - run: python -m pip install "ruff==0.15.16"
+      - run: ruff check .
+
   # The same check the Hermes plugin catalog runs on an entry at its pinned commit.
   validate:
     runs-on: ubuntu-latest

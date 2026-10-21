@@ -103,13 +103,24 @@ def to_blob(vector) -> bytes:
     return np.asarray(vector, dtype="<f4").tobytes()
 
 
-def _number(value, default, low, high, kind=float):
-    try:
-        if value is None or str(value).strip() == "":
-            return default
-        return min(high, max(low, kind(value)))
-    except (TypeError, ValueError):
+def _number(config: dict, key: str, default, low, high, kind=float):
+    """config[key] as a number within [low, high]; unset is *default*. A value that is no number is replaced by
+    *default*, one outside the range is brought into it, and either is logged with the key's name (not a value that is
+    no number: a ${VAR} put in the wrong key would quote a secret): search by meaning must not run quietly on settings
+    other than the ones written."""
+    value = config.get(key)
+    if value is None or str(value).strip() == "":
         return default
+    try:
+        number = kind(value)
+    except (TypeError, ValueError, OverflowError):
+        logger.warning("holographic: %s must be %s; using %s", key, "a whole number" if kind is int else "a number",
+                       default)
+        return default
+    clamped = min(high, max(low, number))
+    if clamped != number:
+        logger.warning("holographic: %s = %s is outside %s..%s; using %s", key, number, low, high, clamped)
+    return clamped
 
 
 class Settings:
@@ -122,18 +133,18 @@ class Settings:
         self.url = str(config.get("embedding_url") or "https://api.openai.com/v1").strip()
         self.model = str(config.get("embedding_model") or "text-embedding-3-small").strip()
         self.key_env = str(config.get("embedding_key_env") or "OPENAI_API_KEY").strip()
-        self.dimensions = _number(config.get("embedding_dimensions"), None, 1, 65536, int)
+        self.dimensions = _number(config, "embedding_dimensions", None, 1, 65536, int)
         # under the core's bound on an external provider's prefetch (8 s), with room for the words
-        self.timeout = _number(config.get("embedding_timeout"), 3.0, 0.5, 6.0)
-        self.min_score = _number(config.get("embedding_min_score"), None, -1.0, 1.0)
-        self.recall_facts = _number(config.get("embedding_prefetch_facts"), 1, 0, 3, int)
-        self.weight = _number(config.get("embedding_weight"), 0.3, 0.0, 0.8)
+        self.timeout = _number(config, "embedding_timeout", 3.0, 0.5, 6.0)
+        self.min_score = _number(config, "embedding_min_score", None, -1.0, 1.0)
+        self.recall_facts = _number(config, "embedding_prefetch_facts", 1, 0, 3, int)
+        self.weight = _number(config, "embedding_weight", 0.3, 0.0, 0.8)
         # a label of your own, part of the vectors' identity: change it when the server starts serving another model
         # under the same address and name, and every vector is made again
         self.space = str(config.get("embedding_space") or "").strip()
         # seconds the fact vectors after a turn may take (None: the plugin's 8). No reply waits for them, but the core
         # runs every provider's after-turn work on one worker in turn: more here delays the next turn's extraction
-        self.catch_up = _number(config.get("embedding_catch_up_seconds"), None, 2.0, 60.0)
+        self.catch_up = _number(config, "embedding_catch_up_seconds", None, 2.0, 60.0)
 
     @property
     def tag(self) -> str:

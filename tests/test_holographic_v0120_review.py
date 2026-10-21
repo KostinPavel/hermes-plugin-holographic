@@ -4,7 +4,6 @@ German compounds, Japanese kanji kept apart from Traditional Chinese characters,
 
 from __future__ import annotations
 
-import gzip
 
 import pytest
 

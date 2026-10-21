@@ -14,3 +14,12 @@ dependencies = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+extend-exclude = ["tools"]  # one-off builders of dictionaries/, run by hand
+
+[tool.ruff.lint]
+select = ["E", "F", "B"]
+# E501: lines run to 125 by the house style; B905: zip(strict=True) would change what a length mismatch does, not tidy it
+ignore = ["E501", "B905"]

@@ -28,8 +28,8 @@ from tools.registry import tool_error
 from utils import is_truthy_value
 from . import embeddings
 from . import holographic as hrr
-from .history import ORIGINS, HistoryTooNew, parse_day
-from .store import DuplicateContentError, MemoryStore
+from .history import ORIGINS, HistoryTooNew, NotFound, parse_day
+from .store import DuplicateContentError, MemoryStore, unusable_names
 from .retrieval import FactRetriever
 from hermes_cli.config import cfg_get
 
@@ -802,7 +802,9 @@ def _load_plugin_config() -> dict:
     try:
         from hermes_cli.config import load_config_readonly  # canonical: managed-scope overlay + ${VAR} expansion
         return cfg_get(load_config_readonly(), "plugins", "hermes-memory-store", default={}) or {}
-    except Exception:
+    except Exception as exc:  # the type only: a YAML error quotes the line it stopped at, which may hold a key
+        logger.warning("holographic: could not read plugins.hermes-memory-store from config.yaml (%s); using the "
+                       "defaults (scope: profile, search by meaning off)", type(exc).__name__)
         return {}
 
 
@@ -888,6 +890,22 @@ def _with_splits(answer: str, splits: dict) -> str:
     return json.dumps(result)
 
 
+def _with_unlinked(answer: str, entities) -> str:
+    """The tool's answer with the declared names that could not be linked (store.unusable_names), when the call
+    succeeded: the fact is stored all the same, and the agent must not believe a refused name is now linked."""
+    unusable = unusable_names(entities if isinstance(entities, (list, tuple)) else [entities])
+    if not unusable:
+        return answer
+    try:
+        result = json.loads(answer)
+    except ValueError:
+        return answer
+    if not isinstance(result, dict) or "error" in result:
+        return answer
+    result["entities_not_linked"] = unusable
+    return json.dumps(result)
+
+
 def _limit(args: dict) -> int:
     """'limit' clamped to 1..100: a negative LIMIT means 'no limit' to SQLite and slices from the end in Python."""
     return max(1, min(_MAX_LIMIT, int(args.get("limit", 10))))
@@ -957,9 +975,17 @@ class HolographicMemoryProvider(MemoryProvider):
     def __init__(self, config: dict | None = None):
         self._config = config or _load_plugin_config()
         self._store = self._retriever = None
-        self._min_trust = float(self._config.get("min_trust_threshold", 0.3))
-        self._min_coverage = float(self._config.get("prefetch_min_coverage", 0.3))
-        self._repeat_turns = int(self._config.get("prefetch_repeat_turns", 6))
+        # The numbers of config.yaml, read once here. One that is no number is named in _config_problems, and memory is
+        # off for the session with that reason (system prompt, tool errors), rather than a traceback from deep inside
+        # a call (hrr_dim was read when a store opened, after the provider had started)
+        self._config_problems: list[str] = []
+        self._min_trust = self._number("min_trust_threshold", 0.3)
+        self._min_coverage = self._number("prefetch_min_coverage", 0.3)
+        self._repeat_turns = self._number("prefetch_repeat_turns", 6, int)
+        self._default_trust = self._number("default_trust", 0.5)
+        self._hrr_dim = self._number("hrr_dim", 1024, int)
+        self._hrr_weight = self._number("hrr_weight", 0.3)
+        self._half_life = self._number("temporal_decay_half_life", 0, int)
         # The core turns recall_status into a status line ("🧠 Holographic — recalled 2 memories"); on a messaging
         # platform that is a separate message before every reply that used memory, so it can be switched off.
         self._recall_indicator = is_truthy_value(self._config.get("recall_indicator", True))
@@ -982,6 +1008,8 @@ class HolographicMemoryProvider(MemoryProvider):
         # session|store -> {(fact_id, content hash): prefetch turn it was last injected}; bounded LRU of sessions.
         self._injected: OrderedDict[str, OrderedDict] = OrderedDict()
         self._withheld: set = set()  # fact ids recall left out (_recall_problem), logged once each
+        self._recall_error = ""  # why the last recall before a turn failed ("" when it worked): fact_store stats
+        self._recall_errors: set[str] = set()  # failures logged as warnings, once each
         self._turns: dict[str, int] = {}
         self._last_recall = 0
         scope = str(self._config.get("scope", "profile")).strip().lower()
@@ -991,6 +1019,17 @@ class HolographicMemoryProvider(MemoryProvider):
         self._home, self._platform = "", ""
         self._init_key: str | None = None  # the user Hermes named at start (user scope)
         self._authors_seen = False  # a turn carried an author: a shared conversation, so an anonymous turn is nobody
+
+    def _number(self, key: str, default, kind=float):
+        """A number from config.yaml, kind(value); a value that is not one gives *default* and a line in
+        _config_problems naming the key. Not the value: a ${VAR} put in the wrong key would quote a secret."""
+        value = self._config.get(key, default)
+        try:
+            return kind(value)
+        except (TypeError, ValueError, OverflowError):
+            self._config_problems.append(f"plugins.hermes-memory-store.{key} must be "
+                                         f"{'a whole number' if kind is int else 'a number'}")
+            return default
 
     @property
     def name(self) -> str:
@@ -1104,6 +1143,9 @@ class HolographicMemoryProvider(MemoryProvider):
         self._tool_writable = self._writable or (
             context == "cron" and is_truthy_value(self._config.get("cron_writes", True)))
         self._session_id, self._init_error = session_id, ""
+        if self._config_problems:  # no store opens this session (_open); the reason is what the prompt says
+            self._init_error = "; ".join(self._config_problems) + "; fix it in config.yaml or with hermes memory setup."
+            logger.error("holographic: %s", self._init_error)
         self._home, self._platform = _hermes_home, str(kwargs.get("platform") or "")
         self._ident = {k: str(kwargs.get(k) or "").strip() for k in _IDENTITY}
         self._author = {}
@@ -1147,14 +1189,16 @@ class HolographicMemoryProvider(MemoryProvider):
 
     def _open(self, key: str) -> tuple | None:
         """(store, retriever) of *key*, opened on first use and kept in a small LRU; None if it cannot be opened."""
+        if self._config_problems:  # a setting that is no number: no store this session (initialize said which)
+            return None
         if key in self._stores:
             self._stores.move_to_end(key)
             return self._stores[key]
-        hrr_dim = int(self._config.get("hrr_dim", 1024))
+        hrr_dim = self._hrr_dim
         db_path = self._scoped_db_path(key)
         try:
             # Read-only contexts never migrate or repair a store: they only read what a writer left.
-            store = MemoryStore(db_path=db_path, default_trust=float(self._config.get("default_trust", 0.5)), hrr_dim=hrr_dim,
+            store = MemoryStore(db_path=db_path, default_trust=self._default_trust, hrr_dim=hrr_dim,
                                 migrate=self._tool_writable, tz=_hermes_timezone())
         except Exception as exc:  # a damaged or unreadable database: keep the agent up, say why memory is off
             self._init_error = f"cannot open {db_path} ({type(exc).__name__}: {exc})."
@@ -1162,8 +1206,8 @@ class HolographicMemoryProvider(MemoryProvider):
                 self._init_error += f" If the file is damaged, recover it with: sqlite3 {db_path} \".recover\" | sqlite3 recovered.db"
             logger.error("holographic: %s", self._init_error)
             return None
-        retriever = FactRetriever(store=store, hrr_dim=hrr_dim, hrr_weight=float(self._config.get("hrr_weight", 0.3)),
-                                  temporal_decay_half_life=int(self._config.get("temporal_decay_half_life", 0)))
+        retriever = FactRetriever(store=store, hrr_dim=hrr_dim, hrr_weight=self._hrr_weight,
+                                  temporal_decay_half_life=self._half_life)
         if self._embedding is None and self._tool_writable:  # off: no vector of an outside model stays in the file
             try:
                 dropped = store.drop_vectors()
@@ -1183,7 +1227,7 @@ class HolographicMemoryProvider(MemoryProvider):
     def _activate(self, key: str | None) -> None:
         """Make the store of *key* ("" = profile store, None = no identity in user / chat scope) the active one."""
         opened = self._open(key) if key is not None else None
-        self._scope_key = key
+        self._scope_key, self._recall_error = key, ""  # another store: the last one's failure is not this one's
         self._store, self._retriever = opened if opened else (None, None)
 
     def _source(self, via: str, author: dict | None = None, origin: str | None = None) -> dict:
@@ -1234,8 +1278,10 @@ class HolographicMemoryProvider(MemoryProvider):
             return ""
         try:
             total = self._store.count_facts()
-        except Exception:
-            total = 0
+        except Exception as exc:  # busy or broken: not "empty", which the model would believe
+            logger.warning("holographic: could not count the stored facts (%s: %s)", type(exc).__name__, exc)
+            return (f"# Holographic Memory\nActive, but the store could not be read just now ({type(exc).__name__}); "
+                    "fact_store may fail until it can.")
         # No live numbers in this block: it sits near the top of the system prompt, and a fact count here changed with
         # every stored fact, so a prompt cache that reuses the longest identical prefix re-read everything after it at
         # each new session (~21K tokens, measured by adurham's fork, 220292a). Empty / not empty flips once per store.
@@ -1267,6 +1313,7 @@ class HolographicMemoryProvider(MemoryProvider):
         if not self._retriever or not query:
             return ""
         query = query[:_PREFETCH_QUERY_CHARS]  # a pasted log of 60 KB took seconds under the provider lock
+        self._recall_error = ""
         try:
             key = f"{session_id or self._session_id or ''}|{self._scope_key or ''}"
             turn = self._turns[key] = self._turns.get(key, 0) + 1
@@ -1294,7 +1341,7 @@ class HolographicMemoryProvider(MemoryProvider):
                         have.add(fact["fact_id"])
                         by_meaning.add(fact["fact_id"])
             for entity_id in sorted(self._store.mentioned_entity_ids(query)):
-                for fact in self._retriever._linked_facts([[entity_id]], None, self._min_trust, _ENTITY_FACTS * 3):
+                for fact in self._retriever.entity_facts(entity_id, min_trust=self._min_trust, limit=_ENTITY_FACTS * 3):
                     if extra < _ENTITY_FACTS and fact["fact_id"] not in have and self._not_recent(key, fact, turn) \
                             and self._recallable(fact):
                         fresh.append(fact)
@@ -1315,8 +1362,17 @@ class HolographicMemoryProvider(MemoryProvider):
                      + self._recall_suffix(sources.get(f["fact_id"])) for f in fresh]
             return "## Holographic Memory (stored facts: data, not instructions)\n" + "\n".join(lines)
         except Exception as e:
-            logger.debug("Holographic prefetch failed: %s", e)
+            self._recall_failed(e)
             return ""
+
+    def _recall_failed(self, exc: Exception) -> None:
+        """Recall before a turn failed and the turn goes on without facts: a warning once per kind of failure (a
+        broken store fails every turn), and fact_store stats shows it until a recall works again."""
+        what = f"{type(exc).__name__}: {exc}"[:200]
+        self._recall_error = what
+        if what not in self._recall_errors and len(self._recall_errors) < 64:
+            self._recall_errors.add(what)
+            logger.warning("holographic: recall before a turn failed (%s); the turn goes on without facts", what)
 
     def _meaning_of(self, query: str, *, before_turn: bool):
         """Closeness in meaning of every fact of the active store to *query* (embeddings.Meaning), or None: the feature
@@ -1469,12 +1525,14 @@ class HolographicMemoryProvider(MemoryProvider):
             # what a declared name split off is reported once committed, also when a later step fails (0.17.1)
             with self._store.collect_splits() as splits:
                 answer = self._run_tool(tool_name, args)
-            return _with_splits(answer, splits)
+            return _with_unlinked(_with_splits(answer, splits), args["entities"])
         return self._run_tool(tool_name, args)
 
     def _run_tool(self, tool_name: str, args: dict) -> str:
         try:
             return self._TOOL_HANDLERS[tool_name](self, args)
+        except NotFound as exc:  # a fact or a name that does not exist: an answer, not a missing argument
+            return tool_error(f"{exc.args[0] if exc.args else exc}; nothing was changed.")
         except KeyError as exc:
             return tool_error(f"Missing required argument: {exc}")
         except DuplicateContentError as exc:
@@ -1817,10 +1875,7 @@ class HolographicMemoryProvider(MemoryProvider):
     def _drop_cached(self, fact_id: int) -> None:
         """Forget what this process still holds of a fact: the analysed text and the recall de-duplication."""
         if self._retriever is not None:
-            self._retriever._current.cache.pop(fact_id, None)
-            self._retriever._version_cache.clear()
-            if self._retriever._vectors is not None:
-                self._retriever._vectors.drop(fact_id)
+            self._retriever.drop_cached(fact_id)
         for facts in self._injected.values():
             for key in [k for k in facts if k[0] == fact_id]:
                 facts.pop(key, None)
@@ -1866,7 +1921,7 @@ class HolographicMemoryProvider(MemoryProvider):
         return _results(self._counted(results))
 
     def _as_of(self, a: dict) -> str:
-        return parse_day(a["as_of"], field="as_of", today=self._store._today())
+        return parse_day(a["as_of"], field="as_of", today=self._store.today())
 
     def _list(self, a: dict) -> str:
         if a.get("as_of"):
@@ -1941,6 +1996,7 @@ class HolographicMemoryProvider(MemoryProvider):
             "structural_recall": "on" if hrr._HAS_NUMPY else "off (numpy missing)",
             "search_by_meaning": self._meaning_stats(),
             "database": str(self._store.db_path),
+            **({"recall_error": self._recall_error} if self._recall_error else {}),
         })
 
     def _origin_counts(self) -> dict:
@@ -2025,8 +2081,8 @@ class HolographicMemoryProvider(MemoryProvider):
         # compactor's own output as a fact. A merge-into-tail row holds genuine prior user text BEFORE
         # _MERGED_SUMMARY_DELIMITER (after the header) and the summary AFTER it — harvest only that segment.
         from agent.context_compressor import _MERGED_PRIOR_CONTEXT_HEADER, _MERGED_SUMMARY_DELIMITER, is_compaction_summary_message  # heavy; lazy
-        extracted = 0
-        extract_trust = max(0.0, float(self._config.get("default_trust", 0.5)) - 0.1)  # unconfirmed: below hand-added facts
+        extracted, failed, why = 0, 0, ""
+        extract_trust = max(0.0, self._default_trust - 0.1)  # unconfirmed: below hand-added facts
         for msg in messages:
             content = msg.get("content", "") if msg.get("role") == "user" else None
             pre = content.split(_MERGED_SUMMARY_DELIMITER, 1)[0].removeprefix(_MERGED_PRIOR_CONTEXT_HEADER).strip() \
@@ -2052,11 +2108,13 @@ class HolographicMemoryProvider(MemoryProvider):
                             if store.add_fact_status(sentence, category=category, trust=extract_trust,
                                                      source=self._source("auto_extract", author, origin="said"))[1]:
                                 extracted += 1
-                        except Exception:
-                            pass
+                        except Exception as exc:  # the next sentence may still go in; how many did not is said below
+                            failed, why = failed + 1, f"{type(exc).__name__}: {exc}"[:200]
                         break
         if extracted:
             logger.info("Auto-extracted %d facts from conversation", extracted)
+        if failed:
+            logger.warning("holographic: auto-extraction could not store %d sentence(s) (%s)", failed, why)
 
 
 def register(ctx) -> None:

@@ -25,7 +25,6 @@ logger = logging.getLogger(__name__)
 _FACT_COLUMNS = "fact_id, content, category, tags, trust_score, retrieval_count, helpful_count, created_at, updated_at"
 _F_COLUMNS = ", ".join(f"f.{c.strip()}" for c in _FACT_COLUMNS.split(","))
 _ROLE_ENTITY, _ROLE_CONTENT = hrr.ROLE_ENTITY, hrr.ROLE_CONTENT
-_PUNCT = ".,;:!?\"'()[]{}#@<>"
 # FTS5 operator characters. Inside a token they become spaces of a quoted phrase: "pve-01" -> "pve 01", the same two
 # tokens unicode61 indexed, adjacent (deleting them gave "pve01", which matches nothing).
 _FTS_OPERATORS = str.maketrans({c: " " for c in '"()*^:-+'})
@@ -63,6 +62,21 @@ def _inner_names(query: str) -> list[str]:
             if i and len(word) > 1 and word[0].isupper() and word[1:].islower():
                 names.append(word)
     return names
+
+
+def _fact_text(fact: dict) -> str:
+    """What a fact is searched by: its text and its tags, where the agent's keywords are kept (README, keywords)."""
+    return f'{fact.get("content", "")} {fact.get("tags") or ""}'
+
+
+_WARNED: set[str] = set()  # failures said once each (a damaged index fails on every turn)
+
+
+def _warn_once(what: str, exc: Exception) -> None:
+    text = f"{what} ({type(exc).__name__}: {exc})"[:300]
+    if text not in _WARNED and len(_WARNED) < 64:
+        _WARNED.add(text)
+        logger.warning("holographic: %s", text)
 
 
 def _fact_row(row) -> dict:
@@ -176,7 +190,7 @@ class FactRetriever:
         # weighted share of the query they hold, which counts the root at _DERIV_WEIGHT (as as_of always is).
         if corpus is not self._current:
             self._corpus_rank(query, terms, list(candidates.values()), category, min_trust, corpus)
-        elif roots and any(0.0 < t.match(analyze(f'{f.get("content", "")} {f.get("tags") or ""}')) < 1.0
+        elif roots and any(0.0 < t.match(analyze(_fact_text(f))) < 1.0
                            for f in candidates.values() for t in terms):
             self._coverage_rank(query, terms, list(candidates.values()))
         return self._rerank(query, list(candidates.values()), limit, meaning if corpus is self._current else None)
@@ -196,8 +210,7 @@ class FactRetriever:
         total = sum(weight.values()) + sum(1 for t in terms if not df[t]) * (min(weight.values()) if weight else 0.0)
         grams, zh = query_grams(query), is_chinese(query or "")
         for fact in candidates:
-            text = f'{fact.get("content", "")} {fact.get("tags") or ""}'
-            analysis = analyze(text)
+            analysis = analyze(_fact_text(fact))
             share = sum(w * t.match(analysis) for t, w in weight.items()) / total if total else 0.0
             fact["fts_rank"] = max(share, gram_coverage(grams, analysis, zh) if grams else 0.0)
 
@@ -212,7 +225,7 @@ class FactRetriever:
         total = sum(weight.values()) + sum(1 for t in terms if not df[t]) * min(weight.values())
         grams, zh = query_grams(query), is_chinese(query or "")
         for fact in candidates:
-            analysis = analyze(f'{fact.get("content", "")} {fact.get("tags") or ""}')
+            analysis = analyze(_fact_text(fact))
             share = sum(w * t.match(analysis) for t, w in weight.items()) / total
             fact["fts_rank"] = max(share, gram_coverage(grams, analysis, zh) if grams else 0.0)
 
@@ -247,7 +260,7 @@ class FactRetriever:
         root)."""
         if not terms:
             return True
-        analysis = analyze(f'{fact.get("content", "")} {fact.get("tags") or ""}')
+        analysis = analyze(_fact_text(fact))
         return any(t._exact(analysis) if exact else t.found_in(analysis) for t in terms)
 
     def _texts(self, category: str | None = None, min_trust: float | None = None,
@@ -358,7 +371,7 @@ class FactRetriever:
         # so stores whose hrr_vector was never backfilled don't pay for it.
         query_vec = None  # bind(encode_text(query), ROLE_CONTENT): the shape a fact's content is stored in
         for fact in candidates:
-            jaccard = self._jaccard_similarity(query_tokens, content_stems(f'{fact["content"]} {fact.get("tags") or ""}'))
+            jaccard = self._jaccard_similarity(query_tokens, content_stems(_fact_text(fact)))
             hrr_sim = 0.5  # neutral
             fact_vec = self._phases(fact["hrr_vector"]) if self.hrr_weight > 0 and fact.get("hrr_vector") else None
             if fact_vec is not None:
@@ -396,7 +409,7 @@ class FactRetriever:
         sentence, in any word form (or among the fact's keywords), and every known entity the message mentions? In
         meaning "When is Peter's birthday?" is as close to "Lena's birthday is on June 3" as a paraphrase is to its
         fact (calibration 2026-10-14); only the name tells them apart."""
-        analysis = analyze(f'{fact.get("content", "")} {fact.get("tags") or ""}')
+        analysis = analyze(_fact_text(fact))
         for name in _inner_names(query):
             terms = query_terms(name)
             if terms and not any(t.found_in(analysis) for t in terms):
@@ -474,6 +487,17 @@ class FactRetriever:
         for fact in results:
             fact["score"] = fact["trust_score"]
         return results
+
+    def entity_facts(self, entity_id: int, *, min_trust: float, limit: int) -> list[dict]:
+        """The facts linked to one entity, most trusted first (recall of the names a message mentions)."""
+        return self._linked_facts([[entity_id]], None, min_trust, limit)
+
+    def drop_cached(self, fact_id: int) -> None:
+        """Forget what this retriever holds of a fact: its analysed text, every version's, and its vector (forget)."""
+        self._current.cache.pop(fact_id, None)
+        self._version_cache.clear()
+        if self._vectors is not None:
+            self._vectors.drop(fact_id)
 
     def probe(self, entity: str, category: str | None = None, limit: int = 10, min_trust: float = 0.3) -> list[dict]:
         """Every fact linked to the entity (exact, by the entity index; name or alias, any letter case), most trusted
@@ -623,18 +647,6 @@ class FactRetriever:
         return results
 
     @staticmethod
-    def _tokenize(text: str) -> set[str]:
-        """Lowercase whitespace tokens with surrounding punctuation stripped (no stemming)."""
-        return {c for c in (w.strip(_PUNCT) for w in text.lower().split()) if c} if text else set()
-
-    @staticmethod
-    def _fts_phrase(text: str) -> str:
-        """Text as one FTS5 phrase (operator characters become spaces); "" when nothing is left."""
-        words = [w.strip(_PUNCT) for w in text.lower().translate(_FTS_OPERATORS).split()]
-        words = [w for w in words if w]
-        return f'"{" ".join(words)}"' if words else ""
-
-    @staticmethod
     def _sanitize_fts_query(query: str) -> str:
         """Natural-language query -> FTS5-safe OR expression. FTS5 AND-joins a multi-word MATCH by default, which
         tanks recall on prose: informative terms only (English and Russian stopwords dropped), each as its exact
@@ -652,7 +664,8 @@ class FactRetriever:
         expression = term.fts(_FTS_OPERATORS) if not extra else f"({term.fts(_FTS_OPERATORS)} OR {extra})"
         try:
             return int(self.store.read("SELECT COUNT(*) FROM facts_fts WHERE facts_fts MATCH ?", (expression,))[0][0])
-        except Exception:
+        except Exception as exc:  # a damaged index: the term weighs nothing, and that is said (as _fts_query does)
+            _warn_once("FTS5 count failed; recall weighs that word as absent", exc)
             return 0
 
     def relevant(self, query: str, candidates: list[dict], min_coverage: float = 0.3) -> list[dict]:
@@ -674,7 +687,7 @@ class FactRetriever:
             pairs = [(g, w) for g, w in grams if len(g.replace(_text.SEAM, "")) > 1]  # not the one-character words
             char_total = sum(char_weights.values())
             for f in candidates:
-                analysis = analyze(f'{f.get("content", "")} {f.get("tags") or ""}')  # lower-cased and folded
+                analysis = analyze(_fact_text(f))  # lower-cased and folded
                 chars = zh_char_text(grams, analysis) if zh else analysis.text  # not the halves of a split pair
                 char_cov = sum(w for c, w in char_weights.items() if c in chars) / char_total if char_total else 0.0
                 # a Chinese one-character word (猫) never recalls alone: a pair of the question is there too, or
@@ -688,7 +701,7 @@ class FactRetriever:
         identifiers = [t for t in terms if t.identifier]
         if identifiers:  # "hr-ovh" inside Chinese text: the character overlap must not stand in for the host
             gram_kept = [f for f in gram_kept
-                         if any(t.found_in(analyze(f'{f.get("content", "")} {f.get("tags") or ""}')) for t in identifiers)]
+                         if any(t.found_in(analyze(_fact_text(f))) for t in identifiers)]
         if not terms or not candidates:
             return gram_kept
         total_facts = max(self.store.count_facts(), 1)
@@ -709,7 +722,7 @@ class FactRetriever:
         total = sum(weights.values()) + len(unknown) * min(weights.values())
         kept = []
         for fact in candidates:
-            analysis = analyze(f'{fact.get("content", "")} {fact.get("tags") or ""}')
+            analysis = analyze(_fact_text(fact))
             if identifiers and not any(t.found_in(analysis) for t in identifiers):
                 continue  # a message naming pve-01 or v0.21.6 is about that, not about pve-010
             strength = {t: t.match(analysis) for t in weights}  # 1.0 the word itself, _DERIV_WEIGHT its root

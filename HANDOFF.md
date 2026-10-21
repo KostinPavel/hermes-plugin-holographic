@@ -31,7 +31,9 @@ is dormant; it takes over once core drops the bundled directory.
 
 `tests/` holds the in-tree tests (`tests/plugins/memory/test_holographic*.py` in hermes-agent) with the import path
 switched to the package `tests/conftest.py` loads from this repo, plus `test_holographic_v020.py`. Run locally with
-`HERMES_AGENT_REPO=~/.hermes/hermes-agent PYTHONPATH=~/.hermes/hermes-agent python -m pytest -q`. The checkout
+`HERMES_AGENT_REPO=~/.hermes/hermes-agent PYTHONPATH=~/.hermes/hermes-agent python -m pytest -q`, against a core as
+new as CI's (`main`): a checkout older than the plugin lacks modules it imports (`hermes_state_wal`, `hermes_yaml`),
+and the core itself needs `pyyaml` and `ruamel.yaml`. Lint: `ruff check .` (rules in `pyproject.toml`). The checkout
 directory name must be a valid Python identifier (CI uses `plugin`): pytest imports the repository root as a package.
 CI runs the suite on Linux, macOS and Windows against hermes-agent `main`, and `hermes plugins validate
 --install-deps`, the catalog's admission check.
@@ -83,7 +85,32 @@ strings from the zh-Hans translations of Grafana and Obsidian (6,584). A rule th
 goes to the standing instead (`_entity_rows`: a name whose letters have no case, only ever in plain quotes, stays provisional) —
 that is how the verb rule of 0.16.2 was dropped (2.8 % of the names lost in its best form).
 
+## Review
+
+Every release before its tag, and every finding a second model (Codex, Fable, Antigravity) brings, goes through five
+questions (from the review against ten principles of good code for AI agents, 2026-10-21; the plan and both reports
+are in `plans/2026-10-21-*`):
+
+1. Which requirement of this release justifies each new layer, parameter and dependency? A finding with no user and no
+   failing case behind it is written down, not shipped.
+2. Did removing a repetition turn into one function with many flags?
+3. Are the existing contracts kept: names, arguments, answers, side effects?
+4. Is a failure hidden behind an empty result, a caught exception or a success status? A catch at the boundary
+   (a turn must not fail over memory) still says what happened, once, where someone looks.
+5. Which checks really ran, with what result, and what was left unchecked? (`pytest` against hermes-agent `main`,
+   `ruff check .`, the dream's screen comparison when the screen changed.)
+
 ## Open work
+
+- Review of 2026-10-21 (`plans/2026-10-21-plan-pravki-10-principov.md`): waves 1, 3 and 4 are in `Unreleased`; a
+  Codex review of that diff found two things, both fixed with a test (a non-numeric setting no longer quotes its
+  value, `recall_error` is reset when another store becomes active). Left
+  for a decision: the screen as its own `screen.py` without imports from the core (the dream would copy one file
+  instead of walking the AST; do it together with the dream's 3.0), and a CI job on Python 3.11, the minimum in
+  `pyproject.toml` (the core installs no runtime dependencies below 3.14, so the job needs its own set, or the
+  minimum moves up). Not done on purpose: `memory_banks` and `remove` / `supersedes` (compatibility), the
+  `_RU_DERIVATION` / `_EN_DERIVATION` rule branches (tests keep them as an option), `zip(strict=True)` (a
+  behaviour change, not a tidy-up).
 
 - Credential screen (0.17.2, issue #6): a name counts only when the credential word is glued to it by a hyphen and the
   whole word names a thing; a word that stands alone keeps its value whatever it looks like. Known false positives

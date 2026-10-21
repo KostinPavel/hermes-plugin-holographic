@@ -1,5 +1,49 @@
 # Changelog
 
+## Unreleased
+
+Failures said where someone looks, instead of swallowed, and the same rules kept in one place (a review of the code
+against ten principles of good code for AI agents, 2026-10-21). Recall, storage and the screens behave as in 0.17.4.
+
+### Fixed
+
+- **A declared name that cannot be one was dropped without a word.** `entities=["Masha", "a/b/c"]` linked Masha,
+  logged the path at info and answered `added`, so the agent believed both were linked. The answer of add, update,
+  change and correct now lists such names under `entities_not_linked` with the reason (a path, a URL, `key=value`,
+  a single letter, not a string); the fact is stored as before.
+- **A setting that is no number** crashed the provider where it was first read (`min_trust_threshold` on start,
+  `hrr_dim` and `default_trust` only when a store opened, as a traceback from inside a call). Every such key is read
+  once at start; one that is no number turns memory off for the session, the system prompt and each `fact_store`
+  call name the key (not its value: a `${VAR}` put in the wrong key would quote a secret), and no database is opened
+  or written. Numbers written as text still read.
+- **Recall before a turn that failed** was logged at debug: a broken store recalled nothing turn after turn while the
+  prompt said memory was active. It is a warning once per kind of failure, and `stats` shows `recall_error` until a
+  recall works again or another store becomes the active one.
+- **A store that could not be counted** made the system prompt say "Active, empty: nothing stored yet". It says the
+  store could not be read just now (no number in the line: the prompt cache rule of 0.14.0 holds).
+- **Auto-extraction** dropped a sentence it could not store with a bare `except: pass`. How many, and why, is a
+  warning.
+- **The `embedding_*` numbers** fell back to their defaults, or were clamped to their range, silently. Either is a
+  warning naming the key.
+- **The owner-only mode of the database** (0600, POSIX) that could not be set, and **a config.yaml that could not be
+  read**, are warnings (the latter with the error's type only: a YAML error quotes the line, which may hold a key).
+- **An FTS5 count that failed** in the recall gate weighed the word as absent without a word; it is a warning once,
+  as the FTS5 search beside it already was.
+
+### Changed (no behaviour)
+
+- One place for each rule the store repeated: relinking a fact with its declared names kept (three copies),
+  the duplicate-content error (three), writing a `meta` value (seven), dropping an alias from both of its
+  representations (two); in retrieval, what a fact is searched by, its text and tags (nine).
+- `NotFound` (a `KeyError`) for a fact or a name that does not exist, so a handler that forgets to catch it no longer
+  answers "Missing required argument".
+- The provider no longer reaches into the retriever's and the store's private fields (`drop_cached`,
+  `entity_facts`, `today`).
+- Removed, no caller: `MemoryStore.replace_fact`, `FactRetriever._tokenize` and `_fts_phrase`,
+  `HistoryMixin.forgotten_ids`, `holographic.snr_estimate`.
+- CI runs `ruff check .` (pyflakes, pycodestyle, bugbear; the rules in `pyproject.toml`).
+- Tests: `test_holographic_fail_fast.py` (the fixes above, and the screen's time on fifteen of its longest inputs).
+
 ## 0.17.4 — 2026-10-18
 
 Three more texts the credential screen read as a credential with its value, from a live store (issue #6 by vlat0101,

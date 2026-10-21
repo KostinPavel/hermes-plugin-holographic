@@ -439,7 +439,7 @@ def test_the_rebuild_does_not_give_a_name_two_facts_hold_to_an_edited_claim(tmp_
     if via == "update":
         s.update_fact(first, content="Mallory Jones aka Alice Smith is a friend")
     else:
-        s.replace_fact(first, "Mallory Jones aka Alice Smith is a friend")
+        s.change_fact(first, "Mallory Jones aka Alice Smith is a friend")
     s.rebuild_entity_index()
     assert s.entity_ids("Alice Smith") != s.entity_ids("Mallory Jones")
     assert next(r for r in s.list_entities() if r["name"] == "Alice Smith")["facts"] == 3

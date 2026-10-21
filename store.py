@@ -14,7 +14,7 @@ from pathlib import Path
 
 from . import holographic as hrr
 from .embeddings import text_hash
-from .history import HISTORY_SCHEMA, HistoryMixin, parse_day
+from .history import HISTORY_SCHEMA, HistoryMixin, NotFound, parse_day
 from .text import UNSEGMENTED, _script, analyze, is_greeting, is_identifier, name_keys, zh_phrase
 from .text import fold as text_fold
 from .text import STOPWORDS, is_chinese, ja_ko_phrase, zh_count, zh_word_cuts
@@ -601,6 +601,22 @@ def _joiner_ok(name: str, i: int) -> bool:
         any(c.isalpha() or unicodedata.category(c)[0] == "M" for c in (name[i - 1], name[i + 1]))
 
 
+_NOT_A_NAME = (f"not a name (2-{_ENTITY_MAX_CHARS} characters, mostly letters; no paths, URLs, key=value, commas, "
+               "line breaks or flags)")
+
+
+def unusable_names(names) -> list[dict]:
+    """The names in *names* that a declaration (entities=[...]) cannot link, with why: what _link_declared skips. A
+    fact is stored all the same; the agent is told which names did not link, rather than believing they did."""
+    out = []
+    for name in names or ():
+        if not isinstance(name, str):
+            out.append({"name": repr(name)[:80], "reason": "not a string"})
+        elif not _valid_entity(_clean_given(name), given=True):
+            out.append({"name": name[:80], "reason": _NOT_A_NAME})
+    return out
+
+
 def _name_shaped(name: str, *, quoted: bool) -> bool:
     """_valid_entity, and for a name guessed from a fact's text (0.16.0) also not: a version number with nothing that
     names a thing beside it ("0.17.0 installed", «версия 0.17.0»; "Python 3.12" and «1С:Предприятие 8.3» stay, for a
@@ -632,8 +648,12 @@ def _name_shaped(name: str, *, quoted: bool) -> bool:
         and not zh_phrase(name) and not ja_ko_phrase(name)
 
 
+_UNRESTRICTED: set[str] = set()  # files whose owner-only mode could not be set, warned about once each
+
+
 def _restrict_permissions(db_path: Path) -> None:
-    """Owner-only access to the database and its WAL side files (POSIX; best effort)."""
+    """Owner-only access to the database and its WAL side files (POSIX; best effort, but a failure is logged once per
+    file: the README promises 0600, and a store readable by others must not stay so without a word)."""
     if os.name != "posix":
         return
     for suffix in ("", "-wal", "-shm"):
@@ -641,8 +661,10 @@ def _restrict_permissions(db_path: Path) -> None:
         try:
             if path.exists() and path.stat().st_mode & 0o077:
                 os.chmod(path, 0o600)
-        except OSError:
-            pass
+        except OSError as exc:
+            if str(path) not in _UNRESTRICTED:
+                _UNRESTRICTED.add(str(path))
+                logger.warning("holographic: could not make %s readable by its owner only (%s)", path, exc)
 
 
 class MemoryStore(HistoryMixin):
@@ -762,8 +784,7 @@ class MemoryStore(HistoryMixin):
             self._sync_hrr_dim()
             self._migrate_history()
             self._bump()
-            self._conn.execute("INSERT INTO meta (key, value) VALUES ('schema_version', ?) "
-                               "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (str(SCHEMA_VERSION),))
+            self._set_meta("schema_version", str(SCHEMA_VERSION))
 
     def _rekey_entities(self) -> None:
         """Keys and alias keys written before entity_key changed (0.16.1: ".NET" was "net", "‘Alice’" was "‘alice’") are
@@ -847,6 +868,10 @@ class MemoryStore(HistoryMixin):
         row = self._one("SELECT value FROM meta WHERE key = ?", (key,))
         return row["value"] if row else None
 
+    def _set_meta(self, key: str, value: str) -> None:
+        self._write("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (key, value))
+
     def _bump(self) -> None:
         """Invalidate per-connection caches (the known-entity index) after an entity change or a rollback."""
         self._entry["generation"] = self._entry.get("generation", 0) + 1
@@ -879,8 +904,7 @@ class MemoryStore(HistoryMixin):
                 self._compute_hrr_vector(row["fact_id"], row["content"])
             self._conn.execute("DELETE FROM memory_banks")
         self._check_vectors()  # the record is not proof: an older writer may have stored other sizes since
-        self._conn.execute("INSERT INTO meta (key, value) VALUES ('hrr_dim', ?) "
-                           "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (str(self.hrr_dim),))
+        self._set_meta("hrr_dim", str(self.hrr_dim))
 
     def _one(self, sql: str, params=()):
         return self._conn.execute(sql, params).fetchone()
@@ -954,21 +978,6 @@ class MemoryStore(HistoryMixin):
                 self._insert_version(fact_id, content, category, tags, valid_from=start, source=source)
             return fact_id, True
 
-    def replace_fact(self, old_id: int, content: str, category: str = "general", tags: str = "", *,
-                     entities=(), valid_from=None, source: dict | None = None) -> tuple[int, bool]:
-        """0.7.0 `supersedes`, now a `change` of *old_id* (history.change_fact): the id stays. Returns (fact_id,
-        changed); another fact that already says *content* is returned as (its id, False) and *old_id* ends.
-        KeyError if *old_id* does not exist."""
-        with self._tx():
-            old = self._one("SELECT fact_id, content FROM facts WHERE fact_id = ?", (old_id,))
-            if old is None:
-                raise KeyError(f"fact_id {old_id} not found")
-            if old["content"] == (content or "").strip():
-                return int(old_id), False
-            result = self.change_fact(old_id, content, valid_from=valid_from, category=category, tags=tags,
-                                      entities=entities, source=source)
-            return int(result["fact_id"]), result["status"] == "changed"
-
     def update_fact(self, fact_id: int, content: str | None = None, trust_delta: float | None = None,
                     tags: str | None = None, category: str | None = None, *, entities=(), touch: bool = True,
                     source: dict | None = None) -> bool:
@@ -1011,14 +1020,9 @@ class MemoryStore(HistoryMixin):
                 if assignments:  # entities alone (touch=False) change no column (review 0.17.0: they were dropped)
                     self._write(f"UPDATE facts SET {assignments} WHERE fact_id = ?", [*changes.values(), fact_id])
             except sqlite3.IntegrityError:
-                other = self._one("SELECT fact_id FROM facts WHERE content = ?", (content,))
-                raise DuplicateContentError(int(other["fact_id"]) if other else -1) from None
+                raise self._duplicate(content) from None
             if content is not None:  # re-extract entities (declared links survive a rewording) and recompute the vector
-                kept = [r[0] for r in self._conn.execute(
-                    "SELECT e.name FROM fact_entities fe JOIN entities e ON e.entity_id = fe.entity_id "
-                    "WHERE fe.fact_id = ? AND e.entity_type = 'declared'", (fact_id,))]
-                self._write("DELETE FROM fact_entities WHERE fact_id = ?", (fact_id,))
-                self._link_entities(fact_id, content, [*kept, *(entities or ())])
+                self._relink_fact(fact_id, content, entities)
                 self._compute_hrr_vector(fact_id, content)
                 self._drop_orphan_entities()
             elif entities:  # declare who the fact is about without rewording it
@@ -1070,18 +1074,27 @@ class MemoryStore(HistoryMixin):
         try:
             self._write(f"UPDATE facts SET {', '.join(sets)} WHERE fact_id = ?", [*params, fact_id])
         except sqlite3.IntegrityError:
-            other = self._one("SELECT fact_id FROM facts WHERE content = ?", (content,))
-            raise DuplicateContentError(int(other["fact_id"]) if other else -1) from None
-        kept = [r[0] for r in self._conn.execute(
-            "SELECT e.name FROM fact_entities fe JOIN entities e ON e.entity_id = fe.entity_id "
-            "WHERE fe.fact_id = ? AND e.entity_type = 'declared'", (fact_id,))]
-        self._write("DELETE FROM fact_entities WHERE fact_id = ?", (fact_id,))
-        self._link_entities(fact_id, content, [*kept, *(entities or ())])
+            raise self._duplicate(content) from None
+        self._relink_fact(fact_id, content, entities)
         self._compute_hrr_vector(fact_id, content)
         self._drop_orphan_entities()
         self._invalidate_bank(old_category)
         if category != old_category:
             self._invalidate_bank(category)
+
+    def _duplicate(self, content: str) -> DuplicateContentError:
+        """The error for a write that would give a second fact *content* (the UNIQUE column refused it)."""
+        other = self._one("SELECT fact_id FROM facts WHERE content = ?", (content,))
+        return DuplicateContentError(int(other["fact_id"]) if other else -1)
+
+    def _relink_fact(self, fact_id: int, content: str, entities=()) -> None:
+        """Link a fact to its entities again from *content*: names someone declared on it stay, *entities* are
+        declared with it (a new text, or the same text under other names)."""
+        kept = [r[0] for r in self._conn.execute(
+            "SELECT e.name FROM fact_entities fe JOIN entities e ON e.entity_id = fe.entity_id "
+            "WHERE fe.fact_id = ? AND e.entity_type = 'declared'", (fact_id,))]
+        self._write("DELETE FROM fact_entities WHERE fact_id = ?", (fact_id,))
+        self._link_entities(fact_id, content, [*kept, *(entities or ())])
 
     def _insert_fact_row(self, fact_id: int, version, *, trust: float, entities=()) -> None:
         """Put an ended fact back into the current projection under its own id (resume / revert of an end)."""
@@ -1091,8 +1104,7 @@ class MemoryStore(HistoryMixin):
                         "VALUES (?, ?, ?, ?, ?, ?)", (fact_id, version["content"], version["category"], version["tags"],
                                                       _clamp_trust(trust), first or self._now()))
         except sqlite3.IntegrityError:
-            other = self._one("SELECT fact_id FROM facts WHERE content = ?", (version["content"],))
-            raise DuplicateContentError(int(other["fact_id"]) if other else -1) from None
+            raise self._duplicate(version["content"]) from None
         self._link_entities(fact_id, version["content"], entities)
         self._compute_hrr_vector(fact_id, version["content"])
         self._invalidate_bank(version["category"])
@@ -1181,7 +1193,7 @@ class MemoryStore(HistoryMixin):
         with self._tx():
             row = self._one("SELECT fact_id, trust_score, helpful_count FROM facts WHERE fact_id = ?", (fact_id,))
             if row is None:
-                raise KeyError(f"fact_id {fact_id} not found")
+                raise NotFound(f"fact_id {fact_id} not found")
             old_trust: float = row["trust_score"]
             new_trust = _clamp_trust(old_trust + (_HELPFUL_DELTA if helpful else _UNHELPFUL_DELTA))
             increment = 1 if helpful else 0
@@ -1433,7 +1445,7 @@ class MemoryStore(HistoryMixin):
         with self._tx():
             ids = self.entity_ids(name)
             if not ids:
-                raise KeyError(f"no entity is named '{name.strip()}'")
+                raise NotFound(f"no entity is named '{name.strip()}'")
             if len(ids) > 1:
                 raise ValueError(f"'{name.strip()}' names {len(ids)} entities; fact_store entities shows them")
             row = self._alias_row(name)
@@ -1799,11 +1811,7 @@ class MemoryStore(HistoryMixin):
         backed = self._aka_backing(r["entity_id"] for r in rows)
         gone = [r for r in rows if (r["entity_id"], r["alias_key"]) not in backed]
         for r in gone:
-            self._write("DELETE FROM entity_aliases WHERE alias_key = ? AND entity_id = ?", (r["alias_key"], r["entity_id"]))
-            row = self._one("SELECT aliases FROM entities WHERE entity_id = ?", (r["entity_id"],))
-            if row is not None and row["aliases"]:
-                kept = [a for a in row["aliases"].split(",") if a.strip() and entity_key(a) != r["alias_key"]]
-                self._write("UPDATE entities SET aliases = ? WHERE entity_id = ?", (_legacy_aliases(kept), r["entity_id"]))
+            self._drop_alias_row(r["alias_key"], r["entity_id"])
         if gone:
             self._bump()
             self._relink({f for r in gone for f, in self._conn.execute(
@@ -1819,11 +1827,7 @@ class MemoryStore(HistoryMixin):
             row = self._one("SELECT content FROM facts WHERE fact_id = ?", (fact_id,))
             if row is None:
                 continue
-            kept = [r[0] for r in self._conn.execute(
-                "SELECT e.name FROM fact_entities fe JOIN entities e ON e.entity_id = fe.entity_id "
-                "WHERE fe.fact_id = ? AND e.entity_type = 'declared'", (fact_id,))]
-            self._write("DELETE FROM fact_entities WHERE fact_id = ?", (fact_id,))
-            self._link_entities(fact_id, row["content"], kept)
+            self._relink_fact(fact_id, row["content"])
         self._reencode(fact_ids)
 
     # -- names someone removed, renamed or wants indexed again (0.16.0) ------------------------------------------------
@@ -1928,7 +1932,7 @@ class MemoryStore(HistoryMixin):
                 raise ValueError(self._text_alias_refusal(textual[0], self._text_alias(textual[0]))
                                  + (f" (also: {', '.join(repr(n) for n in textual[1:])})" if textual[1:] else ""))
             if not plan:
-                raise KeyError("no entity is named " + ", ".join(f"'{n}'" for n in missing))
+                raise NotFound("no entity is named " + ", ".join(f"'{n}'" for n in missing))
             done: set[int] = set()
             for name, entity_id in plan:
                 if entity_id in done:
@@ -1944,7 +1948,7 @@ class MemoryStore(HistoryMixin):
         with self._tx():
             ids = self.entity_ids(name or "")
             if not ids:
-                raise KeyError(f"no entity is named '{(name or '').strip()}'")
+                raise NotFound(f"no entity is named '{(name or '').strip()}'")
             if len(ids) > 1:  # one entity's name and another's alias, in a store an older version wrote (review 0.16.2)
                 raise ValueError(f"'{name.strip()}' belongs to more than one entity; fact_store entities shows them — "
                                  "delete each by a name or alias only it has")
@@ -1975,8 +1979,7 @@ class MemoryStore(HistoryMixin):
             if self._entry.get("migrated"):
                 for digest in sorted({d for n in names if entity_key(n) for d in self._name_digests(n)}):
                     self._write("INSERT OR IGNORE INTO entity_tombstones (digest) VALUES (?)", (digest,))
-                self._write("INSERT INTO meta (key, value) VALUES ('scrub_pending', '1') "
-                            "ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+                self._set_meta("scrub_pending", "1")
             self._reencode(facts)
             self._bump()
             result = {"entity": names[0], "deleted": True, "facts_unlinked": len(facts), "aliases_dropped": aliases,
@@ -2000,7 +2003,7 @@ class MemoryStore(HistoryMixin):
         with self._tx():
             ids = self.entity_ids(name or "")
             if not ids:
-                raise KeyError(f"no entity is named '{(name or '').strip()}'")
+                raise NotFound(f"no entity is named '{(name or '').strip()}'")
             if len(ids) > 1:
                 raise ValueError(f"'{name.strip()}' names {len(ids)} entities; rename one by a name only it has")
             textual = self._text_alias(name)  # a text must not decide whose name is changed (0.17.0)
@@ -2097,8 +2100,7 @@ class MemoryStore(HistoryMixin):
                 self._write("INSERT OR IGNORE INTO fact_entities (fact_id, entity_id) VALUES (?, ?)", link)
             new = {(r[0], r[1]) for r in self._conn.execute("SELECT fact_id, entity_id FROM fact_entities")}
             vectors = self._reencode({fact_id for fact_id, _ in old ^ new})
-            self._write("INSERT INTO meta (key, value) VALUES ('entity_rules', ?) "
-                        "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (str(_ENTITY_RULES),))
+            self._set_meta("entity_rules", str(_ENTITY_RULES))
             self._bump()
             return {"facts": len(facts), "entities_before": before,
                     "entities_after": self._one("SELECT COUNT(*) FROM entities")[0],

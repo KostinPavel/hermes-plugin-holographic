@@ -5,7 +5,6 @@ to cosine similarity; atoms derive deterministically from SHA-256 so representat
 machines, and Python versions. References: Plate (1995) HRRs; Gayler (2004) Vector Symbolic Architectures."""
 
 import hashlib
-import logging
 import math
 import struct
 
@@ -15,8 +14,6 @@ try:
 except ImportError:
     np = None  # type: ignore[assignment]
     _HAS_NUMPY = False
-
-logger = logging.getLogger(__name__)
 
 _TWO_PI = 2.0 * math.pi
 _FLOAT32_BLOB_PREFIX = b"HRR1"
@@ -113,13 +110,3 @@ def bytes_to_phases(data: bytes, dim: int | None = None) -> "np.ndarray":
     expected = f"{float64_bytes} (legacy float64)" if collides else f"{float32_blob_bytes} (prefixed float32) or {float64_bytes} (legacy float64)"
     raise ValueError(f"HRR vector blob has {len(data)} bytes ({len(data) - plen} payload bytes after the float32 prefix); "
                      f"expected {expected} for dim={dim}")
-
-
-def snr_estimate(dim: int, n_items: int) -> float:
-    """SNR = sqrt(dim / n_items) (inf when empty); warns below 2.0 (n_items > dim/4)."""
-    _require_numpy()
-    snr = math.sqrt(dim / n_items) if n_items > 0 else float("inf")
-    if snr < 2.0:
-        logger.warning("HRR storage near capacity: SNR=%.2f (dim=%d, n_items=%d). "
-                       "Retrieval accuracy may degrade. Consider increasing dim or reducing stored items.", snr, dim, n_items)
-    return snr

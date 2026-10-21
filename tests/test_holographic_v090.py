@@ -4,7 +4,6 @@ their own; courtesy messages; Russian question words left out of queries."""
 
 from __future__ import annotations
 
-import json
 
 import pytest
 
