@@ -104,7 +104,9 @@ are in `plans/2026-10-21-*`):
 
 - Review of 2026-10-21 (`plans/2026-10-21-plan-pravki-10-principov.md`): waves 1, 3 and 4 are in `Unreleased`; a
   Codex review of that diff found two things, both fixed with a test (a non-numeric setting no longer quotes its
-  value, `recall_error` is reset when another store becomes active). Left
+  value, `recall_error` is reset when another store becomes active); a second one three more (a failure is named
+  by its kind, never its text: SQLite quotes a column's value; `entities_not_linked` gives positions, not the
+  refused names; `recall_error` is reset on a session switch too). Left
   for a decision: the screen as its own `screen.py` without imports from the core (the dream would copy one file
   instead of walking the AST; do it together with the dream's 3.0), and a CI job on Python 3.11, the minimum in
   `pyproject.toml` (the core installs no runtime dependencies below 3.14, so the job needs its own set, or the

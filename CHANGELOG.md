@@ -9,8 +9,9 @@ against ten principles of good code for AI agents, 2026-10-21). Recall, storage 
 
 - **A declared name that cannot be one was dropped without a word.** `entities=["Masha", "a/b/c"]` linked Masha,
   logged the path at info and answered `added`, so the agent believed both were linked. The answer of add, update,
-  change and correct now lists such names under `entities_not_linked` with the reason (a path, a URL, `key=value`,
-  a single letter, not a string); the fact is stored as before.
+  change and correct now lists such names under `entities_not_linked` by position (`index`) with the reason (a
+  path, a URL, `key=value`, a single letter, not a string), never the name itself: a refused name may be
+  `KEY=secret` or an instruction. The fact is stored as before.
 - **A setting that is no number** crashed the provider where it was first read (`min_trust_threshold` on start,
   `hrr_dim` and `default_trust` only when a store opened, as a traceback from inside a call). Every such key is read
   once at start; one that is no number turns memory off for the session, the system prompt and each `fact_store`
@@ -18,7 +19,9 @@ against ten principles of good code for AI agents, 2026-10-21). Recall, storage 
   or written. Numbers written as text still read.
 - **Recall before a turn that failed** was logged at debug: a broken store recalled nothing turn after turn while the
   prompt said memory was active. It is a warning once per kind of failure, and `stats` shows `recall_error` until a
-  recall works again or another store becomes the active one.
+  recall works again, another store becomes the active one or the session changes. Here, in the auto-extraction
+  warning and in the FTS5 one, a failure is named by its kind only (`OperationalError (SQLITE_BUSY)`), never by
+  its text: SQLite quotes a column's value in some messages, which would carry a fact past the screen.
 - **A store that could not be counted** made the system prompt say "Active, empty: nothing stored yet". It says the
   store could not be read just now (no number in the line: the prompt cache rule of 0.14.0 holds).
 - **Auto-extraction** dropped a sentence it could not store with a bare `except: pass`. How many, and why, is a

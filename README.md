@@ -96,7 +96,8 @@ gateway log that names the key. A `config.yaml` the plugin cannot read at all le
   mentioning it in any form link to it), `keywords` (see [Synonyms](#synonyms-and-other-roots-keywords)) and
   `valid_from` (the date it started to hold, when the message says). A name in `entities` that cannot be one (a
   path, a URL, `key=value`, a single letter, not a string) is not linked, and the answer of add, update, change and
-  correct lists it under `entities_not_linked` with the reason; the fact is stored all the same. Its answer lists `similar` facts,
+  correct lists it under `entities_not_linked` by its position in the list (`index`, from 0) with the reason, not
+  the name itself (a refused name may be `KEY=secret`); the fact is stored all the same. Its answer lists `similar` facts,
   `possible_conflicts` (same subject, a different claim) and `past_versions`; the agent decides. Text that is not a
   fact (JSON, tool or chat-role markup, instruction-like phrasing, a credential with its value or a token whose shape
   alone says it is one — an API key prefix, a Telegram bot token (also inside a Bot API address), a JWT, a private key

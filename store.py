@@ -606,14 +606,16 @@ _NOT_A_NAME = (f"not a name (2-{_ENTITY_MAX_CHARS} characters, mostly letters; n
 
 
 def unusable_names(names) -> list[dict]:
-    """The names in *names* that a declaration (entities=[...]) cannot link, with why: what _link_declared skips. A
-    fact is stored all the same; the agent is told which names did not link, rather than believing they did."""
+    """The names in *names* that a declaration (entities=[...]) cannot link, by position (0-based) with why: what
+    _link_declared skips. A fact is stored all the same; the agent is told which names did not link, rather than
+    believing they did. Not the name itself: a refused one may be `KEY=secret` or an instruction, which the
+    answer would carry back past the screen."""
     out = []
-    for name in names or ():
+    for index, name in enumerate(names or ()):
         if not isinstance(name, str):
-            out.append({"name": repr(name)[:80], "reason": "not a string"})
+            out.append({"index": index, "reason": "not a string"})
         elif not _valid_entity(_clean_given(name), given=True):
-            out.append({"name": name[:80], "reason": _NOT_A_NAME})
+            out.append({"index": index, "reason": _NOT_A_NAME})
     return out
 
 

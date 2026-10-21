@@ -30,7 +30,7 @@ from . import embeddings
 from . import holographic as hrr
 from .history import ORIGINS, HistoryTooNew, NotFound, parse_day
 from .store import DuplicateContentError, MemoryStore, unusable_names
-from .retrieval import FactRetriever
+from .retrieval import FactRetriever, error_kind
 from hermes_cli.config import cfg_get
 
 try:  # core >= the recall indicator; older cores simply show none
@@ -1367,8 +1367,9 @@ class HolographicMemoryProvider(MemoryProvider):
 
     def _recall_failed(self, exc: Exception) -> None:
         """Recall before a turn failed and the turn goes on without facts: a warning once per kind of failure (a
-        broken store fails every turn), and fact_store stats shows it until a recall works again."""
-        what = f"{type(exc).__name__}: {exc}"[:200]
+        broken store fails every turn), and fact_store stats shows it until a recall works again. Its kind only
+        (error_kind): the text may quote a fact."""
+        what = error_kind(exc)
         self._recall_error = what
         if what not in self._recall_errors and len(self._recall_errors) < 64:
             self._recall_errors.add(what)
@@ -1599,7 +1600,7 @@ class HolographicMemoryProvider(MemoryProvider):
                           rewound: bool = False, **kwargs) -> None:
         """Rebind to the new session; a new conversation or a rewound transcript forgets what was injected."""
         old = self._session_id
-        self._session_id = new_session_id
+        self._session_id, self._recall_error = new_session_id, ""  # the last session's failure is not this one's
         if reset or rewound:
             for key in [k for k in self._injected if k.split("|", 1)[0] in {old, new_session_id}]:
                 self._injected.pop(key, None)
@@ -2109,7 +2110,7 @@ class HolographicMemoryProvider(MemoryProvider):
                                                      source=self._source("auto_extract", author, origin="said"))[1]:
                                 extracted += 1
                         except Exception as exc:  # the next sentence may still go in; how many did not is said below
-                            failed, why = failed + 1, f"{type(exc).__name__}: {exc}"[:200]
+                            failed, why = failed + 1, error_kind(exc)
                         break
         if extracted:
             logger.info("Auto-extracted %d facts from conversation", extracted)
