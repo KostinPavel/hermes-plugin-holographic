@@ -44,14 +44,18 @@ _spec.loader.exec_module(_mod)
 
 from hermes_plugin_holographic import HolographicMemoryProvider  # noqa: E402
 
-_cspec = importlib.util.spec_from_file_location("contrast_ru", _REPO / "tools" / "contrast_ru.py")
+# Язык контрастного набора: CONTRAST_SET=contrast_ru (по умолчанию) | contrast_en | contrast_zh
+_SET = os.environ.get("CONTRAST_SET", "contrast_ru")
+_cspec = importlib.util.spec_from_file_location(_SET, _REPO / "tools" / f"{_SET}.py")
 assert _cspec and _cspec.loader
 contrast = importlib.util.module_from_spec(_cspec)
 _cspec.loader.exec_module(contrast)
 
 # Режимы PR #10 против реального эндпоинта (llama-server, логиты — проверено пробой).
 # Второй элемент — rerank_weight, третий (необязательный) — rerank_margin для свипа порога.
-RERANK_URL = "http://127.0.0.1:8091/v1/rerank"
+# RERANK_URL переопределяется окружением: сравнение iGPU-инстанса и CPU (-dev none).
+import os as _os
+RERANK_URL = _os.environ.get("RERANK_URL", "http://127.0.0.1:8091/v1/rerank")
 MODES = {
     "off": None,
     "reorder_0": ("reorder_before_gate", "0.0"),
@@ -97,14 +101,26 @@ def _inject(p, query: str) -> list[int]:
 
 
 def _names_fit_probe(p) -> str:
-    """Подхватилась ли подмена: запрос про Петра + факт про Лену."""
-    q = "Когда день рождения Петра?"
-    fact = {"content": contrast.FACTS["lena_bd"][0]}
+    """Подхватилась ли подмена: запрос с именем из одного факта + чужой факт
+    (две несекущиеся сущности; для языков без регистра результат не различим)."""
+    items = [(k, v) for k, v in contrast.FACTS.items() if v[1]]
+    pair = None
+    for i, (_k1, v1) in enumerate(items):
+        for _k2, v2 in items[i + 1:]:
+            if not (set(v1[1]) & set(v2[1])) and all(e not in v2[0] for e in v1[1]):
+                pair = (v1[1][0], {"content": v2[0]})
+                break
+        if pair:
+            break
+    if not pair:
+        return "нет двух несекущихся сущностей"
+    name, fact = pair
     try:
-        fits = bool(p._retriever.names_fit(q, fact))
+        fits = bool(p._retriever.names_fit(name, fact))
     except Exception as exc:  # noqa: BLE001 — диагностическая проба
         return f"ошибка вызова: {type(exc).__name__}: {exc}"
-    return "всегда True (патч подхвачен)" if fits else "реальный метод (отвергает чужой факт)"
+    return (f"fits={fits} — False: реальный метод отвергает (патч не подхвачен); "
+            f"True: патч подхвачен" + ("" if fits else ""))
 
 
 def run(axis: str, mode: str = "off") -> dict:
