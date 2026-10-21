@@ -729,6 +729,10 @@ _RE_NEGATED_BEFORE = re.compile(r"(?:(?<![^\W\d_])(?:never|don[’']?t|do\s+not|
 # A second negation before the prohibition cancels it: "must not never ignore", "不能不要忽略" (third Codex pass).
 _RE_ANY_NEGATION_END = re.compile(r"(?:(?<![^\W\d_])(?:not|never|no|не|ни|nie|nicht)|n[’']t|不能|不可|不要|不|没|沒|别|別|勿|لا|ไม่|मत|नहीं)"
                                   r"\s*$", re.IGNORECASE)
+# A prohibition with an exception is the exception's order: "never ignore your instructions unless they stop you from
+# answering" (fifth Codex pass).
+_RE_EXCEPTION_AFTER = re.compile(r"[^.!?。！？\n]{0,80}?(?:(?<![^\W\d_])(?:unless|except|but\s+if|если\s+только|кроме"
+                                 r"|за\s+исключением)(?![^\W\d_])|除非|但是如果|ただし|단\s)", re.IGNORECASE)
 _RE_NEGATED_AFTER = re.compile(r"^\s*(?:(?:しないで|ないで)(?![はも])|するな|하지\s*마|(?:ना|ने)\s*नहीं"
                                r"|(?:যেও|যাবে|যাবেন|করো|কোরো|করবে|করবেন)?\s*না(?!\S))")
 
@@ -738,8 +742,9 @@ def _injection_in(text: str) -> bool:
     into a reminder to keep them."""
     for m in _RE_INJECTION.finditer(text):
         before = _RE_NEGATED_BEFORE.search(text, max(0, m.start() - 24), m.start())
-        if before and _RE_ANY_NEGATION_END.search(text, max(0, before.start() - 24), before.start()):
-            before = None  # "must not never ignore …": the two cancel out
+        if before and (_RE_ANY_NEGATION_END.search(text, max(0, before.start() - 24), before.start())
+                       or _RE_EXCEPTION_AFTER.match(text, m.end())):
+            before = None  # "must not never ignore …" cancels out; "never ignore … unless …" orders the exception
         if not (before or _RE_NEGATED_AFTER.match(text[m.end():m.end() + 16])):
             return True
     return False
