@@ -190,8 +190,8 @@ PAIRS = [
              "Ольги-факты в top-5 наравне; B: «экзамен» ≠ IELTS по корню."},
 ]
 
-# 15 запросов, обязана вернуть ПУСТОЙ recall (правило трёх → шум < 20% на языке;
-# 45 суммарно по трём языкам → < 7%).
+# 45 запросов (15/категорию), обязана вернуть ПУСТОЙ recall.
+# Правило трёх: 0 шумов при n=45 → шум < 7% на языке.
 CHITCHAT = [
     # приветствия с сущностью (общие слова с фактами есть → coverage админит,
     # gate_reads_score обязан отказать по score)
@@ -200,18 +200,48 @@ CHITCHAT = [
     ("Денис, что нового?", "greeting_entity"),
     ("Ольга, привет, как ты?", "greeting_entity"),
     ("Сергей, ты уже дома?", "greeting_entity"),
+    ("Марина, ты тут?", "greeting_entity"),
+    ("Денис, привет!", "greeting_entity"),
+    ("Добрый вечер, Андрей!", "greeting_entity"),
+    ("Саша, как жизнь?", "greeting_entity"),
+    ("Дина, дай совет.", "greeting_entity"),
+    ("Лена, рассказывай потом.", "greeting_entity"),
+    ("Соня, это ты?", "greeting_entity"),
+    ("Привет, Петруся!", "greeting_entity"),
+    ("Ольга, здравствуй!", "greeting_entity"),
+    ("Андрей, ты где?", "greeting_entity"),
     # болтовня, делящая слова с фактами (coverage-ловушка)
     ("По ночам в городе шумно.", "topic_shared_words"),
     ("В бассейн зимой идти холодно.", "topic_shared_words"),
     ("В Норникеле сейчас много вакансий.", "topic_shared_words"),
     ("Двадцать четвёртый год вообще странный.", "topic_shared_words"),
     ("В мае бывает дождливо.", "topic_shared_words"),
+    ("По будням в офисе всегда очереди.", "topic_shared_words"),
+    ("На Пятницкой сегодня пробки.", "topic_shared_words"),
+    ("Коты по ночам шумят.", "topic_shared_words"),
+    ("Стоит ли менять права заранее?", "topic_shared_words"),
+    ("Паспорта сейчас везде требуют.", "topic_shared_words"),
+    ("Зимой в бассейн реже попадаю.", "topic_shared_words"),
+    ("Йога по утрам — модная тема.", "topic_shared_words"),
+    ("Дачный сезон скоро откроется.", "topic_shared_words"),
+    ("По выходным все куда-то едут.", "topic_shared_words"),
+    ("В офисе летом душно.", "topic_shared_words"),
     # нерелевантный общий хвост
     ("Как тебе погода на этой неделе?", "vague"),
     ("Что посмотреть вечером?", "vague"),
     ("Кто это сказал?", "vague"),
     ("Расскажи анекдот.", "vague"),
     ("Какой сегодня день?", "vague"),
+    ("Сколько будет завтра?", "vague"),
+    ("Помоги выбрать фильм.", "vague"),
+    ("Что такое фотосинтез?", "vague"),
+    ("Переведи фразу на английский.", "vague"),
+    ("Как свернуть окно в винде?", "vague"),
+    ("Напомни, как работает рекурсия.", "vague"),
+    ("Какая сейчас влажность?", "vague"),
+    ("Как настроить вентилятор?", "vague"),
+    ("Найди музыку под настроение.", "vague"),
+    ("Какой формат файла лучше?", "vague"),
 ]
 
 
@@ -228,9 +258,13 @@ def self_check():
             if q in seen:
                 errors.append(f'{p["id"]}: запрос дублирует {seen[q]!r}: {q!r}')
             seen[q] = p["id"]
+    chit_seen = {}
     for q, cat in CHITCHAT:
         if q in seen:
             errors.append(f"chit-chat дублирует {seen[q]!r}: {q!r}")
+        if q in chit_seen:
+            errors.append(f"chit-chat дублирует сам себя: {q!r}")
+        chit_seen[q] = True
     subj = {}
     for key, (text, ents) in FACTS.items():
         for e in ents:
@@ -251,8 +285,8 @@ def self_check():
         errors.append(f"ожидалось 15 пар, есть {n_pairs}")
     if n_q != 30:
         errors.append(f"ожидалось 30 запросов, есть {n_q}")
-    if len(CHITCHAT) != 15:
-        errors.append(f"ожидалось 15 chit-chat, есть {len(CHITCHAT)}")
+    if len(CHITCHAT) != 45:
+        errors.append(f"ожидалось 45 chit-chat, есть {len(CHITCHAT)}")
     print("ОШИБКИ:" if errors else "Ошибок данных нет.")
     for e in errors:
         print("  -", e)

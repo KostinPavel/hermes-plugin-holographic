@@ -8,11 +8,12 @@ recall@5, WRONG-ENTITY (чужая цель затеняет свою), тиши
     HERMES_AGENT_REPO="C:/Users/Pavel/AppData/Local/hermes/hermes-agent" \\
         python tools/contrast_off.py
 
-Правила провала пары (достаточно одного запроса):
-  MISS   — своей цели нет в recall;
-  SHADOW — partner-цель (факт второго запроса пары) стоит ВЫШЕ своей;
-  WRONG5 — partner-цель в top-5: именно это меряет мейнтейнер (wrong-entity);
-           порядок чинит: кросс-энкодер опускает чужую ниже 5-й строчки.
+Три ортогональные метрики (как у мейнтейнера, не смешиваются):
+  ПАРА    — падает только по MISS: одна из двух целей не найдена (recall-аспект);
+  WRONG5  — отдельный счётчик: чужая (partner-)цель в top-5 (wrong-entity);
+            по измерениям порядок её НЕ чинит — чужой семантически близок;
+  ШУМ     — chit-chat, вернувший не-пустой recall (admission-аспект).
+SHADOW (чужая выше своей) — диагностический, по измерениям = 0 во всех режимах.
 
 names_fit OFF эмулируется подменой метода в тестовом прогоне
 (provider._retriever.names_fit -> всегда True); продакшн-код не меняется.
@@ -146,12 +147,12 @@ def run(axis: str, mode: str = "off") -> dict:
                 part_pos = keys.index(part) + 1 if part in keys else None
             miss = own_pos is None
             shadow = part_pos is not None and (own_pos is None or part_pos < own_pos)
-            wrong5 = part_pos is not None and part_pos <= 5  # чужая в top-5: её и меряет
-            # мейнтейнер; порядок чинит — кросс-энкодер опускает чужую ниже 5-й
+            wrong5 = part_pos is not None and part_pos <= 5  # чужая в top-5: wrong-entity
+            # мейнтейнера; счётчиком, НЕ провалом пары (порядок её не чинит — измерено)
             per.append({"q": query, "own": target, "own_pos": own_pos, "partner": part,
                         "partner_pos": part_pos, "keys": keys, "miss": miss, "shadow": shadow,
                         "wrong5": wrong5})
-            pair_ok = pair_ok and not (miss or shadow or wrong5)
+            pair_ok = pair_ok and not miss
         pairs_out.append({"id": pair["id"], "type": pair["type"], "ok": pair_ok,
                           "note": pair.get("note", ""), "per": per})
 
