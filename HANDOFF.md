@@ -102,7 +102,7 @@ are in `plans/2026-10-21-*`):
 
 ## Open work
 
-- 0.17.6 (2026-10-21, `aca7b19`; 0.17.7 the same day: a double negation cancels the prohibition, third Codex pass): an Antigravity review in Russian, English and Chinese and two Codex passes. "Your
+- 0.17.6 (2026-10-21, `aca7b19`; 0.17.7 the same day, `fd68b1a`: a double negation or an exception cancels the prohibition, Codex passes three to five; catalog bump NousResearch/hermes-agent#142449 open): an Antigravity review in Russian, English and Chinese and two Codex passes. "Your
   instructions" is an instruction in all 18 languages (ambiguous "your" left out: German "ihre" only after "Sie",
   Spanish "sus" not at all, Turkish only with "senin" / "sizin"); only an explicit prohibition right next to the verb
   keeps a reminder a fact ("never ignore your instructions"; "why not ignore…" is still refused); two more log lines by
