@@ -203,6 +203,30 @@ def test_a_store_that_cannot_be_counted_is_not_called_empty(tmp_path, monkeypatc
     p.shutdown()
 
 
+def test_a_failed_fts5_search_is_named_by_its_kind(tmp_path, caplog, monkeypatch):
+    """The FTS5 search and the history search logged the exception's text, which may quote a fact (Antigravity
+    review of 0.17.5)."""
+    p = _provider(tmp_path)
+    fact_id = p._store.add_fact("Masha likes green tea")
+    read = p._store.read
+
+    def undecodable(sql, params=()):
+        if " MATCH " in sql:
+            exc = sqlite3.OperationalError("Could not decode to UTF-8 column 'content' with text 'Masha's PIN is 4821'")
+            exc.sqlite_errorname = "SQLITE_ERROR"
+            raise exc
+        return read(sql, params)
+
+    monkeypatch.setattr(p._store, "read", undecodable)
+    with caplog.at_level(logging.WARNING):
+        assert p._retriever._fts_query('"tea"', None, 0.0, 5) == []
+        assert p._retriever._past_versions(fact_id + 1, "Masha likes green tea", set(), 5) == []
+    assert "FTS5 search failed (OperationalError (SQLITE_ERROR))" in caplog.text
+    assert "history search failed (OperationalError (SQLITE_ERROR))" in caplog.text
+    assert "4821" not in caplog.text
+    p.shutdown()
+
+
 def test_an_extraction_that_cannot_store_is_warned(tmp_path, caplog, monkeypatch):
     p = _provider(tmp_path, auto_extract="true")
 

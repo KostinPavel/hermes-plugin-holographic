@@ -646,7 +646,7 @@ class FactRetriever:
             results = [_fact_row(row) for row in self.store.read(sql, params)]
         except Exception as exc:  # a damaged index (expressions are built to be valid)
             # Logged, not raised: recall must not take the turn down; a silent [] hides a broken index.
-            logger.warning("holographic: FTS5 search failed (%s: %s)", type(exc).__name__, exc)
+            logger.warning("holographic: FTS5 search failed (%s)", error_kind(exc))
             return []
         # FTS5 rank is negative (lower = better); normalize |rank| / max to [0, 1] (1e-6 floor avoids div by zero)
         max_rank = max([abs(f["fts_rank_raw"]) for f in results] + [1e-6])
@@ -880,7 +880,7 @@ class FactRetriever:
                 f"AND v.status IN ({marks}) AND v.fact_id != ? ORDER BY fact_versions_fts.rank LIMIT 20",
                 (expression, *CLOSED, fact_id))
         except Exception as exc:  # a damaged index: the hint is advisory
-            logger.warning("holographic: history search failed (%s)", exc)
+            logger.warning("holographic: history search failed (%s)", error_kind(exc))
             return []
         out: dict[int, dict] = {}
         for r in rows:
