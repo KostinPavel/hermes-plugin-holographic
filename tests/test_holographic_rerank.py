@@ -1,0 +1,281 @@
+"""Rescoring by a cross-encoder (rerank.py, RFC #9) — optional, offline-safe, off by default.
+
+A fake endpoint stands in for the /v1/rerank server: it answers with a fixed or reversed order of the documents
+sent, or fails as told. The five benchmark modes are covered: off, reorder_before_gate (order-only / blended),
+gate_reads_score (order-only / blended).
+
+The gate variant is the cross-encoder's own ranking as the gate (coverage not consulted); order-only (weight 0)
+reorders the pool before the coverage gate. Any failure keeps the current order and pauses the endpoint."""
+from __future__ import annotations
+
+import json
+import time
+
+import pytest
+
+from hermes_plugin_holographic import HolographicMemoryProvider, rerank  # noqa: E402
+
+
+class _Response:
+    def __init__(self, body: bytes):
+        self.body, self.at = body, 0
+
+    def read(self, n=-1):
+        piece = self.body[self.at:] if n is None or n < 0 else self.body[self.at:self.at + n]
+        self.at += len(piece)
+        return piece
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+class FakeRerank:
+    """Stands in for rerank._OPENER: records every request, answers with a fixed or reversed order, or fails."""
+
+    def __init__(self):
+        self.requests: list[dict] = []
+        self.fail = None  # an exception to raise, or bytes to answer with
+        self.reverse = False  # answer with the documents reversed (worst ranker)
+        self.delay = 0.0  # seconds to sleep in the "network" call
+        self.scores = None  # optional relevance_scores to answer with (else n, n-1, ...)
+
+    @property
+    def documents(self) -> list[str]:
+        return [d for r in self.requests for d in r["body"]["documents"]]
+
+    def open(self, request, timeout=None):
+        body = json.loads(request.data)
+        self.requests.append({"url": request.full_url, "headers": dict(request.header_items()), "body": body,
+                              "timeout": timeout})
+        if self.delay:
+            time.sleep(self.delay)
+        if isinstance(self.fail, BaseException):
+            raise self.fail
+        if isinstance(self.fail, bytes):
+            return _Response(self.fail)
+        n = len(body["documents"])
+        order = list(reversed(range(n))) if self.reverse else list(range(n))
+        top_n = min(body.get("top_n", n), n)
+        if self.scores is not None:
+            chosen = [{"index": i, "relevance_score": self.scores[i % len(self.scores)]} for i in order[:top_n]]
+        else:
+            chosen = [{"index": i, "relevance_score": float(n - i)} for i in order[:top_n]]
+        return _Response(json.dumps({"results": chosen, "model": body["model"]}).encode())
+
+
+@pytest.fixture
+def endpoint(monkeypatch):
+    fake = FakeRerank()
+    monkeypatch.setattr(rerank, "_OPENER", fake)
+    return fake
+
+
+RANK = {"rerank": "on", "rerank_mode": "reorder_before_gate", "rerank_url": "https://rerank.example.net/v1/rerank",
+        "rerank_model": "fake-reranker"}
+
+
+def _provider(tmp_path, name="memory_store.db", **config):
+    p = HolographicMemoryProvider(config={"db_path": str(tmp_path / name), "hrr_dim": 64, **config})
+    p.initialize(session_id="s1")
+    return p
+
+
+FACTS = ["The nightly backup runs from the OES box at 2 am.", "Lena's birthday is on June 3.",
+         "Mark plays the violin on Sundays.", "Tom is allergic to peanut satay."]
+FILLERS = ["apple note", "brick note", "cloud note", "daisy note", "eagle note"]
+
+
+def _fill(p):
+    for f in FILLERS:
+        p._store.add_fact(f"{f} number")
+    ids = [p._store.add_fact(f) for f in FACTS]
+    p.sync_turn("x", "y")
+    return ids
+
+
+def _block(p, query):
+    return p.prefetch(query)
+
+
+# -- off by default -------------------------------------------------------------------------------------------
+
+def test_off_by_default_no_calls_same_order(tmp_path, endpoint):
+    p = _provider(tmp_path)
+    _fill(p)
+    assert p._rescorer is None and endpoint.requests == []
+    assert p.prefetch("when does the backup run?") != ""
+    assert endpoint.requests == []
+    p.shutdown()
+
+
+def test_config_schema_defaults(tmp_path):
+    p = _provider(tmp_path)
+    schema = {f["key"]: f.get("default") for f in p.get_config_schema()
+              if str(f["key"]).startswith("rerank")}
+    assert schema["rerank"] == "off"
+    assert schema["rerank_mode"] == "reorder_before_gate"
+    assert schema["rerank_weight"] == "0.0"
+    p.shutdown()
+
+
+# -- the call: payload shape, order, failure ----------------------------------------------------------------
+
+def test_order_only_reorders_and_sends_cohere_payload(tmp_path, endpoint):
+    p = _provider(tmp_path, **{**RANK, "rerank_mode": "reorder_before_gate"})
+    _fill(p)
+    block = _block(p, "when does the backup run?")
+    assert block  # facts recalled
+    req = endpoint.requests[0]
+    assert req["body"]["query"]
+    assert req["body"]["model"] == "fake-reranker"
+    assert isinstance(req["body"]["documents"], list) and req["body"]["documents"]
+    assert req["body"]["top_n"] >= 1
+    p.shutdown()
+
+
+def test_gate_reads_score_uses_ranking(tmp_path, endpoint):
+    p = _provider(tmp_path, **{**RANK, "rerank_mode": "gate_reads_score"})
+    _fill(p)
+    endpoint.scores = [1.0, 0.2]  # a confident top: the margin admits the pool
+    block = _block(p, "when does the backup run?")
+    assert block
+    assert endpoint.requests  # the gate IS the reranker: it was called
+    p.shutdown()
+
+
+def test_gate_reads_score_margin_closes_on_flat_spread(tmp_path, endpoint):
+    """A reranker that sees no clear winner (chit-chat, a flat score spread) must admit nothing — the margin gate."""
+    p = _provider(tmp_path, **{**RANK, "rerank_mode": "gate_reads_score"})
+    _fill(p)
+    # a chit-chat query that still pulls several candidates (the filler facts all contain "note")
+    endpoint.scores = [1.0, 0.9, 0.89, 0.88, 0.87]  # flat tail, no confident top: top 1.0 vs 0.9 = 1.11 < 1.5
+    assert _block(p, "what about the note?") == ""
+    # the same query with a confident top is recalled: the margin, not the query, is what refused it
+    endpoint.scores = [1.0, 0.2, 0.19, 0.18, 0.17]  # top 1.0 vs 0.2 = 5.0 > 1.5
+    assert _block(p, "what about the note?") != ""
+    p.shutdown()
+
+
+def test_gate_reads_score_falls_back_to_coverage_on_failure(tmp_path, endpoint):
+    """A reranker outage must not empty recall: the gate falls back to the coverage gate."""
+    p = _provider(tmp_path, **{**RANK, "rerank_mode": "gate_reads_score"})
+    _fill(p)
+    endpoint.fail = ConnectionRefusedError("refused")
+    block = _block(p, "when does the backup run?")
+    assert block  # the coverage gate still recalls the fact that answers the words
+    p.shutdown()
+
+
+def test_gate_reads_score_single_candidate_uses_coverage(tmp_path, endpoint):
+    """A single candidate leaves no runner-up to compare, so the gate consults the coverage gate."""
+    p = _provider(tmp_path, **{**RANK, "rerank_mode": "gate_reads_score"})
+    _fill(p)
+    # "apple" matches exactly one filler ("apple note number"); the reranker finds it irrelevant (-10)
+    calls = []
+    original = p._retriever.relevant
+
+    def spy(query, candidates, min_coverage):
+        calls.append(len(candidates))
+        return original(query, candidates, min_coverage)
+
+    p._retriever.relevant = spy
+    endpoint.scores = [-10.0]
+    _block(p, "what about apple?")
+    assert calls == [1]  # the single candidate went to the coverage gate, not straight through
+    p.shutdown()
+
+
+def test_failure_keeps_current_order_and_pauses(tmp_path, endpoint):
+    p = _provider(tmp_path, **RANK)
+    _fill(p)
+    endpoint.fail = ConnectionRefusedError("refused")
+    before = p.prefetch("when does the backup run?")
+    # backoff: the endpoint is paused, so no further call is made
+    calls = len(endpoint.requests)
+    # a different session (the repeat window would drop the same fact) and a fresh query
+    after = p.prefetch("what does Tom avoid?")
+    assert len(endpoint.requests) == calls  # paused: no second request
+    assert before and after  # both prefetches worked (order kept, not empty)
+    assert p._rescorer.status().startswith("paused")  # the failure is counted
+    p.shutdown()
+
+
+def test_malformed_answer_keeps_order(tmp_path, endpoint):
+    p = _provider(tmp_path, **RANK)
+    _fill(p)
+    endpoint.fail = b'{"results": [{"index": 99, "relevance_score": 1.0}]}'
+    block = _block(p, "when does the backup run?")
+    assert block  # the malformed answer did not take recall down
+    assert p._rescorer.status().startswith("paused")  # counted as a failure
+    p.shutdown()
+
+
+def test_secret_in_query_no_call(tmp_path, endpoint):
+    p = _provider(tmp_path, **RANK)
+    _fill(p)
+    block = _block(p, "password: Qwerty123 what is it?")
+    assert endpoint.requests == []  # what recall must not inject is never sent
+    assert block is not None
+    p.shutdown()
+
+
+def test_timeout_keeps_order(tmp_path, endpoint, monkeypatch):
+    p = _provider(tmp_path, **{**RANK, "rerank_timeout": "0.2"})
+    _fill(p)
+    endpoint.delay = 0.5  # longer than rerank_timeout
+    start = time.perf_counter()
+    block = _block(p, "when does the backup run?")
+    elapsed = time.perf_counter() - start
+    assert block  # recall did not hang
+    assert elapsed < 1.0  # the caller waited rerank_timeout, not the delay
+    p.shutdown()
+
+
+# -- blend (weight > 0) --------------------------------------------------------------------------------------
+
+def test_weight_zero_is_order_only(tmp_path, endpoint):
+    p = _provider(tmp_path, **{**RANK, "rerank_weight": "0.0"})
+    _fill(p)
+    _block(p, "when does the backup run?")
+    assert endpoint.requests  # still called: order-only is the default
+    p.shutdown()
+
+
+def test_weight_blend_runs_and_keeps_recall(tmp_path, endpoint):
+    p = _provider(tmp_path, **{**RANK, "rerank_weight": "0.5"})
+    _fill(p)
+    block = _block(p, "when does the backup run?")
+    assert block and endpoint.requests  # blend recomputes score and sorts; recall still works
+    p.shutdown()
+
+
+# -- the endpoint's own API ---------------------------------------------------------------------------------
+
+def test_settings_validation():
+    assert rerank.settings_from({}) is None
+    assert rerank.settings_from({"rerank": "off"}) is None
+    s = rerank.Settings({"rerank": "on", "rerank_mode": "gate_reads_score", "rerank_top_k": "15"})
+    assert (s.mode, s.top_k) == ("gate_reads_score", 15)
+    assert rerank.Settings({"rerank_mode": "bogus"}).mode == "off"  # unknown mode falls back to off
+
+
+def test_ranked_shape():
+    payload = {"results": [{"index": 2, "relevance_score": -0.239},
+                           {"index": 0, "relevance_score": -2.877}]}
+    assert rerank._ranked(payload, 5) == [(2, -0.239), (0, -2.877)]
+    with pytest.raises(ValueError):
+        rerank._ranked({"results": [{"index": 9, "relevance_score": 1.0}]}, 5)  # out of range
+    with pytest.raises(ValueError):
+        rerank._ranked({"results": [{"index": 0, "relevance_score": "x"}]}, 5)  # not a number
+    with pytest.raises(ValueError):
+        rerank._ranked({"results": []}, 5)  # empty
+
+
+def test_endpoint_validation():
+    local = rerank._endpoint("http://127.0.0.1:8080/v1/rerank")
+    assert local[1] is True  # local
+    assert rerank._endpoint("http://example.com/v1/rerank")[0] is None  # public http refused
+    assert rerank._endpoint("ftp://x")[0] is None  # wrong scheme

@@ -71,6 +71,7 @@ In `config.yaml` under `plugins.hermes-memory-store`:
 | `cron_writes` | `true` | A cron job's explicit `fact_store` / `fact_feedback` calls may write (nightly memory jobs such as hermes-dreaming's extraction and keywords exist to make them). Automatic writes (auto-extraction, mirroring, recall counts) stay off in cron, subagents and flush contexts; with `embeddings` on, a cron job that may write also makes missing fact vectors; `false` makes cron read-only too |
 | `recall_indicator` | `true` | Report recalled facts to the core's recall indicator ("🧠 Holographic — recalled 2 memories"). On Telegram and other messaging platforms that line arrives as a separate message before the reply; `false` turns it off, recall itself is unchanged. Like every key here it is read when the gateway starts: a change takes effect after a restart |
 | `embeddings` | `off` | `on`: search by meaning through an embeddings API you name (`embedding_url`, `embedding_model`, `embedding_key_env`, …) — ONLINE: fact texts and messages are sent there. See [Search by meaning](#search-by-meaning-optional-online) |
+| `rerank` | `off` | `on`: rescore the candidate pool before a turn with a cross-encoder (`rerank_url`, `rerank_model`, `rerank_mode`, …) — ONLINE: candidate texts and the message are sent there. See [Rescoring by a cross-encoder](#rescoring-by-a-cross-encoder-optional-online) |
 | `scope` | `profile` | `user`: a separate database per user (`holographic-users/<platform>-<user id>.db` next to `db_path`); in a shared chat the store follows the author of each turn, and with no user identity nothing is recalled or written. `chat`: a separate database per chat (`holographic-chats/<platform>-<chat id>.db`) — for one bot serving many unrelated groups; `thread`: per forum topic / thread (`…-t<thread id>.db`), the chat's own database outside threads. Without a chat (CLI, cron, subagents) nothing is recalled or written. File names: an id made only of `A-Z a-z 0-9 _ . -` is used as is (Telegram's `-1001234567890`); any other character becomes `_`, the name is cut to 60 characters, and `-<first 10 hex of sha256(the original "platform-id")>` is appended, so distinct ids never share a file |
 
 A number that is not one (`hrr_dim: abc`, `min_trust_threshold: high`) turns memory off for the session: the system
@@ -814,6 +815,53 @@ stored (0 of 30), came in by meaning. On this store keywords and names do most o
 one recall in these questions; a lower bar on the same questions: margin 0.5 added two with nothing wrong, 0 added
 four but brought two wrong facts and three of the 30 other questions. The synthetic table above, whose facts carry no
 keywords, is a separate benchmark; one store does not show what another will do.
+
+## Rescoring by a cross-encoder (optional, online)
+
+Off by default (``rerank: off``): words, keywords, HRR and, when on, meaning decide as above, with 0.17.7's scores and
+recall — a test pins them on a store of twenty facts in five languages. Turn it on to add a second stage: a
+cross-encoder reranker (Cohere's ``/v1/rerank`` shape; OpenAI has no rerank API) reorders the candidate pool before a
+turn, after the blend. It lives in its own module (``rerank.py``), needs no new dependency, and makes one synchronous
+HTTP call at recall time; a failure or a slow answer only keeps the current order and pauses the endpoint (60 s
+doubling to 900 s). Two modes, the two designs compared in
+[#9](https://github.com/itpartypattaya/hermes-plugin-holographic/issues/9):
+
+```yaml
+plugins:
+  hermes-memory-store:
+    rerank: on
+    rerank_mode: reorder_before_gate   # or gate_reads_score
+    rerank_url: http://127.0.0.1:8080/v1/rerank   # llama-server --reranking --embedding --pooling rank
+    rerank_model: local-reranker       # the endpoint's --alias
+```
+
+- **reorder_before_gate** — the reranker reorders the pool, then the relevance (coverage) gate decides as always. The
+  conservative mode: the cross-encoder only advises the order.
+- **gate_reads_score** — the cross-encoder's score IS the gate: the pool it ranked decides, coverage is not consulted.
+  A top that does not clear the runner-up by ``rerank_margin`` (1.5) admits nothing — a flat score spread, chit-chat
+  where no fact stands out — and a single candidate (no runner-up to compare) or a failed call falls back to the
+  coverage gate.
+
+Other keys: ``rerank_top_k`` (40: how deep a pool the cross-encoder sees; the first stage's limit is widened to
+match), ``rerank_weight`` (0 = order-only, recommended; >0 = the min-max-normalised cross-encoder score blended into
+the blend score), ``rerank_timeout`` (3 s), ``rerank_margin`` (1.5: the ratio the gate mode requires between the top
+score and the runner-up). A query that holds a secret is never sent.
+
+Measured on a real llama-server with bge-m3-reranker-v2 (Bge-M3-568M-Q4_K_M) on a CPU box, three languages
+(en/ru/zh), 60 questions and 15 that must recall nothing (``tools/benchmark_rerank.py --endpoint=…``):
+
+| mode | recall@5 | wrong-entity | noise | p50 (ms) | p95 (ms) |
+|---|---|---|---|---|---|
+| off | 100% (60/60) | 0 | 0% | 4 | 8 |
+| reorder_before_gate, weight 0 | 100% (60/60) | 0 | 0% | 38 | 52 |
+| reorder_before_gate, weight 0.5 | 100% (60/60) | 0 | 0% | 40 | 52 |
+| gate_reads_score, weight 0 | 100% (60/60) | 0 | 0% | 38 | 51 |
+| gate_reads_score, weight 0.5 | 100% (60/60) | 0 | 0% | 37 | 51 |
+
+This store's recall was already 100% before the turn (its data are calibrated to ≥95%): the reranker keeps it there.
+The honest number this table adds is the per-turn cost — 3-4 ms to 37-40 ms median, 8 ms to ~52 ms p95 — the price
+the maintainer's acceptance asked to see next to the gain. A second reranker of different quality and a larger public
+set are run before merging (issue #9).
 
 ## Data and privacy
 

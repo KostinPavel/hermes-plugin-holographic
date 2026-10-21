@@ -7,6 +7,9 @@ prefetch_repeat_turns (6), recall_indicator (true), recall_source (off | short),
 user | chat | thread); search by meaning, online and off by default: embeddings (off | on), embedding_url,
 embedding_model, embedding_key_env, embedding_dimensions, embedding_timeout, embedding_min_score,
 embedding_prefetch_facts, embedding_weight, embedding_space, embedding_catch_up_seconds (embeddings.py, README).
+Rescoring by a cross-encoder (rerank.py, off by default): rerank (off | on), rerank_mode (reorder_before_gate |
+gate_reads_score), rerank_url, rerank_model, rerank_top_k, rerank_weight, rerank_margin,
+rerank_timeout (README).
 Fact history, provenance and forgetting: docs/history.md."""
 
 from __future__ import annotations
@@ -28,6 +31,7 @@ from tools.registry import tool_error
 from utils import is_truthy_value
 from . import embeddings
 from . import holographic as hrr
+from . import rerank
 from .history import ORIGINS, HistoryTooNew, NotFound, parse_day
 from .store import DuplicateContentError, MemoryStore, unusable_names
 from .retrieval import FactRetriever, error_kind
@@ -918,6 +922,10 @@ _SCOPES = frozenset({"profile", "user", "chat", "thread"})
 # banks and the write checks, so a chat_id column would need a filter in each of them; a file isolates by construction.
 _CHAT_SCOPES = frozenset({"chat", "thread"})
 _PREFETCH_CANDIDATES, _PREFETCH_FACTS, _ENTITY_FACTS = 15, 5, 2
+# Rescoring (rerank.py, RFC #9): how far the first stage's limit is widened when rerank is on — the cross-encoder
+# receives a pool several times deeper than the final need (rerank_top_k), and the FTS query is cheap while the
+# rerank call is what costs, so widening the candidates is nearly free.
+_RERANK_WIDEN = 4
 _PREFETCH_LINE_CHARS = 300
 _COUNT_FLUSH_AT = 25  # buffered recall counts are written in one go at this many, and at session boundaries
 _MAX_TRACKED_SESSIONS, _MAX_TRACKED_FACTS = 16, 512
@@ -1057,6 +1065,13 @@ class HolographicMemoryProvider(MemoryProvider):
         if self._embedder and self._embedder.unavailable():
             logger.warning("holographic: search by meaning is on but cannot run (%s); words only",
                            self._embedder.unavailable())
+        # Second-stage rescoring (offline-safe, off by default): the cross-encoder reorders the candidate pool after
+        # the blend. Shared by every store; one synchronous call at recall time, backoff on failure (rerank.py).
+        self._rerank = rerank.settings_from(self._config)
+        self._rescorer = (rerank.Rescorer(self._rerank, secret_check=_secret_in) if self._rerank else None)
+        if self._rescorer and self._rescorer.unavailable():
+            logger.warning("holographic: rerank is on but cannot run (%s); the current order is kept",
+                           self._rescorer.unavailable())
         self._ident: dict[str, str] = {}  # chat / user Hermes named at start (a version's source)
         self._author: dict = {}  # the author of the current turn, when the platform says
         self._writable = self._tool_writable = True
@@ -1161,6 +1176,32 @@ class HolographicMemoryProvider(MemoryProvider):
             {"key": "embedding_prefetch_facts", "description": "Facts recalled before a turn on meaning alone, when "
              "they stand far out (0 = meaning only reorders facts that share words, and fact_store search uses it)",
              "default": current("embedding_prefetch_facts", "1"), "choices": ["0", "1", "2", "3"]},
+            {"key": "rerank", "description": "Second-stage rescoring (OFFLINE-SAFE, local): a cross-encoder reorders "
+             "the candidate pool after the blend, one call to the /v1/rerank endpoint below at recall time. "
+             "Off: the current order is kept exactly",
+             "default": current("rerank", "off"),
+             "choices": ["off", "on"]},
+            {"key": "rerank_mode", "description": "reorder_before_gate: the pool is reordered, then the relevance "
+             "gate decides; gate_reads_score: the gate reads the cross-encoder's score",
+             "default": current("rerank_mode", "reorder_before_gate"),
+             "choices": ["reorder_before_gate", "gate_reads_score"]},
+            {"key": "rerank_url", "description": "Cohere-compatible rerank API (https; plain http only to "
+             "localhost or a private address, e.g. llama-server --reranking)",
+             "default": current("rerank_url", "http://127.0.0.1:8080/v1/rerank")},
+            {"key": "rerank_model", "description": "Rerank model name (the endpoint's --alias)",
+             "default": current("rerank_model", "local-reranker")},
+            {"key": "rerank_top_k", "description": "How deep a pool the cross-encoder sees (the first stage's limit "
+             "is widened to match; several times the final need)",
+             "default": current("rerank_top_k", "40")},
+            {"key": "rerank_weight", "description": "0 = order-only (recommended), >0 = min-max blend of the "
+             "cross-encoder's score with the blend score",
+             "default": current("rerank_weight", "0.0")},
+            {"key": "rerank_margin", "description": "gate_reads_score admits a pool only when its top score clears "
+             "the runner-up by this ratio (model-independent; a flat spread, chit-chat, admits nothing)",
+             "default": current("rerank_margin", "1.5")},
+            {"key": "rerank_timeout", "description": "Seconds a rerank call may take (recall's only protection; "
+             "a slow local endpoint is the normal case)",
+             "default": current("rerank_timeout", "3.0")},
         ]
 
     def _db_path(self, hermes_home: str) -> str:
@@ -1377,11 +1418,59 @@ class HolographicMemoryProvider(MemoryProvider):
             key = f"{session_id or self._session_id or ''}|{self._scope_key or ''}"
             turn = self._turns[key] = self._turns.get(key, 0) + 1
             meaning = self._meaning_of(query, before_turn=True)
-            candidates = self._retriever.search(query, min_trust=self._min_trust, limit=_PREFETCH_CANDIDATES,
-                                                meaning=meaning)
+            # Rescoring widens the first stage's pool so the cross-encoder sees several times the final need (a fact
+            # BM25 buried at 20-50 can be lifted to the top, RFC #9). The pool must reach at least rerank_top_k.
+            if self._rescorer:
+                width = max(_PREFETCH_CANDIDATES * _RERANK_WIDEN, int(self._rescorer.settings.top_k))
+            else:
+                width = _PREFETCH_CANDIDATES
+            candidates = self._retriever.search(query, min_trust=self._min_trust, limit=width, meaning=meaning)
+            # Two integration points, both strictly after the blend (rerank.py):
+            #   reorder_before_gate — the pool is reordered, then the relevance (coverage) gate decides;
+            #   gate_reads_score — the cross-encoder's score IS the gate: the pool the reranker ranked decides,
+            #   coverage is not consulted; a top that does not clear the runner-up by rerank_margin admits nothing,
+            #   and a single candidate (no runner-up) falls back to the coverage gate.
+            # Any failure keeps the current order (rescorer.scores returns None).
+            ranked = None
+            if self._rescorer and candidates:
+                ranked = self._rescorer.scores(query, [f.get("content") or "" for f in candidates])
+                if ranked is not None:
+                    order = [i for i, _ in ranked if i < len(candidates)]
+                    # rerank_weight > 0: min-max-normalised cross-encoder score blended into the blend score, so the
+                    # order is decided by both, not by the reranker alone (order-only when weight is 0).
+                    if self._rescorer.settings.weight > 0.0 and ranked:
+                        scores = [s for _, s in ranked]
+                        lo, hi = min(scores), max(scores)
+                        span = (hi - lo) or 1.0
+                        w = self._rescorer.settings.weight
+                        for i, s in ranked:
+                            if i < len(candidates):
+                                score = candidates[i].get("score") or 0.0
+                                candidates[i]["score"] = (1.0 - w) * score + w * ((s - lo) / span)
+                        candidates.sort(key=lambda f: f.get("score") or 0.0, reverse=True)
+                    else:
+                        candidates = [candidates[i] for i in order]
             # Recently injected facts are dropped BEFORE the top five are taken, so they leave room for others; so are
             # facts the write filter would refuse today (_recall_problem).
-            fresh = [f for f in self._retriever.relevant(query, candidates, self._min_coverage)
+            if self._rescorer and self._rescorer.settings.mode == "gate_reads_score" and ranked:
+                # The cross-encoder's score is the gate: the pool is admitted only when its top score clears the
+                # runner-up by rerank_margin (model-independent — absolute scores vary by model). A flat spread,
+                # chit-chat where no fact stands out, admits nothing. On a failed call (ranked None) or a single
+                # candidate (no runner-up to compare, so the model's confidence cannot be judged) the coverage
+                # gate below decides — a single BM25 hit can still be chit-chat (a reranker's -10.1 on it is the
+                # signal, but an absolute floor would be endpoint-dependent).
+                scores = [s for _, s in ranked]
+                best = scores[0]
+                second = scores[1] if len(scores) > 1 else None
+                if second is not None and best < second * self._rescorer.settings.margin:
+                    gate = []
+                elif second is None:
+                    gate = self._retriever.relevant(query, candidates, self._min_coverage)
+                else:
+                    gate = candidates  # the reranker ranked the pool: its order is the gate
+            else:
+                gate = self._retriever.relevant(query, candidates, self._min_coverage)
+            fresh = [f for f in gate
                      if self._not_recent(key, f, turn) and self._recallable(f)][:_PREFETCH_FACTS]
             have, extra = {f["fact_id"] for f in fresh}, 0
             # Search by meaning: the relevance gate wants the message's own words, which a paraphrase does not have;
@@ -1956,6 +2045,13 @@ class HolographicMemoryProvider(MemoryProvider):
         results = self._retriever.search(a["query"], category=a.get("category"), min_trust=self._trust_floor(a),
                                          limit=limit, meaning=meaning)
         words = list(results)
+        # Rescoring, after search() and before the by_meaning / beyond_words splice (rerank.py): the pool is
+        # reordered, then the meaning splice fills what is left. Any failure keeps the current order.
+        if self._rescorer and results:
+            indexes = self._rescorer.order(a["query"], [f.get("content") or "" for f in results])
+            if indexes is not None:
+                results = [results[i] for i in indexes if i < len(results)]
+                words = list(results)
         min_score = self._embedding.min_score if self._embedding is not None else None
         if meaning is not None and len(results) < limit:  # by meaning: after every fact that holds the words
             for fact in self._retriever.by_meaning(meaning, exclude={f["fact_id"] for f in results},

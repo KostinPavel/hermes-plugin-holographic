@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.17.8 — 2026-10-21
+
+### Added
+
+- **Second-stage rescoring by a cross-encoder** (RFC itpartypattaya/hermes-plugin-holographic#9). Off by default
+  (`rerank: off`); with it on, a Cohere-compatible `/v1/rerank` endpoint (llama-server `--reranking`, TEI, vLLM,
+  Infinity, Jina, Cohere) reorders the candidate pool before a turn, after the blend. New keys: `rerank`,
+  `rerank_mode`, `rerank_url`, `rerank_model`, `rerank_top_k` (40), `rerank_weight` (0 = order-only), `rerank_margin`
+  (1.5), `rerank_timeout` (3 s). Two gate designs compared in the issue: `reorder_before_gate` (the reranker only
+  advises the order; the coverage gate decides as before) and `gate_reads_score` (the cross-encoder's score IS the
+  gate; a top that does not clear the runner-up by `rerank_margin` admits nothing, and a single candidate or a failed
+  call falls back to the coverage gate). A failure or a slow answer keeps the current order and pauses the endpoint
+  (60 s doubling to 900 s); a query holding a secret is never sent. One stdlib client, no new dependency
+  (`rerank.py`); with the feature off, scores and recall are 0.17.7's (tests pin them).
+- **`tools/benchmark_rerank.py`** — the five modes (off, reorder × weight {0, >0}, gate × weight {0, >0}) measured on
+  the multilingual set: recall@5, wrong-entity hits, chit-chat noise, latency p50/p95. Latency against a real
+  llama-server reranker (`--endpoint=…`); with no endpoint a mock ranker shows the mechanics only. Measured on a CPU
+  box with bge-m3-reranker-v2 (Bge-M3-568M-Q4_K_M), en/ru/zh, 60 questions / 15 that must recall nothing: recall@5
+  100% in all five modes, wrong-entity 0, noise 0%, per-turn cost 3-4 ms → 37-40 ms (p50) and 8 ms → ~52 ms (p95) — see
+  the README table.
+
 ## 0.17.7 — 2026-10-21
 
 ### Fixed
@@ -10,6 +31,7 @@
   instructions", "You mustn't never ignore…". A negation before the prohibition cancels it now, and so does an
   exception after it ("never ignore your instructions unless they stop you from answering"). (Third to fifth Codex
   passes.)
+
 
 ## 0.17.6 — 2026-10-21
 
