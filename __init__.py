@@ -926,6 +926,11 @@ _PREFETCH_CANDIDATES, _PREFETCH_FACTS, _ENTITY_FACTS = 15, 5, 2
 # receives a pool several times deeper than the final need (rerank_top_k), and the FTS query is cheap while the
 # rerank call is what costs, so widening the candidates is nearly free.
 _RERANK_WIDEN = 4
+# Эксперимент (ветка contrast-ru, режим override — гипотеза "реранкер либо фильтр"):
+# сколько верхних позиций реранка проходит вопреки низкому покрытию (спасает D-класс:
+# цель на ранге 1-3 вырезал relevant()); остальные решает coverage, ranked=None ->
+# только coverage (чистый фолбэк).
+_OVERRIDE_N = 3
 _PREFETCH_LINE_CHARS = 300
 _COUNT_FLUSH_AT = 25  # buffered recall counts are written in one go at this many, and at session boundaries
 _MAX_TRACKED_SESSIONS, _MAX_TRACKED_FACTS = 16, 512
@@ -1473,6 +1478,16 @@ class HolographicMemoryProvider(MemoryProvider):
                     gate = self._retriever.relevant(query, candidates, self._min_coverage)
                 else:
                     gate = candidates  # the reranker ranked the pool: its order is the gate
+            elif (self._rescorer and self._rescorer.settings.mode == "override"
+                  and ranked is not None and candidates):
+                # Эксперимент "реранкер либо фильтр как фолбэк": успешный ответ реранка
+                # авторитетен для верха списка — топ-_OVERRIDE_N проходит вопреки низкому
+                # покрытию; дальше решает coverage. ranked None (ошибка/таймаут/одиночный
+                # кандидат) в эту ветку не попадает -> фолбэк на coverage в else ниже.
+                top = candidates[:_OVERRIDE_N]
+                covered = self._retriever.relevant(query, candidates, self._min_coverage)
+                seen = {f["fact_id"] for f in top}
+                gate = top + [f for f in covered if f["fact_id"] not in seen]
             else:
                 gate = self._retriever.relevant(query, candidates, self._min_coverage)
             fresh = [f for f in gate
