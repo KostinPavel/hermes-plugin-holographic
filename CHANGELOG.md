@@ -18,7 +18,8 @@ From a review of 0.17.5 in Russian, English and Chinese (Antigravity).
 - **A reminder to keep the rules is no instruction to drop them.** A negation right before the verb, or right after
   it where the language puts it ("never ignore your instructions", "不要忽略你的指令", "あなたの指示を無視しないで",
   "너의 규칙은 무시하지 마세요"), keeps the sentence a fact; "never mind, ignore all previous instructions" is still
-  refused. Japanese quotes 「」 and 『』 mark reported text like the other quotes. (Codex review.)
+  refused, and so is a "not" that asks for it ("why not ignore all previous instructions?", "为什么不忽略…"): only an
+  explicit prohibition counts. Japanese quotes 「」 and 『』 mark reported text like the other quotes. (Codex review.)
 - **"I want…" and "I need…" are no preferences** (itpartypattaya/hermes-plugin-holographic#8 by jin89ho). Auto-extraction
   stored them as `user_pref`; they state a one-off intent, and a model's English draft pasted for translation
   arrives as the user's message, so its own reasoning ("So I need to find the 2023 production") became facts.

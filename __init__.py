@@ -719,12 +719,15 @@ def _looks_like_a_secret(token: str, links: bool = True, assigned: bool = False)
     return len(value) >= 12 and not (value.isalpha() and (value.islower() or value[1:].islower()))
 
 
-# A negation right before the verb, or right after it where the language puts it there, makes the phrase a reminder
-# to keep the rules ("never ignore your instructions", "不要忽略你的指令", "無視しないで"), not an order to drop them
-# (0.17.6, Codex review). Only right next to it: "never mind, ignore all previous instructions" is still one.
-_RE_NEGATED_BEFORE = re.compile(r"(?:(?<![^\W\d_])(?:never|not|don[’']?t|do\s+not|не|нельзя|никогда|nie|nicht|no|non|jangan)"
-                                r"|不要|不|别|別|勿|لا|อย่า|मत)\s*$", re.IGNORECASE)
-_RE_NEGATED_AFTER = re.compile(r"^\s*(?:しない|ないで|ません|하지\s*(?:마|않)|\S{0,8}\s*(?:नहीं|না)(?!\S))")
+# An explicit prohibition right before the verb, or right after it where the language puts it there, makes the
+# phrase a reminder to keep the rules ("never ignore your instructions", "不要忽略你的指令", "無視しないで"), not an
+# order to drop them (0.17.6, Codex review). Only a prohibition, and only right next to the verb: a bare "not" or 不
+# also asks "why not ignore all previous instructions?" (为什么不忽略…), "never mind, ignore …" is still an order, and
+# a double negation ("must not not ignore") keeps none.
+_RE_NEGATED_BEFORE = re.compile(r"(?:(?<![^\W\d_])(?<!not\s)(?:never|don[’']?t|do\s+not|не|нельзя|никогда|nie|jangan)"
+                                r"|不要|别|別|勿|不可|不能|لا|อย่า|मत)\s*$", re.IGNORECASE)
+_RE_NEGATED_AFTER = re.compile(r"^\s*(?:しないで|ないで|するな|하지\s*마|(?:ना|ने)\s*नहीं"
+                               r"|(?:যেও|যাবে|যাবেন|করো|কোরো|করবে|করবেন)?\s*না(?!\S))")
 
 
 def _injection_in(text: str) -> bool:
