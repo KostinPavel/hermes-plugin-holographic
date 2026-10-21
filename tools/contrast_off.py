@@ -48,6 +48,16 @@ assert _cspec and _cspec.loader
 contrast = importlib.util.module_from_spec(_cspec)
 _cspec.loader.exec_module(contrast)
 
+# Режимы PR #10 против реального эндпоинта (llama-server, логиты — проверено пробой)
+RERANK_URL = "http://127.0.0.1:8091/v1/rerank"
+MODES = {
+    "off": None,
+    "reorder_0": ("reorder_before_gate", "0.0"),
+    "reorder_05": ("reorder_before_gate", "0.5"),
+    "gate_0": ("gate_reads_score", "0.0"),
+    "gate_05": ("gate_reads_score", "0.5"),
+}
+
 
 def _provider(db_path, **config) -> HolographicMemoryProvider:
     p = HolographicMemoryProvider(config={"db_path": str(db_path), "hrr_dim": 1024, **config})
@@ -91,15 +101,21 @@ def _names_fit_probe(p) -> str:
     return "всегда True (патч подхвачен)" if fits else "реальный метод (отвергает чужой факт)"
 
 
-def run(axis: str) -> dict:
-    """axis='on' — names_fit как в коде; 'off' — всегда True (тестовая подмена)."""
-    db = Path(tempfile.gettempdir()) / f"contrast_ru_{axis}.db"
+def run(axis: str, mode: str = "off") -> dict:
+    """axis='on' — names_fit как в коде; 'off' — всегда True (тестовая подмена).
+    mode — ключ MODES; 'off' = без вызовов, остальные — реальный эндпоинт."""
+    spec = MODES[mode]
+    config = {}
+    if spec:
+        config = {"rerank": "on", "rerank_mode": spec[0], "rerank_weight": spec[1],
+                  "rerank_url": RERANK_URL, "rerank_model": "local-reranker"}
+    db = Path(tempfile.gettempdir()) / f"contrast_ru_{axis}_{mode}.db"
     for suffix in ("", "-shm", "-wal"):
         try:
             Path(str(db) + suffix).unlink()
         except OSError:
             pass
-    p = _provider(db)
+    p = _provider(db, **config)
     if axis == "off":
         p._retriever.names_fit = lambda query, fact: True
     probe = _names_fit_probe(p)
@@ -147,7 +163,7 @@ def run(axis: str) -> dict:
     for r in pairs_out:
         by_type.setdefault(r["type"], []).append(r["ok"])
     return {
-        "axis": axis, "probe": probe, "pairs": pairs_out,
+        "axis": axis, "mode": mode, "probe": probe, "pairs": pairs_out,
         "pair_pass": sum(r["ok"] for r in pairs_out),
         "by_type": {t: (sum(v), len(v)) for t, v in by_type.items()},
         "question_hits": sum(not d["miss"] for r in pairs_out for d in r["per"]),
@@ -161,14 +177,16 @@ def run(axis: str) -> dict:
     }
 
 
-def report(res: dict) -> None:
-    print(f"\n=== names_fit {res['axis']} | проба: {res['probe']} ===")
+def report(res: dict, verbose: bool = False) -> None:
+    print(f"\n=== names_fit {res['axis']} / режим {res['mode']} | проба: {res['probe']} ===")
     print(f"пар пройдено: {res['pair_pass']}/{len(res['pairs'])} | по типам: "
           + ", ".join(f"{t} {a}/{b}" for t, (a, b) in sorted(res["by_type"].items())))
     print(f"вопросов в цель: {res['question_hits']}/{res['questions']} | "
           f"MISS {res['miss']} | SHADOW (чужая выше своей) {res['shadow']} | "
           f"partner в top-5: {res['partner_top5']} | "
           f"тишина chit-chat {res['quiet']}/{res['total']} | p50 {res['p50_ms']:.1f} мс")
+    if not verbose:
+        return
     for r in res["pairs"]:
         mark = "OK  " if r["ok"] else "FAIL"
         print(f"  {mark} {r['id']:<7} [{r['type']}]")
@@ -188,11 +206,15 @@ def report(res: dict) -> None:
 if __name__ == "__main__":
     if not _AGENT.is_dir():
         raise SystemExit(f"нет каталога hermes-agent: {_AGENT} (задай HERMES_AGENT_REPO)")
-    rows = [run(axis) for axis in ("on", "off")]
+    rows = [run(axis, mode) for axis in ("on", "off") for mode in MODES]
+    print("\n=== СВОДНАЯ ТАБЛИЦА (парная метрика, реальный эндпоинт) ===")
+    print(f"{'ось':<4} {'режим':<11} {'пар':>4} {'MISS':>5} {'WRONG5':>7} "
+          f"{'тишина':>7} {'шум':>5} {'p50мс':>7}")
     for r in rows:
-        report(r)
-    print("\nИТОГ (сравнение осей):")
+        noise = (r["total"] - r["quiet"]) / r["total"] if r["total"] else 0.0
+        print(f"{r['axis']:<4} {r['mode']:<11} {r['pair_pass']:>4} {r['miss']:>5} "
+              f"{r['partner_top5']:>7} {f'{r['quiet']}/{r['total']}':>7} {noise:>5.0%} {r['p50_ms']:>7.1f}")
+    # детали — только для оси names_fit on (off-режим на обеих осях идентичен)
     for r in rows:
-        print(f"  names_fit {r['axis']}: пар {r['pair_pass']}/15, MISS {r['miss']}, "
-              f"SHADOW {r['shadow']}, partner@top5 {r['partner_top5']}, "
-              f"тишина {r['quiet']}/{r['total']} | проба: {r['probe']}")
+        if r["axis"] == "on":
+            report(r, verbose=True)
