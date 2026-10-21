@@ -65,3 +65,12 @@ def test_durable_use_preference_is_still_extracted(tmp_path):
     facts = [f["content"] for f in provider._store.list_facts(limit=100)]
     assert facts == ["I use Dark mode in every editor on my machines."]
     provider.shutdown()
+
+
+def test_russian_khochu_is_an_intent_too(tmp_path):
+    """0.17.6: "хочу" left the Russian pattern for the reason want/need left the English one."""
+    provider = _make_provider(tmp_path, auto_extract=True)
+    provider.on_session_end([_user("Я хочу уточнить дату встречи с подрядчиком. Я предпочитаю короткие ответы со ссылками.")])
+    facts = [f["content"] for f in provider._store.list_facts(limit=100)]
+    assert facts == ["Я предпочитаю короткие ответы со ссылками."]
+    provider.shutdown()

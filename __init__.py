@@ -146,10 +146,11 @@ _EXTRACT_CATEGORIES = (
     # date", "I need the 2023 production"), and a user who pastes a model's English draft to translate it
     # sends that draft as role="user", so the model's own reasoning sentences got stored as user_pref facts.
     # prefer/like/love/use keep the durable-preference signal without it.
+    # The same for "хочу" in Russian (0.17.6): "я хочу уточнить дату" is an intent, not a preference.
     ([re.compile(r'\bI\s+(?:prefer|like|love|use)\s+\S', re.IGNORECASE),
       re.compile(r'\bmy\s+(?:favorite|favourite|preferred|default)\s+\w+\s+is\s+\S', re.IGNORECASE),
       re.compile(r'\bI\s+(?:always|never|usually)\s+\S', re.IGNORECASE),
-      re.compile(r'(?:^|\s)я\s+(?:предпочитаю|люблю|использую|пользуюсь|хочу|обычно|всегда|никогда|не\s+ем|не\s+пью)\s+\S', re.IGNORECASE),
+      re.compile(r'(?:^|\s)я\s+(?:предпочитаю|люблю|использую|пользуюсь|обычно|всегда|никогда|не\s+ем|не\s+пью)\s+\S', re.IGNORECASE),
       re.compile(r'(?:^|\s)мо[йяеи]\s+любим\w+\s+\S', re.IGNORECASE),
       # Chinese, Traditional and Simplified (after itpartypattaya/hermes-plugin-holographic#2 by au61987ai-code). The
       # sentence must open with the preference — "I" or no subject — so "你喜歡什麼" (what do YOU like) and "他喜歡吃辣"
