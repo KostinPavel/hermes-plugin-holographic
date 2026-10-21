@@ -727,7 +727,7 @@ def _looks_like_a_secret(token: str, links: bool = True, assigned: bool = False)
 _RE_NEGATED_BEFORE = re.compile(r"(?:(?<![^\W\d_])(?:never|don[’']?t|do\s+not|не|нельзя|никогда|nie|jangan)"
                                 r"|不要|别|別|勿|不可|不能|لا|อย่า|मत)\s*$", re.IGNORECASE)
 # A second negation before the prohibition cancels it: "must not never ignore", "不能不要忽略" (third Codex pass).
-_RE_ANY_NEGATION_END = re.compile(r"(?:(?<![^\W\d_])(?:not|never|no|n[’']t|не|ни|nie|nicht)|不能|不可|不要|不|没|沒|别|別|勿|لا|ไม่|मत|नहीं)"
+_RE_ANY_NEGATION_END = re.compile(r"(?:(?<![^\W\d_])(?:not|never|no|не|ни|nie|nicht)|n[’']t|不能|不可|不要|不|没|沒|别|別|勿|لا|ไม่|मत|नहीं)"
                                   r"\s*$", re.IGNORECASE)
 _RE_NEGATED_AFTER = re.compile(r"^\s*(?:(?:しないで|ないで)(?![はも])|するな|하지\s*마|(?:ना|ने)\s*नहीं"
                                r"|(?:যেও|যাবে|যাবেন|করো|কোরো|করবে|করবেন)?\s*না(?!\S))")
