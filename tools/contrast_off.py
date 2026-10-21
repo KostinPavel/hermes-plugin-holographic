@@ -1,0 +1,198 @@
+# -*- coding: utf-8 -*-
+"""Прогон contrast_ru в режиме off (без эндпоинта): парная метрика по 15 парам,
+recall@5, WRONG-ENTITY (чужая цель затеняет свою), тишина chit-chat,
+две оси names_fit (on / off) + проба, что подмена names_fit реально подхвачена.
+
+Запуск (Windows / git-bash):
+
+    HERMES_AGENT_REPO="C:/Users/Pavel/AppData/Local/hermes/hermes-agent" \\
+        python tools/contrast_off.py
+
+Правила провала пары (достаточно одного запроса):
+  MISS   — своей цели нет в recall;
+  SHADOW — partner-цель (факт второго запроса пары) стоит ВЫШЕ своей;
+  WRONG5 — partner-цель в top-5: именно это меряет мейнтейнер (wrong-entity);
+           порядок чинит: кросс-энкодер опускает чужую ниже 5-й строчки.
+
+names_fit OFF эмулируется подменой метода в тестовом прогоне
+(provider._retriever.names_fit -> всегда True); продакшн-код не меняется.
+"""
+from __future__ import annotations
+
+import importlib.util
+import json
+import os
+import statistics
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+_REPO = Path(__file__).resolve().parent.parent
+_AGENT = Path(os.environ.get("HERMES_AGENT_REPO") or Path.home() / ".hermes" / "hermes-agent").expanduser()
+for _p in (str(_AGENT), str(_REPO.parent)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+_spec = importlib.util.spec_from_file_location(
+    "hermes_plugin_holographic", _REPO / "__init__.py", submodule_search_locations=[str(_REPO)])
+assert _spec and _spec.loader
+_mod = importlib.util.module_from_spec(_spec)
+sys.modules["hermes_plugin_holographic"] = _mod
+_spec.loader.exec_module(_mod)
+
+from hermes_plugin_holographic import HolographicMemoryProvider  # noqa: E402
+
+_cspec = importlib.util.spec_from_file_location("contrast_ru", _REPO / "tools" / "contrast_ru.py")
+assert _cspec and _cspec.loader
+contrast = importlib.util.module_from_spec(_cspec)
+_cspec.loader.exec_module(contrast)
+
+
+def _provider(db_path, **config) -> HolographicMemoryProvider:
+    p = HolographicMemoryProvider(config={"db_path": str(db_path), "hrr_dim": 1024, **config})
+    p.initialize(session_id="contrast")
+    return p
+
+
+def _fill(p) -> dict[int, str]:
+    """FACTS в магазин; возвращает fact_id -> key."""
+    back: dict[int, str] = {}
+    for key, (text, entities) in contrast.FACTS.items():
+        r = json.loads(p.handle_tool_call("fact_store",
+                                          {"action": "add", "content": text, "entities": entities}))
+        back[int(r["fact_id"])] = key
+    return back
+
+
+def _inject(p, query: str) -> list[int]:
+    """fact_id prefetch до поворота, В ПОРЯДКЕ ранжирования (та же расшифровка
+    блока, что в benchmark_rerank)."""
+    block = p.prefetch(query)
+    if not block:
+        return []
+    ids: list[int] = []
+    for line in block.splitlines()[1:]:  # строки "- #<id> [trust] <text>"
+        try:
+            ids.append(int(line.split()[1][1:]))
+        except (IndexError, ValueError):
+            pass
+    return ids
+
+
+def _names_fit_probe(p) -> str:
+    """Подхватилась ли подмена: запрос про Петра + факт про Лену."""
+    q = "Когда день рождения Петра?"
+    fact = {"content": contrast.FACTS["lena_bd"][0]}
+    try:
+        fits = bool(p._retriever.names_fit(q, fact))
+    except Exception as exc:  # noqa: BLE001 — диагностическая проба
+        return f"ошибка вызова: {type(exc).__name__}: {exc}"
+    return "всегда True (патч подхвачен)" if fits else "реальный метод (отвергает чужой факт)"
+
+
+def run(axis: str) -> dict:
+    """axis='on' — names_fit как в коде; 'off' — всегда True (тестовая подмена)."""
+    db = Path(tempfile.gettempdir()) / f"contrast_ru_{axis}.db"
+    for suffix in ("", "-shm", "-wal"):
+        try:
+            Path(str(db) + suffix).unlink()
+        except OSError:
+            pass
+    p = _provider(db)
+    if axis == "off":
+        p._retriever.names_fit = lambda query, fact: True
+    probe = _names_fit_probe(p)
+    back = _fill(p)
+
+    pairs_out, lat = [], []
+    for pair in contrast.PAIRS:
+        partner = [pair["queries"][1 - i][1] for i in range(len(pair["queries"]))]
+        pair_ok, per = True, []
+        for i, (query, target) in enumerate(pair["queries"]):
+            p.on_session_switch(f"c_{pair['id']}_{i}", reset=True)
+            t0 = time.perf_counter()
+            found = _inject(p, query)
+            lat.append(time.perf_counter() - t0)
+            keys = [back[fid] for fid in found if fid in back]
+            own_pos = keys.index(target) + 1 if target in keys else None
+            part = partner[i]
+            if part == target:
+                part_pos = None  # пара-парафразы: оба запроса к одной цели — partner-нет
+            else:
+                part_pos = keys.index(part) + 1 if part in keys else None
+            miss = own_pos is None
+            shadow = part_pos is not None and (own_pos is None or part_pos < own_pos)
+            wrong5 = part_pos is not None and part_pos <= 5  # чужая в top-5: её и меряет
+            # мейнтейнер; порядок чинит — кросс-энкодер опускает чужую ниже 5-й
+            per.append({"q": query, "own": target, "own_pos": own_pos, "partner": part,
+                        "partner_pos": part_pos, "keys": keys, "miss": miss, "shadow": shadow,
+                        "wrong5": wrong5})
+            pair_ok = pair_ok and not (miss or shadow or wrong5)
+        pairs_out.append({"id": pair["id"], "type": pair["type"], "ok": pair_ok,
+                          "note": pair.get("note", ""), "per": per})
+
+    quiet = total = 0
+    chit_detail = []
+    for i, (query, cat) in enumerate(contrast.CHITCHAT):
+        p.on_session_switch(f"q_{i}", reset=True)
+        found = _inject(p, query)
+        total += 1
+        quiet += not found
+        if found:
+            chit_detail.append((query, [back[fid] for fid in sorted(found)]))
+    p.shutdown()
+
+    by_type: dict[str, list[bool]] = {}
+    for r in pairs_out:
+        by_type.setdefault(r["type"], []).append(r["ok"])
+    return {
+        "axis": axis, "probe": probe, "pairs": pairs_out,
+        "pair_pass": sum(r["ok"] for r in pairs_out),
+        "by_type": {t: (sum(v), len(v)) for t, v in by_type.items()},
+        "question_hits": sum(not d["miss"] for r in pairs_out for d in r["per"]),
+        "questions": sum(len(r["per"]) for r in pairs_out),
+        "miss": sum(d["miss"] for r in pairs_out for d in r["per"]),
+        "shadow": sum(d["shadow"] for r in pairs_out for d in r["per"]),
+        "partner_top5": sum(d["partner_pos"] is not None and d["partner_pos"] <= 5
+                            for r in pairs_out for d in r["per"]),
+        "quiet": quiet, "total": total, "chit_leaks": chit_detail,
+        "p50_ms": statistics.median(lat) * 1000 if lat else 0.0,
+    }
+
+
+def report(res: dict) -> None:
+    print(f"\n=== names_fit {res['axis']} | проба: {res['probe']} ===")
+    print(f"пар пройдено: {res['pair_pass']}/{len(res['pairs'])} | по типам: "
+          + ", ".join(f"{t} {a}/{b}" for t, (a, b) in sorted(res["by_type"].items())))
+    print(f"вопросов в цель: {res['question_hits']}/{res['questions']} | "
+          f"MISS {res['miss']} | SHADOW (чужая выше своей) {res['shadow']} | "
+          f"partner в top-5: {res['partner_top5']} | "
+          f"тишина chit-chat {res['quiet']}/{res['total']} | p50 {res['p50_ms']:.1f} мс")
+    for r in res["pairs"]:
+        mark = "OK  " if r["ok"] else "FAIL"
+        print(f"  {mark} {r['id']:<7} [{r['type']}]")
+        if not r["ok"]:
+            for d in r["per"]:
+                flags = ("MISS" if d["miss"] else "     ") + ("/SHADOW" if d["shadow"] else "") \
+                    + ("/WRONG5" if d["wrong5"] else "")
+                print(f"        {flags} {d['q']!r}")
+                print(f"               своя {d['own']}#{d['own_pos']} | чужая {d['partner']}#{d['partner_pos']}")
+                print(f"               recall: {d['keys']}")
+    if res["chit_leaks"]:
+        print("  утечки chit-chat (должно быть пусто):")
+        for q, found in res["chit_leaks"]:
+            print(f"        {q!r} -> {found}")
+
+
+if __name__ == "__main__":
+    if not _AGENT.is_dir():
+        raise SystemExit(f"нет каталога hermes-agent: {_AGENT} (задай HERMES_AGENT_REPO)")
+    rows = [run(axis) for axis in ("on", "off")]
+    for r in rows:
+        report(r)
+    print("\nИТОГ (сравнение осей):")
+    for r in rows:
+        print(f"  names_fit {r['axis']}: пар {r['pair_pass']}/15, MISS {r['miss']}, "
+              f"SHADOW {r['shadow']}, partner@top5 {r['partner_top5']}, "
+              f"тишина {r['quiet']}/{r['total']} | проба: {r['probe']}")
