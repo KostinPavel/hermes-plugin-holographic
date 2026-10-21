@@ -270,6 +270,31 @@ class Rescorer:
         self._log_failure(*noted)
 
 
+def _sigmoid(x: float) -> float:
+    """σ(x) в (0,1), численно устойчивый на обеих сторонах нуля."""
+    if x >= 0.0:
+        z = math.exp(-x)
+        return 1.0 / (1.0 + z)
+    z = math.exp(x)
+    return z / (1.0 + z)
+
+
+def normalized(pairs: list[tuple[int, float]]) -> list[float]:
+    """Счётчики ДЛЯ ГЕЙТА: логиты (хотя бы одно вне [0,1]) приводятся sigmoid к
+    (0,1); уже нормализованные (Cohere-стиль) остаются как есть. Правило по
+    ответу, без probe: работает на любом сервере и самоисправно после смены
+    шкалы. Без нормализации отношение best/second при отрицательных логитах
+    лежит в (0,1] и условие `best < second * margin` недостижимо — гейт никогда
+    не отказывает, ровно на chit-chat, где логиты самые отрицательные.
+
+    Порядок не меняется (sigmoid монотонен) — на гейт влияет только отношение.
+    """
+    scores = [s for _, s in pairs]
+    if any(s < 0.0 or s > 1.0 for s in scores):
+        return [_sigmoid(s) for s in scores]
+    return scores
+
+
 def _ranked(payload, count: int) -> list[tuple[int, float]]:
     """``(index, relevance_score)`` pairs from a Cohere-style ``{"results": [{"index": .., "relevance_score": ..}]}``
     answer, in the order given (already descending by relevance), top_n at most; ValueError when it is not one:

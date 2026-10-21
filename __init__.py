@@ -1459,7 +1459,12 @@ class HolographicMemoryProvider(MemoryProvider):
                 # candidate (no runner-up to compare, so the model's confidence cannot be judged) the coverage
                 # gate below decides — a single BM25 hit can still be chit-chat (a reranker's -10.1 on it is the
                 # signal, but an absolute floor would be endpoint-dependent).
-                scores = [s for _, s in ranked]
+                # Нормализация для гейта (rerank.normalized): логиты приводятся sigmoid к
+                # (0,1) — иначе при отрицательных логитах условие best < second*margin
+                # недостижимо и гейт никогда не отказывает (проверено на llama-server:
+                # шкала сырая, +6.36/-11.01). Относительно [0,1]-серверов правило по
+                # ответу не применяет sigmoid дважды.
+                scores = rerank.normalized(ranked)
                 best = scores[0]
                 second = scores[1] if len(scores) > 1 else None
                 if second is not None and best < second * self._rescorer.settings.margin:
