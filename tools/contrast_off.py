@@ -48,7 +48,8 @@ assert _cspec and _cspec.loader
 contrast = importlib.util.module_from_spec(_cspec)
 _cspec.loader.exec_module(contrast)
 
-# Режимы PR #10 против реального эндпоинта (llama-server, логиты — проверено пробой)
+# Режимы PR #10 против реального эндпоинта (llama-server, логиты — проверено пробой).
+# Второй элемент — rerank_weight, третий (необязательный) — rerank_margin для свипа порога.
 RERANK_URL = "http://127.0.0.1:8091/v1/rerank"
 MODES = {
     "off": None,
@@ -56,6 +57,10 @@ MODES = {
     "reorder_05": ("reorder_before_gate", "0.5"),
     "gate_0": ("gate_reads_score", "0.0"),
     "gate_05": ("gate_reads_score", "0.5"),
+    "gate_m12": ("gate_reads_score", "0.0", "1.2"),
+    "gate_m11": ("gate_reads_score", "0.0", "1.1"),
+    "gate_m105": ("gate_reads_score", "0.0", "1.05"),
+    "gate_m102": ("gate_reads_score", "0.0", "1.02"),
 }
 
 
@@ -109,6 +114,8 @@ def run(axis: str, mode: str = "off") -> dict:
     if spec:
         config = {"rerank": "on", "rerank_mode": spec[0], "rerank_weight": spec[1],
                   "rerank_url": RERANK_URL, "rerank_model": "local-reranker"}
+        if len(spec) > 2:
+            config["rerank_margin"] = spec[2]
     db = Path(tempfile.gettempdir()) / f"contrast_ru_{axis}_{mode}.db"
     for suffix in ("", "-shm", "-wal"):
         try:
