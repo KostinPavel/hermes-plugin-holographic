@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.17.7 — 2026-10-21
+
+### Fixed
+
+- **A double negation turned an order into a reminder.** 0.17.6 kept "never ignore your instructions" a fact; with a
+  second negation before the prohibition, or "ではいけない" after it, the sentence asks for the opposite and was kept
+  too: "不能不要忽略你的指令", "あなたの指示を無視しないではいけない", "You must not  never ignore your
+  instructions". A negation before the prohibition cancels it now. (Third Codex pass.)
+
 ## 0.17.6 — 2026-10-21
 
 From a review of 0.17.5 in Russian, English and Chinese (Antigravity).

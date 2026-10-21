@@ -102,12 +102,12 @@ are in `plans/2026-10-21-*`):
 
 ## Open work
 
-- 0.17.6 (2026-10-21, `aca7b19`): an Antigravity review in Russian, English and Chinese and two Codex passes. "Your
+- 0.17.6 (2026-10-21, `aca7b19`; 0.17.7 the same day: a double negation cancels the prohibition, third Codex pass): an Antigravity review in Russian, English and Chinese and two Codex passes. "Your
   instructions" is an instruction in all 18 languages (ambiguous "your" left out: German "ihre" only after "Sie",
   Spanish "sus" not at all, Turkish only with "senin" / "sizin"); only an explicit prohibition right next to the verb
   keeps a reminder a fact ("never ignore your instructions"; "why not ignore…" is still refused); two more log lines by
   error kind; PR #8 (jin89ho) merged, and "хочу" left the Russian pattern too. Open on GitHub: PR #7 (to close) and
-  RFC #9 — drafts of the replies in `plans/2026-10-21-github-replies-draft.md`, not posted. Known gaps the review left
+  RFC #9 — replied 2026-10-21 (PR #7 closed, #9 waits for a benchmark). Known gaps the review left
   (P3): "Мне нравится…" is not extracted; Russian aspect pairs (разрабатывает / разработал) and English irregular
   verbs (drank / drink) do not meet in search; Chinese names without quotes are not found as entities.
 - Review of 2026-10-21 (`plans/2026-10-21-plan-pravki-10-principov.md`): waves 1, 3 and 4 are released as 0.17.5; a
