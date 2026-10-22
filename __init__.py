@@ -1477,106 +1477,105 @@ class HolographicMemoryProvider(MemoryProvider):
             # cost no request and the margin below compares admissible candidates only.
             candidates = [f for f in candidates
                           if self._recallable(f) and self._not_recent(key, f, turn)]
-            # Two integration points, both strictly after the blend (rerank.py):
-            #   reorder_before_gate — the pool is reordered, then the relevance (coverage) gate decides;
-            #   gate_reads_score — the pool is first cut FROM THE BOTTOM (_bottom_cut: everything within
-            #   _BOTTOM_WINDOW of the best score — the target at the top always survives, the low-scoring
-            #   distractor tail is trimmed; measured wrong-entity top-5 30→8 at ~equal hit), then admission
-            #   is the coverage gate, and the cross-encoder's part in the gate is the optional ratio veto
-            #   (rerank_margin, off by default) plus the ORDER the top five is taken in. A failed call →
-            #   coverage decides, as in mode off.
-            # Any failure keeps the current order (rescorer.scores returns None).
-            ranked = None
-            if self._rescorer and candidates:
-                ranked = self._rescorer.scores(query, [f.get("content") or "" for f in candidates])
-                if ranked is not None:
-                    order = [i for i, _ in ranked if i < len(candidates)]
-                    # rerank_weight > 0: min-max-normalised cross-encoder score blended into the blend score, so the
-                    # order is decided by both, not by the reranker alone (order-only when weight is 0).
-                    if self._rescorer.settings.weight > 0.0 and ranked:
-                        scores = [s for _, s in ranked]
-                        lo, hi = min(scores), max(scores)
-                        span = (hi - lo) or 1.0
-                        w = self._rescorer.settings.weight
-                        for i, s in ranked:
-                            if i < len(candidates):
-                                score = candidates[i].get("score") or 0.0
-                                candidates[i]["score"] = (1.0 - w) * score + w * ((s - lo) / span)
-                        candidates.sort(key=lambda f: f.get("score") or 0.0, reverse=True)
-                    else:
-                        candidates = [candidates[i] for i in order]
-            # De-dup and safety ran before the endpoint saw the pool; re-checked here as a backstop before the top five are
-            # taken, so they leave room for others either way.
-            if self._rescorer and self._rescorer.settings.mode == "gate_reads_score" and ranked:
-                # Optional ratio veto (_margin_clears): the top must clear the runner-up by rerank_margin or
-                # NOTHING is admitted. Off by default (1.0 — a sorted top can't fail it): the provenance sweep
-                # showed the ratio criterion rejects the wrong pools on a sigmoid scale (whenever
-                # second > 1/margin the rejection is unconditional — pools where BOTH facts score ~0.99) and
-                # adds no noise protection beyond coverage. What passes goes to coverage below.
-                # Нормализация для гейта (rerank.normalized): логиты приводятся sigmoid к
-                # (0,1) — иначе при отрицательных логитах условие best < second*margin
-                # недостижимо и гейт никогда не отказывает (проверено на llama-server:
-                # шкала сырая, +6.36/-11.01). Относительно [0,1]-серверов правило по
-                # ответу не применяет sigmoid дважды.
-                scores = rerank.normalized(ranked)
-                # The ratio veto (_margin_clears, off by default — 1.0) judges the FULL spread first: an enabled veto
-                # must see the flat tail it exists for, before the cut narrows the pool.
-                best = scores[0]
-                second = scores[1] if len(scores) > 1 else None
-                # Bottom cut: trim the low-scoring tail, then admission — the default keeps everything within
-                # _BOTTOM_WINDOW of the best (see _bottom_cut); experiments swap the hook per document.
-                # weight > 0 reorders the pool away from the ranked order the scores belong to — the cut is
-                # only defined for order-only runs.
-                keep = _bottom_cut(scores) if self._rescorer.settings.weight == 0.0 else None
-                if not _margin_clears(best, second, self._rescorer.settings.margin) or (keep is not None and not keep):
-                    # The veto refused the flat spread, or nothing survived the cut: the pool admits nothing.
-                    gate = []
-                else:
-                    if keep is not None:
-                        candidates = [candidates[i] for i in keep]
-                    # Admission stays the non-semantic pipeline's own: coverage filters the word-found candidates
-                    # exactly as mode off does — the cross-encoder contributes the cut above and the order below.
-                    # (Admitting the whole ranked pool let chit-chat through: the provenance probe showed every
-                    # gate-mode leak `pool-only`, coverage never asked.) The semantic stream is not here: by_meaning
-                    # enters after this gate on its own terms.
-                    gate = self._retriever.relevant(query, candidates, self._min_coverage)
-            elif (self._rescorer and self._rescorer.settings.mode == "override"
-                  and ranked is not None and candidates):
-                # Эксперимент "реранкер либо фильтр как фолбэк": успешный ответ реранка
-                # авторитетен для верха списка — топ-_OVERRIDE_N проходит вопреки низкому
-                # покрытию; дальше решает coverage. ranked None (ошибка/таймаут/одиночный
-                # кандидат) в эту ветку не попадает -> фолбэк на coverage в else ниже.
-                top = candidates[:_OVERRIDE_N]
-                covered = self._retriever.relevant(query, candidates, self._min_coverage)
-                seen = {f["fact_id"] for f in top}
-                gate = top + [f for f in covered if f["fact_id"] not in seen]
+            # Развилка по режиму: единый поток (блок 3) против старого пути (off/override).
+            # Блок 3: единый поток (reorder/gate) — coverage адмиит лексику, meaning/entity идут той же
+            # safety/dedup до эндпоинта, ОДИН rerank ранжирует union, top-5 строго по рангу. off/override —
+            # старый путь ниже (baseline нетронут).
+            if self._rescorer is not None and self._rescorer.settings.mode in ("reorder_before_gate",
+                                                                                "gate_reads_score"):
+                fresh, by_meaning = self._unified_stream(query, meaning, candidates, key, turn)
             else:
-                gate = self._retriever.relevant(query, candidates, self._min_coverage)
-            fresh = [f for f in gate
-                     if self._not_recent(key, f, turn) and self._recallable(f)][:_PREFETCH_FACTS]
-            have, extra = {f["fact_id"] for f in fresh}, 0
-            # Search by meaning: the relevance gate wants the message's own words, which a paraphrase does not have;
-            # a fact that stands far out in meaning gets in on that alone, after the words' facts, at most
-            # embedding_prefetch_facts of them (1), marked so the model knows the match is looser, and only when it
-            # mentions whoever the message names (names_fit).
-            by_meaning: set[int] = set()
-            if meaning is not None and self._embedding.recall_facts:
-                for fact in self._retriever.by_meaning(meaning, exclude=have, min_trust=self._min_trust,
-                                                       limit=self._embedding.recall_facts + 3,
-                                                       margin=embeddings.RECALL_MARGIN,
-                                                       min_score=self._embedding.min_score):
-                    if len(by_meaning) < self._embedding.recall_facts and self._not_recent(key, fact, turn) \
-                            and self._recallable(fact) and self._retriever.names_fit(query, fact):
-                        fresh.append(fact)
-                        have.add(fact["fact_id"])
-                        by_meaning.add(fact["fact_id"])
-            for entity_id in sorted(self._store.mentioned_entity_ids(query)):
-                for fact in self._retriever.entity_facts(entity_id, min_trust=self._min_trust, limit=_ENTITY_FACTS * 3):
-                    if extra < _ENTITY_FACTS and fact["fact_id"] not in have and self._not_recent(key, fact, turn) \
-                            and self._recallable(fact):
-                        fresh.append(fact)
-                        have.add(fact["fact_id"])
-                        extra += 1
+                ranked = None
+                if self._rescorer and candidates:
+                    ranked = self._rescorer.scores(query, [f.get("content") or "" for f in candidates])
+                    if ranked is not None:
+                        order = [i for i, _ in ranked if i < len(candidates)]
+                        # rerank_weight > 0: min-max-normalised cross-encoder score blended into the blend score, so the
+                        # order is decided by both, not by the reranker alone (order-only when weight is 0).
+                        if self._rescorer.settings.weight > 0.0 and ranked:
+                            scores = [s for _, s in ranked]
+                            lo, hi = min(scores), max(scores)
+                            span = (hi - lo) or 1.0
+                            w = self._rescorer.settings.weight
+                            for i, s in ranked:
+                                if i < len(candidates):
+                                    score = candidates[i].get("score") or 0.0
+                                    candidates[i]["score"] = (1.0 - w) * score + w * ((s - lo) / span)
+                            candidates.sort(key=lambda f: f.get("score") or 0.0, reverse=True)
+                        else:
+                            candidates = [candidates[i] for i in order]
+                # De-dup and safety ran before the endpoint saw the pool; re-checked here as a backstop before the top five are
+                # taken, so they leave room for others either way.
+                if self._rescorer and self._rescorer.settings.mode == "gate_reads_score" and ranked:
+                    # Optional ratio veto (_margin_clears): the top must clear the runner-up by rerank_margin or
+                    # NOTHING is admitted. Off by default (1.0 — a sorted top can't fail it): the provenance sweep
+                    # showed the ratio criterion rejects the wrong pools on a sigmoid scale (whenever
+                    # second > 1/margin the rejection is unconditional — pools where BOTH facts score ~0.99) and
+                    # adds no noise protection beyond coverage. What passes goes to coverage below.
+                    # Нормализация для гейта (rerank.normalized): логиты приводятся sigmoid к
+                    # (0,1) — иначе при отрицательных логитах условие best < second*margin
+                    # недостижимо и гейт никогда не отказывает (проверено на llama-server:
+                    # шкала сырая, +6.36/-11.01). Относительно [0,1]-серверов правило по
+                    # ответу не применяет sigmoid дважды.
+                    scores = rerank.normalized(ranked)
+                    # The ratio veto (_margin_clears, off by default — 1.0) judges the FULL spread first: an enabled veto
+                    # must see the flat tail it exists for, before the cut narrows the pool.
+                    best = scores[0]
+                    second = scores[1] if len(scores) > 1 else None
+                    # Bottom cut: trim the low-scoring tail, then admission — the default keeps everything within
+                    # _BOTTOM_WINDOW of the best (see _bottom_cut); experiments swap the hook per document.
+                    # weight > 0 reorders the pool away from the ranked order the scores belong to — the cut is
+                    # only defined for order-only runs.
+                    keep = _bottom_cut(scores) if self._rescorer.settings.weight == 0.0 else None
+                    if not _margin_clears(best, second, self._rescorer.settings.margin) or (keep is not None and not keep):
+                        # The veto refused the flat spread, or nothing survived the cut: the pool admits nothing.
+                        gate = []
+                    else:
+                        if keep is not None:
+                            candidates = [candidates[i] for i in keep]
+                        # Admission stays the non-semantic pipeline's own: coverage filters the word-found candidates
+                        # exactly as mode off does — the cross-encoder contributes the cut above and the order below.
+                        # (Admitting the whole ranked pool let chit-chat through: the provenance probe showed every
+                        # gate-mode leak `pool-only`, coverage never asked.) The semantic stream is not here: by_meaning
+                        # enters after this gate on its own terms.
+                        gate = self._retriever.relevant(query, candidates, self._min_coverage)
+                elif (self._rescorer and self._rescorer.settings.mode == "override"
+                      and ranked is not None and candidates):
+                    # Эксперимент "реранкер либо фильтр как фолбэк": успешный ответ реранка
+                    # авторитетен для верха списка — топ-_OVERRIDE_N проходит вопреки низкому
+                    # покрытию; дальше решает coverage. ranked None (ошибка/таймаут/одиночный
+                    # кандидат) в эту ветку не попадает -> фолбэк на coverage в else ниже.
+                    top = candidates[:_OVERRIDE_N]
+                    covered = self._retriever.relevant(query, candidates, self._min_coverage)
+                    seen = {f["fact_id"] for f in top}
+                    gate = top + [f for f in covered if f["fact_id"] not in seen]
+                else:
+                    gate = self._retriever.relevant(query, candidates, self._min_coverage)
+                fresh = [f for f in gate
+                         if self._not_recent(key, f, turn) and self._recallable(f)][:_PREFETCH_FACTS]
+                have, extra = {f["fact_id"] for f in fresh}, 0
+                # Search by meaning: the relevance gate wants the message's own words, which a paraphrase does not have;
+                # a fact that stands far out in meaning gets in on that alone, after the words' facts, at most
+                # embedding_prefetch_facts of them (1), marked so the model knows the match is looser, and only when it
+                # mentions whoever the message names (names_fit).
+                by_meaning: set[int] = set()
+                if meaning is not None and self._embedding.recall_facts:
+                    for fact in self._retriever.by_meaning(meaning, exclude=have, min_trust=self._min_trust,
+                                                           limit=self._embedding.recall_facts + 3,
+                                                           margin=embeddings.RECALL_MARGIN,
+                                                           min_score=self._embedding.min_score):
+                        if len(by_meaning) < self._embedding.recall_facts and self._not_recent(key, fact, turn) \
+                                and self._recallable(fact) and self._retriever.names_fit(query, fact):
+                            fresh.append(fact)
+                            have.add(fact["fact_id"])
+                            by_meaning.add(fact["fact_id"])
+                for entity_id in sorted(self._store.mentioned_entity_ids(query)):
+                    for fact in self._retriever.entity_facts(entity_id, min_trust=self._min_trust, limit=_ENTITY_FACTS * 3):
+                        if extra < _ENTITY_FACTS and fact["fact_id"] not in have and self._not_recent(key, fact, turn) \
+                                and self._recallable(fact):
+                            fresh.append(fact)
+                            have.add(fact["fact_id"])
+                            extra += 1
             for fact in fresh:
                 self._remember(key, fact, turn)
             self._last_recall = len(fresh)
@@ -1594,6 +1593,87 @@ class HolographicMemoryProvider(MemoryProvider):
         except Exception as e:
             self._recall_failed(e)
             return ""
+
+    def _unified_stream(self, query: str, meaning, candidates: list[dict], key: str,
+                        turn: int) -> tuple[list[dict], set[int]]:
+        """Блок 3: один rerank на union-выборке трёх потоков → top-5 строго по рангу (режимы
+        reorder_before_gate / gate_reads_score).
+
+        - Stream 1 (lexical): coverage адмиит по словам ДО ранга — членство решают слова, реранк судит
+          только порядок и срез (_bottom_cut). В режиме gate это сдвигает coverage раньше окна (состав
+          почти тот же: coverage не смотрит на ранг) — замерено пробом.
+        - Stream 2 (meaning) и 3 (entity): та же safety/dedup-проверка ДО эндпоинта. Раньше они
+          добавлялись ПОСЛЕ гейта, мимо и coverage, и реранка (provenance: entity-сплайс — 60%
+          recall-инстансов без ранга; топ-5 был «лексика первой, потоки в придачу»).
+        - В списке документов потоки стояТ перед лексикой: scores() отправляет только первые top_k —
+          позиция в запросе на скоринг не влияет, а так малые потоки не оказываются отрезанными хвостом
+          wide-пула.
+        - Пустой/упавший реранк → прежний порядок (лексика первой, потоки в придачу), как в off.
+        """
+        # Stream 1: membership is decided by the words, before any rank.
+        lexical = self._retriever.relevant(query, candidates, self._min_coverage)
+        have = {f["fact_id"] for f in lexical}
+        # Stream 2: search by meaning — a paraphrase shares no words with the fact, so it enters on the
+        # embedding alone (standout margin, names_fit), at most embedding_prefetch_facts of them.
+        by_meaning: set[int] = set()
+        meaning_facts: list[dict] = []
+        if meaning is not None and self._embedding.recall_facts:
+            for fact in self._retriever.by_meaning(meaning, exclude=have, min_trust=self._min_trust,
+                                                   limit=self._embedding.recall_facts + 3,
+                                                   margin=embeddings.RECALL_MARGIN,
+                                                   min_score=self._embedding.min_score):
+                if len(by_meaning) < self._embedding.recall_facts and self._not_recent(key, fact, turn) \
+                        and self._recallable(fact) and self._retriever.names_fit(query, fact):
+                    meaning_facts.append(fact)
+                    have.add(fact["fact_id"])
+                    by_meaning.add(fact["fact_id"])
+        # Stream 3: the top facts of entities the message names — no word overlap needed, but the same
+        # admissibility (safety, de-dup, prefetch_repeat_turns) as everything else, BEFORE the endpoint.
+        entity_facts: list[dict] = []
+        for entity_id in sorted(self._store.mentioned_entity_ids(query)):
+            for fact in self._retriever.entity_facts(entity_id, min_trust=self._min_trust,
+                                                     limit=_ENTITY_FACTS * 3):
+                if len(entity_facts) < _ENTITY_FACTS and fact["fact_id"] not in have \
+                        and self._not_recent(key, fact, turn) and self._recallable(fact):
+                    entity_facts.append(fact)
+                    have.add(fact["fact_id"])
+        # Union: disjoint by construction (each stream excluded what the previous one admitted).
+        union = meaning_facts + entity_facts + lexical
+        ranked = self._rescorer.scores(query, [f.get("content") or "" for f in union]) if union else None
+        if ranked is None:
+            # A failed call (or an empty pool): the blend order decides, lexical first — the old layout.
+            return (lexical + meaning_facts + entity_facts)[:_PREFETCH_FACTS], by_meaning
+        order = [i for i, _ in ranked if i < len(union)]
+        w = self._rescorer.settings.weight
+        if w > 0.0:
+            # rerank_weight > 0: min-max-normalised cross-encoder score blended into the blend score —
+            # the order is decided by both (order-only when weight is 0).
+            raw = [s for _, s in ranked]
+            lo, hi = min(raw), max(raw)
+            span = (hi - lo) or 1.0
+            for i, s in ranked:
+                if i < len(union):
+                    score = union[i].get("score") or 0.0
+                    union[i]["score"] = (1.0 - w) * score + w * ((s - lo) / span)
+            union.sort(key=lambda f: f.get("score") or 0.0, reverse=True)
+        else:
+            # Documents beyond top_k were never sent (scores() sends the first top_k only): they keep
+            # their blend order behind the ranked ones instead of being dropped.
+            tail = [i for i in range(len(union)) if i not in set(order)]
+            union = [union[i] for i in order + tail]
+        fresh = union
+        if self._rescorer.settings.mode == "gate_reads_score":
+            # Optional ratio veto on the FULL spread (off by default, see _margin_clears), then the bottom
+            # cut — both judge the COMMON rank of every stream now (the sweep's semantics, one rank).
+            norm = rerank.normalized(ranked)
+            best = norm[0]
+            second = norm[1] if len(norm) > 1 else None
+            keep = _bottom_cut(norm) if w == 0.0 else None  # a blend reorders away from the ranked order
+            if not _margin_clears(best, second, self._rescorer.settings.margin) or (keep is not None and not keep):
+                fresh = []
+            elif keep is not None:
+                fresh = [union[i] for i in keep]
+        return fresh[:_PREFETCH_FACTS], by_meaning
 
     def _recall_failed(self, exc: Exception) -> None:
         """Recall before a turn failed and the turn goes on without facts: a warning once per kind of failure (a
