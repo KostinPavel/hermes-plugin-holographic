@@ -45,16 +45,62 @@ sys.modules["hermes_plugin_holographic"] = _mod
 _spec.loader.exec_module(_mod)
 
 from hermes_plugin_holographic import HolographicMemoryProvider  # noqa: E402
-from hermes_plugin_holographic import rerank as _rerank_mod  # noqa: E402
 
-# mode -> (rerank_mode, weight) — та же номенклатура, что benchmark_rerank
+# mode -> (rerank_mode, weight[, rerank_margin[, criterion]]) — та же номенклатура, что benchmark_rerank
 MODES = {
     "off": None,
     "reorder_only": ("reorder_before_gate", "0.0"),
     "reorder_blend": ("reorder_before_gate", "0.5"),
     "gate_only": ("gate_reads_score", "0.0"),
     "gate_blend": ("gate_reads_score", "0.5"),
+    # свип порога (блок 2): все ветки gate_reads_score
+    "gate_m12": ("gate_reads_score", "0.0", "1.2"),
+    "gate_m11": ("gate_reads_score", "0.0", "1.1"),
+    "gate_m105": ("gate_reads_score", "0.0", "1.05"),
+    "gate_m10": ("gate_reads_score", "0.0", "1.0"),
+    # верхний критерий (всё-или-ничего по пулу): gap/пол/пол+гап вместо ratio-вето
+    "topgap": ("gate_reads_score", "0.0", "1.5", "topgap:0.05"),
+    "topfloor": ("gate_reads_score", "0.0", "1.5", "topfloor:0.5"),
+    "topfg": ("gate_reads_score", "0.0", "1.5", "topfloorgap:0.5:0.05"),
+    # нижний критерий (побитовое отсечение хвоста), вето выключено (margin 1.0)
+    "botwin10": ("gate_reads_score", "0.0", "1.0", "botwin:0.10"),
+    "botwin05": ("gate_reads_score", "0.0", "1.0", "botwin:0.05"),
+    "botfloor5": ("gate_reads_score", "0.0", "1.0", "botfloor:0.5"),
+    "botfloor3": ("gate_reads_score", "0.0", "1.0", "botfloor:0.3"),
 }
+
+import hermes_plugin_holographic as _H  # noqa: E402  (hook-и гейта для подмены критерия)
+
+_ORIG_CLEAR = _H._margin_clears
+_ORIG_CUT = _H._bottom_cut
+
+
+def apply_criterion(crit: str | None) -> None:
+    """Критерий гейта для режима: 'topgap:δ' | 'topfloor:τ' | 'topfloorgap:τ:δ' |
+    'botwin:δ' | 'botfloor:τ'; None = оригинал (_margin_clears / no-cut)."""
+    _H._margin_clears = _ORIG_CLEAR
+    _H._bottom_cut = _ORIG_CUT
+    if not crit:
+        return
+    parts = crit.split(":")
+    k = parts[0]
+    if k == "topgap":          # вето проходит, когда отрыв топа ≥ δ (вместо ratio)
+        d = float(parts[1])
+        _H._margin_clears = lambda b, s, m: s is None or (b - s) >= d
+    elif k == "topfloor":      # вето проходит, когда сам топ ≥ τ
+        t = float(parts[1])
+        _H._margin_clears = lambda b, s, m: b >= t
+    elif k == "topfloorgap":   # порог с гапом: оба условия
+        t, d = float(parts[1]), float(parts[2])
+        _H._margin_clears = lambda b, s, m: b >= t and (s is None or (b - s) >= d)
+    elif k == "botwin":        # оставить всё в пределах δ от лучшего (хвост снизу)
+        d = float(parts[1])
+        _H._bottom_cut = lambda scores: [i for i, s in enumerate(scores) if scores[0] - s <= d]
+    elif k == "botfloor":      # оставить всё с отдельным скором ≥ τ
+        t = float(parts[1])
+        _H._bottom_cut = lambda scores: [i for i, s in enumerate(scores) if s >= t]
+    else:
+        raise ValueError(f"unknown criterion: {crit}")
 
 EMB_URL = os.environ.get("EMB_URL", "http://127.0.0.1:1237/v1")
 EMB_MODEL = os.environ.get("EMB_MODEL", "bge-m3")
@@ -88,6 +134,11 @@ def make_provider(db: Path, mode: str, emb) -> HolographicMemoryProvider:
     if spec:
         config.update({"rerank": "on", "rerank_mode": spec[0], "rerank_weight": spec[1],
                        "rerank_url": ENDPOINT, "rerank_model": "probe-reranker"})
+        if len(spec) > 2:
+            config["rerank_margin"] = spec[2]
+        apply_criterion(spec[3] if len(spec) > 3 else None)
+    else:
+        apply_criterion(None)
     if emb == "on":
         config.update({"embeddings": "on", "embedding_url": EMB_URL, "embedding_model": EMB_MODEL})
     p = HolographicMemoryProvider(config=config)
@@ -423,7 +474,7 @@ def main(argv):
 
     for emb in embs:
         if args.set == "multi":
-            rows = run_multilingual([l.strip() for l in args.langs.split(",") if l.strip()],
+            rows = run_multilingual([lg.strip() for lg in args.langs.split(",") if lg.strip()],
                                     modes, emb, args.endpoint)
         else:
             rows = run_contrast(args.set, modes, emb, args.endpoint)
