@@ -33,12 +33,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
+      # Through uv with core's own [tool.uv] override-dependencies: since 2026-10-22 core pins Pillow 13 while its
+      # browser-harness pins 12.3, and only the override reconciles them; plain pip cannot resolve core at all.
       - name: Install hermes-agent and this plugin's declared dependencies
         shell: bash
         run: |
-          python -m pip install -e ./hermes-agent "pytest==9.1.1"
+          python -m pip install "uv==0.13.3"
+          python -c "import tomllib; print('\n'.join(tomllib.load(open('hermes-agent/pyproject.toml', 'rb')).get('tool', {}).get('uv', {}).get('override-dependencies', [])))" > hermes-overrides.txt
+          python -m uv pip install --system --overrides hermes-overrides.txt -e ./hermes-agent "pytest==9.1.1"
           python -c "import tomllib; print('\n'.join(tomllib.load(open('plugin/pyproject.toml', 'rb'))['project']['dependencies']))" > plugin-deps.txt
-          python -m pip install -r plugin-deps.txt
+          python -m uv pip install --system --overrides hermes-overrides.txt -r plugin-deps.txt
       - name: Run the plugin suite
         working-directory: plugin
         env:
@@ -71,8 +75,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
-      - name: Install hermes-agent
-        run: python -m pip install -e ./hermes-agent
+      - name: Install hermes-agent (through uv with core's overrides, as in pytest above)
+        run: |
+          python -m pip install "uv==0.13.3"
+          python -c "import tomllib; print('\n'.join(tomllib.load(open('hermes-agent/pyproject.toml', 'rb')).get('tool', {}).get('uv', {}).get('override-dependencies', [])))" > hermes-overrides.txt
+          python -m uv pip install --system --overrides hermes-overrides.txt -e ./hermes-agent
       - name: hermes plugins validate
         env:
           HERMES_HOME: ${{ runner.temp }}/hermes-home
