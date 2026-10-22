@@ -115,16 +115,19 @@ def _fill(p, lang: str) -> dict:
     return back
 
 
-def _inject(p, query: str) -> set[str]:
-    """The keys injected before the turn (prefetch), or the empty set."""
+def _inject(p, query: str) -> list[str]:
+    """The fact_ids injected before the turn (prefetch), IN OUTPUT ORDER, or [].
+    Order matters: recall@5 must count the first five lines (matched top-5, п.8 ревью 2026-10-22) — off can show
+    more than five facts while the unified path cannot, and counting every line mixes the cross-encoder with a
+    smaller output."""
     block = p.prefetch(query)
     if not block:
-        return set()
+        return []
     # lines after the header are "- #<id> [trust] <text>"
-    keys = set()
+    keys: list[str] = []
     for line in block.splitlines()[1:]:
         try:
-            keys.add(line.split()[1][1:])  # the fact_id
+            keys.append(line.split()[1][1:])  # the fact_id
         except (IndexError, ValueError):
             pass
     return keys
@@ -135,6 +138,16 @@ def _percentile(times: list[float], q: float) -> float:
         return 0.0
     idx = min(len(times) - 1, int(round(q * (len(times) - 1))))
     return sorted(times)[idx]
+
+
+def _git_sha() -> str:
+    """Стем ветки, чтобы каждая строка JSONL знала, на каком коммите снята (п.8: raw JSONL к таблицам)."""
+    try:
+        import subprocess
+        return subprocess.run(["git", "rev-parse", "HEAD"], cwd=_REPO,
+                              capture_output=True, text=True, timeout=10).stdout.strip() or "unknown"
+    except Exception:
+        return "unknown"
 
 
 def run(langs: list[str], mode: str, endpoint_url: str | None, reverse: bool) -> dict:
@@ -153,6 +166,8 @@ def run(langs: list[str], mode: str, endpoint_url: str | None, reverse: bool) ->
         rerank._OPENER = mock
 
     hit5 = asked = wrong = quiet = negatives = 0
+    out_lines = 0  # сколько строк recall реально вернул (matched top-5 считается по первым пяти)
+    queries = 0
     times: list[float] = []
     failures = 0  # ranked is None: fallbacks to the coverage order (counted in rerank.Rescorer)
     try:
@@ -160,11 +175,16 @@ def run(langs: list[str], mode: str, endpoint_url: str | None, reverse: bool) ->
             p = _provider(f"/tmp/bench_{lang}_{mode}.db", **config)
             back = _fill(p, lang)
             for i, (query, relevant) in enumerate(data.QUERIES[lang]):
+                queries += 1
                 p.on_session_switch(f"bench{li}_{i}", reset=True)
                 t0 = time.perf_counter()
                 injected = _inject(p, query)
                 times.append(time.perf_counter() - t0)
-                found_keys = {back[int(k)] for k in injected if int(k) in back}
+                out_lines += len(injected)
+                # matched top-5: считаем только первые пять строк — иначе счёт смешивает точность с размером
+                # вывода (off умеет отдавать больше пяти фактов, unified — нет)
+                top5 = injected[:5]
+                found_keys = {back[int(k)] for k in top5 if int(k) in back}
                 if relevant:
                     asked += 1
                     hit5 += bool(found_keys & relevant)
@@ -195,20 +215,23 @@ def run(langs: list[str], mode: str, endpoint_url: str | None, reverse: bool) ->
         "negatives": negatives,
         "p50_ms": _percentile(times, 0.50) * 1000.0,
         "p95_ms": _percentile(times, 0.95) * 1000.0,
+        "out_lines": out_lines,
+        "out_avg": round(out_lines / max(1, queries), 2),
         "calls": mock.requests if not endpoint_url else None,
         "failures": failures,
+        "git_sha": _git_sha(),
         "langs": langs,
     }
 
 
 def table(rows: list[dict], endpoint: str | None) -> str:
-    head = "| mode | recall@5 | hit5/asked | wrong-entity | noise | p50 (ms) | p95 (ms) |\n"
-    head += "|---|---|---|---|---|---|---|\n"
+    head = "| mode | recall@5 (top-5) | hit5/asked | wrong-entity@5 | noise | out avg | p50 (ms) | p95 (ms) |\n"
+    head += "|---|---|---|---|---|---|---|---|\n"
     body = []
     for r in rows:
         recall = f"{r['recall5']:.0%}"
         body.append(f"| {r['mode']} | {recall} | {r['hit5']}/{r['asked']} | {r['wrong']} | "
-                    f"{r['noise']:.0%} | {r['p50_ms']:.0f} | {r['p95_ms']:.0f} |")
+                    f"{r['noise']:.0%} | {r['out_avg']:.1f} | {r['p50_ms']:.0f} | {r['p95_ms']:.0f} |")
     note = ("\nEndpoint: " + (endpoint or "mock (order only; latency is the mock's, not a server's)"))
     failed = sum(r.get("failures", 0) for r in rows)
     if failed:

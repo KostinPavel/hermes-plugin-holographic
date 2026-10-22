@@ -180,3 +180,38 @@ base = свои факты сета (64-69); wide = + крауд (16 факто�
   набивает скор).
 - Цена глубины: docs 15->40 -> latency p95 ~400-530 мс; слой реранка = 77.5%
   p95 (results/LATENCY_SWEEP.md), стоимость мс ~= 17 + 10.6*docs (r=0.994).
+
+---
+
+## Ре-замер на голове PR (п.8 ревью 2026-10-22, git_sha 7f1efd6)
+
+Таблица «433 → 432 / 30 → 6» (Блок 3 выше) перегнана на HEAD с дефолтным конфигом:
+`rerank_weight 0`, `rerank_window 0.05`; реранкер bge-reranker-v2-m3 Q4_K_M на
+llama-server из MSYS2, iGPU/Vulkan (:8091); emb=on — bge-m3 Q4_K_M на :1237
+(та же квантизация, что на прежнем стенде, см. LATENCY_SWEEP). Сеты: multi (18
+языков) + 3 контраста = 450 real / 225 chit, 2025 строк на вариант. Hit — matched
+top-5 (первые пять строк recall), рядом — output counts (off отдаёт >5 строк).
+
+| mode | hit (все строки) | hit5 (top-5) | wrong/wrong5 | шум | out_avg / out_max |
+|---|---|---|---|---|---|
+| off, emb=on | 438 | 438 | 31 | 79 | 1.95 / 7 |
+| reorder_only (без среза), emb=on | 438 | 438 | 32 | 79 | 1.86 / 5 |
+| gate_only (окно 0.05), emb=on | 437 | 437 | **6** | 79 | 0.97 / 5 |
+| off, emb=off | 430 | 428 | 30 | 79 | 1.95 / 7 |
+| reorder_only (без среза), emb=off | 430 | 430 | 32 | 79 | 1.84 / 5 |
+| gate_only (окно 0.05), emb=off | 429 | 429 | **6** | 79 | 0.96 / 5 |
+
+- **Что делает работу — срез хвоста, а не reorder**: reorder_only == off по hit и даёт
+  wrong +1 (расширенный пул несёт партнёров); gate_only даёт wrong 30-31 → 6 при
+  out_avg 1.95 → 0.97. H6 из docs/contrast-benchmark.md подтверждён численно.
+- **Matched top-5**: у off >5 строк в 45 запросах (max 7). В emb=off это меняло hit в
+  2 запросах (430 vs 428), в emb=on — ни в одном. wrong по top-5 == wrong по всем
+  строкам во всех вариантах.
+- **Сдвиг против Блока 3** (off 433 → 432): старая таблица снята до дефолта
+  RECALL_MARGIN 0.6 (свип выше: 1.0 → 432, 0.6 → 437) и до правок п.6; направление
+  вывода воспроизводится: wrong 30 → 6, шум 79 = 79, hit в пределах ±1 от gate.
+- **Сырые JSONL**: `results/provenance_{multi,contrast_ru,contrast_en,contrast_zh}_{off,on}.jsonl`
+  — по строке на запрос, поля `git_sha`, `endpoint`, `hit5`, `wrong5`, `out_n`, `pool_n`.
+- **CPU-стенд (п.8)**: p50 94–101 мс / p95 212–229 мс (4 режима × 60 запросов = 240
+  вызовов, Ryzen 7 5800H, msys2 llama-server `--device none`), фолбэков 0 —
+  `results/bench_p8_cpu.jsonl` (label + git_sha в строках).

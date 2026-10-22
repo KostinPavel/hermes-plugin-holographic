@@ -846,6 +846,8 @@ Other keys: ``rerank_top_k`` (40: how deep a pool the cross-encoder sees; the fi
 match), ``rerank_weight`` (0 = order-only, recommended; >0 = the min-max-normalised cross-encoder score blended into
 the blend score; the window applies to order-only runs), ``rerank_timeout`` (3 s). A query that holds a secret is
 never sent.
+With ``rerank_weight: 0`` the cross-encoder judges text only and ignores trust: a fact whose trust
+was lowered (by feedback or by a dreaming plugin) can move back to the top of what is admitted.
 
 Measured on a real llama-server with bge-m3-reranker-v2 (Bge-M3-568M-Q4_K_M), three languages (en/ru/zh),
 60 questions and 15 that must recall nothing (``tools/benchmark_rerank.py --endpoint=…``). The first table is

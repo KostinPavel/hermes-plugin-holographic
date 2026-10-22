@@ -18,7 +18,7 @@
     # --endpoint http://127.0.0.1:1235/v1/rerank   реальный реранк (иначе мок)
     # --emb on|off|both                              embeddings с :1237 (по умолчанию off)
 
-Строки: results/provenance_<set>_<emb>_<mode>.jsonl (по строке на запрос).
+Строки: results/provenance_<set>_<emb>.jsonl (по строке на запрос; mode — поле строки, git_sha — коммит).
 """
 from __future__ import annotations
 
@@ -66,6 +66,16 @@ MODES = {
 EMB_URL = os.environ.get("EMB_URL", "http://127.0.0.1:1237/v1")
 EMB_MODEL = os.environ.get("EMB_MODEL", "bge-m3")
 ENDPOINT = os.environ.get("RERANK_URL", "http://127.0.0.1:1235/v1/rerank")
+
+
+def _git_sha() -> str:
+    """Стем коммита: каждая строка JSONL знает, на каком коде снята (п.8 ревью 2026-10-22)."""
+    try:
+        import subprocess
+        return subprocess.run(["git", "rev-parse", "HEAD"], cwd=_REPO,
+                              capture_output=True, text=True, timeout=10).stdout.strip() or "unknown"
+    except Exception:
+        return "unknown"
 
 
 # ---------------------------------------------------------------- данные наборов
@@ -302,14 +312,18 @@ def run_multilingual(langs, modes, emb, endpoint, extra: dict | None = None) -> 
                 keys = [back[f] for f in found if f in back]
                 kind = "real" if relevant else "chit"
                 hit = bool(set(keys) & set(relevant)) if relevant else None
-                wrong_keys = []
+                # matched top-5 (п.8): off умеет вернуть больше пяти строк, unified — нет; честное сравнение
+                # по первым пяти, плюс счёт «всего строк» как output count.
+                hit5 = bool(set(keys[:5]) & set(relevant)) if relevant else None
+                wrong_keys, wrong_keys5 = [], []
                 if relevant:
                     for name in persons:
                         if name in query:
                             other = set().union(*(v for n, v in persons.items() if n != name))
                             wrong_keys = sorted(set(keys) & set(other))
+                            wrong_keys5 = sorted(set(keys[:5]) & set(other))
                 miss_cls = "-"
-                if relevant and not hit:
+                if relevant and not hit5:
                     # цель(и) без hit: класс по первой ненайденной
                     miss_cls = next((classify(next((f for f, k in back.items() if k == rk), None), ctx)
                                      for rk in relevant if rk not in keys), "-")
@@ -318,6 +332,7 @@ def run_multilingual(langs, modes, emb, endpoint, extra: dict | None = None) -> 
                              "sources": {str(f): ctx["tags"].get(f, ["pool-only"])
                                          for f in found},
                              "hit": hit, "wrong": wrong_keys,
+                             "hit5": hit5, "wrong5": wrong_keys5, "out_n": len(keys),
                              "miss_cls": miss_cls, "ms": round(ms, 1),
                              "pool_n": len(ctx.get("pool") or []),
                              "gate_called": ctx.get("gate_called"),
@@ -367,6 +382,7 @@ def run_contrast(set_name, modes, emb, endpoint, extra: dict | None = None) -> l
                              "own_pos": own_pos, "partner_pos": part_pos,
                              "sources": {str(f): ctx["tags"].get(f, ["pool-only"]) for f in found},
                              "hit": own_pos is not None, "wrong": part_pos is not None and part_pos <= 5,
+                             "hit5": own_pos is not None and own_pos <= 5, "out_n": len(keys),
                              "miss_cls": miss_cls, "pool_n": len(ctx.get("pool") or []),
                              "gate_called": ctx.get("gate_called"),
                              "rerank_top5": ctx.get("rerank_top5") or []})
@@ -378,7 +394,7 @@ def run_contrast(set_name, modes, emb, endpoint, extra: dict | None = None) -> l
             rows.append({"set": set_name, "lang": set_name, "mode": mode, "emb": emb,
                          "kind": "chit", "cat": cat, "q": query, "keys": keys,
                          "sources": {str(f): ctx["tags"].get(f, ["pool-only"]) for f in found},
-                         "hit": None, "wrong": [], "miss_cls": "-",
+                         "hit": None, "wrong": [], "hit5": None, "out_n": len(keys), "miss_cls": "-",
                          "pool_n": len(ctx.get("pool") or []),
                          "gate_called": ctx.get("gate_called"),
                          "rerank_top5": ctx.get("rerank_top5") or []})
@@ -390,15 +406,18 @@ def run_contrast(set_name, modes, emb, endpoint, extra: dict | None = None) -> l
 
 def summarize(rows: list[dict]) -> None:
     modes = sorted({(r["mode"], r["emb"]) for r in rows})
-    print(f"\n{'режим':<14} {'emb':<4} {'real':>5} {'hit':>5} {'шум':>5} "
-          f"{'wrong5':>6} | источники recall (доминирует) | классы промахов")
+    print(f"\n{'режим':<14} {'emb':<4} {'real':>5} {'hit':>5} {'hit5':>5} {'шум':>5} "
+          f"{'wrong':>5} {'wrong5':>6} {'out':>4} | источники recall (доминирует) | классы промахов")
     for mode, emb in modes:
         sel = [r for r in rows if r["mode"] == mode and r["emb"] == emb]
         real = [r for r in sel if r["kind"] == "real"]
         chit = [r for r in sel if r["kind"] == "chit"]
         hits = sum(bool(r["hit"]) for r in real)
+        hits5 = sum(bool(r.get("hit5")) for r in real)
         noise = sum(bool(r["keys"]) for r in chit)
         wrong = sum(1 for r in real if r["wrong"])
+        wrong5 = sum(1 for r in real if (r.get("wrong5") if "wrong5" in r else r.get("wrong")))
+        out_avg = sum(len(r["keys"]) for r in sel) / max(1, len(sel))
         # источники всех recalled-фактов
         src: dict[str, int] = {}
         for r in sel:
@@ -412,8 +431,8 @@ def summarize(rows: list[dict]) -> None:
             if r["kind"] == "real" and not r["hit"]:
                 classes[r["miss_cls"]] = classes.get(r["miss_cls"], 0) + 1
         cls_s = "; ".join(f"{k}:{v}" for k, v in sorted(classes.items(), key=lambda x: -x[1])) or "—"
-        print(f"{mode:<14} {emb:<4} {len(real):>5} {hits:>5} {noise:>5}/{len(chit):<3} "
-              f"{wrong:>6} | {src_s} | {cls_s}")
+        print(f"{mode:<14} {emb:<4} {len(real):>5} {hits:>5} {hits5:>5} {noise:>5}/{len(chit):<3} "
+              f"{wrong:>5} {wrong5:>6} {out_avg:>4.1f} | {src_s} | {cls_s}")
 
 
 def main(argv):
@@ -447,6 +466,10 @@ def main(argv):
         else:
             rows = run_contrast(args.set, modes, emb, args.endpoint)
         path = out_dir / f"provenance_{args.set}_{emb}.jsonl"
+        sha = _git_sha()
+        for r in rows:
+            r["git_sha"] = sha
+            r["endpoint"] = args.endpoint or "mock"
         with open(path, "w", encoding="utf-8") as fh:
             for r in rows:
                 fh.write(json.dumps(r, ensure_ascii=False) + "\n")
