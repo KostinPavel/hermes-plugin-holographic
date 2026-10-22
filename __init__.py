@@ -1133,7 +1133,8 @@ class HolographicMemoryProvider(MemoryProvider):
         if value is None:
             return
         if isinstance(value, int) and value in (0, 1):  # true / false (a bool is an int), or 0 / 1
-            if "1" in allowed:  # a switch
+            # a switch; or a bare off, which Hermes's YAML 1.1 reads as false ("recall_source: off", Codex review)
+            if "1" in allowed or (value is False and "off" in allowed):
                 return
         elif isinstance(value, str) and (not value.strip() or value.strip().lower() in allowed):
             return
@@ -1643,7 +1644,8 @@ class HolographicMemoryProvider(MemoryProvider):
         except NotFound as exc:  # a fact or a name that does not exist: an answer, not a missing argument
             return tool_error(f"{exc.args[0] if exc.args else exc}; nothing was changed.")
         except KeyError as exc:
-            if exc.args and exc.args[0] in _ARGUMENTS.get(tool_name, ()):  # args[...] of an argument the schema has
+            # args[...] of an argument the schema has (a str: a key of any type may come from a fault)
+            if exc.args and isinstance(exc.args[0], str) and exc.args[0] in _ARGUMENTS.get(tool_name, ()):
                 return tool_error(f"Missing required argument: {exc}")
             return self._failed(tool_name, args, exc)
         except DuplicateContentError as exc:
@@ -1897,6 +1899,8 @@ class HolographicMemoryProvider(MemoryProvider):
             return tool_error(f"{exc.args[0] if exc.args else exc}; fact_store entities lists the names. Nothing was "
                               "changed.")
         except ValueError as exc:  # an unusable or taken name: the reason, and that nothing happened (review 0.16.0)
+            if isinstance(exc, UnicodeError):  # a fault whose text may hold a piece of a fact: _run_tool names its kind
+                raise
             return tool_error(f"{exc}. Nothing was changed.")
 
     def _delete_entity(self, a: dict) -> str:

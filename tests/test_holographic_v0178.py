@@ -165,7 +165,8 @@ def test_a_bug_inside_a_fact_action_is_not_called_a_missing_fact(tmp_path, monke
         error = _call(p, action="forget", fact_id=fact_id)["error"]
     assert "does not exist" not in error and "Missing required argument" not in error
     assert "KeyError" in error and "KeyError" in caplog.text
-    assert _call(p, action="forget", fact_id=fact_id + 100)["error"]  # a real miss is still an answer
+    monkeypatch.undo()
+    assert "does not exist" in _call(p, action="forget", fact_id=fact_id + 100)["error"]  # a real miss still is one
     p.shutdown()
 
 
@@ -304,3 +305,76 @@ def test_a_timezone_that_fails_is_warned(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING):
         assert holo._hermes_timezone() is None
     assert "timezone" in caplog.text and "ValueError" in caplog.text
+
+
+# -- after the Codex review of the commit ------------------------------------------------------------------------------
+
+def test_a_bare_off_in_config_yaml_is_off_not_a_problem(_isolated_hermes_home):
+    """Hermes reads config.yaml as YAML 1.1: a bare off is the bool False, a bare on True (Codex: recall_source: off
+    turned memory off)."""
+    (_isolated_hermes_home / "config.yaml").write_text(
+        "plugins:\n  hermes-memory-store:\n    recall_source: off\n    embeddings: off\n    auto_extract: on\n"
+        "    scope: profile\n    hrr_dim: 64\n", encoding="utf-8")
+    loaded = holo._load_plugin_config()
+    assert loaded["recall_source"] is False and loaded["auto_extract"] is True  # what the core's YAML gives
+    p = HolographicMemoryProvider(config={**loaded, "db_path": str(_isolated_hermes_home / "m.db")})
+    p.initialize(session_id="s1")
+    assert "must be" not in p.system_prompt_block() and not p._recall_source
+    p.shutdown()
+
+
+def test_a_bare_on_for_recall_source_is_still_a_problem(tmp_path):
+    p = _provider(tmp_path, recall_source=True)  # recall_source: on — neither off nor short
+    assert "recall_source must be off or short" in p.system_prompt_block()
+    p.shutdown()
+
+
+def test_a_unicode_error_inside_an_entity_action_is_not_quoted(tmp_path, monkeypatch, caplog):
+    p = _provider(tmp_path)
+    _call(p, action="add", content="Masha Petrova likes green tea", entities=["Masha Petrova"])
+
+    def quoting(name):
+        raise UnicodeError(SECRET)
+
+    monkeypatch.setattr(p._store, "delete_entity", quoting)
+    with caplog.at_level(logging.WARNING):
+        error = _call(p, action="delete_entity", entity="Masha Petrova")["error"]
+    assert "4821" not in error and "UnicodeError" in error and "4821" not in caplog.text
+    p.shutdown()
+
+
+@pytest.mark.parametrize("key", [[], {}, ("entity",)])
+def test_a_key_error_with_an_odd_key_is_answered(tmp_path, monkeypatch, key):
+    p = _provider(tmp_path)
+
+    def buggy(*a, **k):
+        raise KeyError(key)
+
+    monkeypatch.setattr(p._retriever, "search", buggy)
+    assert "failed (KeyError)" in _call(p, action="search", query="tea")["error"]
+    p.shutdown()
+
+
+def test_a_new_failure_is_said_however_many_were_said_before(monkeypatch, caplog):
+    from hermes_plugin_holographic import retrieval
+    monkeypatch.setattr(retrieval, "_WARNED", set())
+    for n in range(75):  # 25 actions x 3 kinds of failure: more than the old cap of 64
+        retrieval._warn_once(f"fact_store action{n} failed", KeyError("x"))
+    with caplog.at_level(logging.WARNING):
+        retrieval._warn_once("memory mirror failed", _quoting())
+    assert "memory mirror failed (OperationalError (SQLITE_ERROR))" in caplog.text
+
+
+def test_a_bug_inside_remove_is_not_called_a_missing_fact(tmp_path, monkeypatch):
+    p = _provider(tmp_path)
+    fact_id = _call(p, action="add", content="Masha likes green tea")["fact_id"]
+
+    def buggy(fid):
+        return {}["hrr_vector"]
+
+    monkeypatch.setattr(p._store, "forget_fact", buggy)
+    answer = _call(p, action="remove", fact_id=fact_id)
+    assert answer.get("removed") is not False and "failed (KeyError)" in answer["error"]
+    monkeypatch.undo()
+    assert _call(p, action="remove", fact_id=fact_id + 100) == {"removed": False}  # a real miss still is one
+    p.shutdown()
