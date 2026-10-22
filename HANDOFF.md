@@ -112,6 +112,15 @@ are in `plans/2026-10-21-*`):
   untouched; ruff clean; Codex review: no findings. Unreleased, goes out with the next functional release. Left:
   rebuild the Graphify graph and relabel `graphify-out/callflow-sections.json` once it is in `main`; H-C
   (`screen.py` out of `__init__.py`) waits for PR #10, which changes `_sendable` / `_search`.
+- CI installs hermes-agent through `uv pip` with core's own `[tool.uv] override-dependencies` (2026-10-23, `54fff47`):
+  since core 27c6146381 (2026-10-22) core pins Pillow 13.0.0 and its browser-harness 0.1.13 pins 12.3.0, which only
+  the override reconciles; plain `pip install -e ./hermes-agent` ends in ResolutionImpossible. The overrides are
+  read from core's pyproject at run time. Locally the same: `uv run` resolves it, bare pip does not.
+- Hermes v0.22.4 (Mia since 2026-10-23) needs no change in the plugin: every core API it calls has the same
+  signature as in v0.22.2; the multi-profile contract of #140058 (one instance per load, bindings from
+  `initialize`'s `hermes_home`, no per-profile module state) is met (`MemoryStore._shared` is keyed by DB path,
+  config is read under the agent's profile, the new `handle_tool_call` keywords are ignored); bundled
+  `plugins/memory/holographic` is gone from core. Pytest against v0.22.4: 2453 passed, 2 skipped.
 
 - 0.17.6 (2026-10-21, `aca7b19`; 0.17.7 the same day, `fd68b1a`: a double negation or an exception cancels the prohibition, Codex passes three to five; catalog bump NousResearch/hermes-agent#142449 open): an Antigravity review in Russian, English and Chinese and two Codex passes. "Your
   instructions" is an instruction in all 18 languages (ambiguous "your" left out: German "ihre" only after "Sie",
