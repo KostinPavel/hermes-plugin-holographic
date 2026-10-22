@@ -82,13 +82,13 @@ def load_contrast(name: str):
 
 # ---------------------------------------------------------------- провайдер
 
-def make_provider(db: Path, mode: str, emb: bool) -> HolographicMemoryProvider:
+def make_provider(db: Path, mode: str, emb) -> HolographicMemoryProvider:
     spec = MODES[mode]
     config = {"db_path": str(db), "hrr_dim": 1024}
     if spec:
         config.update({"rerank": "on", "rerank_mode": spec[0], "rerank_weight": spec[1],
                        "rerank_url": ENDPOINT, "rerank_model": "probe-reranker"})
-    if emb:
+    if emb == "on":
         config.update({"embeddings": "on", "embedding_url": EMB_URL, "embedding_model": EMB_MODEL})
     p = HolographicMemoryProvider(config=config)
     p.initialize(session_id="prov")
@@ -270,7 +270,7 @@ def run_multilingual(langs, modes, emb, endpoint) -> list[dict]:
                     "fact_store", {"action": "add", "content": text, "entities": entities}))
                 back[int(r["fact_id"])] = key
             probe = Probe(p)
-            if emb:
+            if emb == "on":
                 ok = catch_up_vectors(p)
                 print(f"  [{lang}] векторы готовы: {ok}")
             persons = dict(data.PROBES[lang])
@@ -328,7 +328,7 @@ def run_contrast(set_name, modes, emb, endpoint) -> list[dict]:
                 "fact_store", {"action": "add", "content": text, "entities": entities}))
             back[int(r["fact_id"])] = key
         probe = Probe(p)
-        if emb:
+        if emb == "on":
             ok = catch_up_vectors(p)
             print(f"  [{set_name}] векторы готовы: {ok}")
         for pi, pair in enumerate(contrast.PAIRS):
