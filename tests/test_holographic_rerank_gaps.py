@@ -6,7 +6,7 @@ is replaced by a fake, so every request the endpoint *would* have seen is record
 1. ``Rescorer._request``'s HTTP branches — HTTPError (500 / 429), URLError, a body json cannot parse — were
    covered only for ConnectionRefused and an out-of-range index.
 2. No test ever looked at WHAT was sent: ``FakeRerank.documents`` is asserted here on BOTH paths of prefetch —
-   the unified stream (reorder_before_gate / gate_reads_score) and the legacy override branch — so a stored
+   the unified stream (reorder_before_gate / gate_reads_score) — so a stored
    credential and a fact injected one turn ago are provably cut before the endpoint sees the pool.
 3. ``_unified_stream`` had no direct test at all: the union of the three streams, the safety / de-dup it does
    itself, the top five strictly by the rank the endpoint answered, and the fall back to the old order when
@@ -86,7 +86,7 @@ def endpoint(monkeypatch):
 
 RANK = {"rerank": "on", "rerank_mode": "reorder_before_gate", "rerank_url": "https://rerank.example.net/v1/rerank",
         "rerank_model": "fake-reranker"}
-MODES = ["reorder_before_gate", "gate_reads_score", "override"]  # the unified stream's two modes and the legacy one
+MODES = ["reorder_before_gate", "gate_reads_score"]  # the unified stream's two modes (п.6: override removed)
 QUERY = "when does the backup run?"
 FACTS = ["The nightly backup runs from the OES box at 2 am.", "Lena's birthday is on June 3.",
          "Mark plays the violin on Sundays.", "Tom is allergic to peanut satay."]
@@ -191,8 +191,7 @@ def test_broken_body_keeps_order_and_pauses(tmp_path, endpoint, caplog, body):
 @pytest.mark.parametrize("mode", MODES)
 def test_a_stored_credential_is_never_sent(tmp_path, endpoint, mode):
     """A fact recall refuses (a credential) IS a candidate of the query — only the safety check before the
-    fork keeps it out of the request. Asserted on both paths: the unified stream (both of its modes) and the
-    legacy override branch."""
+    fork keeps it out of the request. Asserted in both modes of the unified stream."""
     p = _provider(tmp_path, **{**RANK, "rerank_mode": mode})
     _fill(p)
     p._store.add_fact(SECRET)
@@ -210,7 +209,7 @@ def test_a_stored_credential_is_never_sent(tmp_path, endpoint, mode):
 def test_a_fact_injected_one_turn_ago_is_never_sent_again(tmp_path, endpoint, mode):
     """prefetch_repeat_turns: seven facts answer the message, only five fit into one turn's top. The next turn
     finds all seven again — the five already injected are cut BEFORE the endpoint sees the pool, the two fresh
-    ones go out. Asserted on both paths: the unified stream (its two modes) and the legacy override branch."""
+    ones go out. Asserted in both modes of the unified stream."""
     p = _provider(tmp_path, **{**RANK, "rerank_mode": mode})
     _fill(p)
     for note in EXTRA_NOTES:

@@ -248,15 +248,13 @@ python tools/contrast_ru.py                                  # самопров�
 python tools/contrast_off.py                                 # полная матрица (RU)
 CONTRAST_SET=contrast_en python tools/contrast_off.py        # EN
 CONTRAST_SET=contrast_zh python tools/contrast_off.py        # ZH
-python tools/margin_sweep.py                                 # свип порога
-python tools/score_probe.py                                  # H4: gap/ratio/floor
-python tools/loss_probe.py                                   # H5: классы потерь
-python tools/variant_run.py                                  # H7: гипотеза «либо-либо»
 RERANK_URL=http://127.0.0.1:8093/v1/rerank ...               # прогон на CPU
 ```
 
-Инструменты ветки: `tools/contrast_{ru,en,zh}.py` (данные), `contrast_off.py` (драйвер),
-`margin_sweep.py`, `score_probe.py`, `loss_probe.py`, `variant_run.py`.
+Инструменты ветки: `tools/contrast_{ru,en,zh}.py` (данные), `contrast_off.py` (драйвер).
+Пробные скрипты (`margin_sweep`, `score_probe`, `loss_probe`, `variant_run`, `_margin_probe`,
+`_en_meaning_debug`, `_adm_wide_debug`) удалены из дерева при housekeeping PR (п.10) —
+они остались в истории коммитов ветки.
 
 ## 10. Коммиты ветки
 

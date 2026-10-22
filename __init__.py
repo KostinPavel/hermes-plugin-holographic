@@ -926,11 +926,6 @@ _PREFETCH_CANDIDATES, _PREFETCH_FACTS, _ENTITY_FACTS = 15, 5, 2
 # receives a pool several times deeper than the final need (rerank_top_k), and the FTS query is cheap while the
 # rerank call is what costs, so widening the candidates is nearly free.
 _RERANK_WIDEN = 4
-# Эксперимент (ветка contrast-ru, режим override — гипотеза "реранкер либо фильтр"):
-# сколько верхних позиций реранка проходит вопреки низкому покрытию (спасает D-класс:
-# цель на ранге 1-3 вырезал relevant()); остальные решает coverage, ranked=None ->
-# только coverage (чистый фолбэк).
-_OVERRIDE_N = 3
 # gate_reads_score, дефолт: пул перед coverage и top-5 отсекается СНИЗУ — остаётся всё в пределах этой
 # дистанции от лучшего скор (эмпирически: wrong-entity 30→8 при hit 433→430, provenance-свип, 4 сета).
 _BOTTOM_WINDOW = 0.05
@@ -1477,82 +1472,15 @@ class HolographicMemoryProvider(MemoryProvider):
             # cost no request and the margin below compares admissible candidates only.
             candidates = [f for f in candidates
                           if self._recallable(f) and self._not_recent(key, f, turn)]
-            # Развилка по режиму: единый поток (блок 3) против старого пути (off/override).
-            # Блок 3: единый поток (reorder/gate) — coverage адмиит лексику, meaning/entity идут той же
-            # safety/dedup до эндпоинта, ОДИН rerank ранжирует union, top-5 строго по рангу. off/override —
-            # старый путь ниже (baseline нетронут).
-            if self._rescorer is not None and self._rescorer.settings.mode in ("reorder_before_gate",
-                                                                                "gate_reads_score"):
+            # Развилка: rerank включён -> единый поток (блок 3); выключен (rescorer None) -> старый путь.
+            # Блок 3: coverage адмиит лексику, meaning/entity идут той же safety/dedup до эндпоинта, ОДИН
+            # rerank ранжирует union, top-5 строго по рангу; режимы reorder/gate различаются только окном и
+            # вето внутри потока. Override и legacy-ветки реранка удалены (п.6 ревью): rescorer существует
+            # только для двух режимов, и оба идут через _unified_stream.
+            if self._rescorer is not None:
                 fresh, by_meaning = self._unified_stream(query, meaning, candidates, key, turn)
             else:
-                ranked = None
-                if self._rescorer and candidates:
-                    send_idx, docs = self._sendable_docs(candidates)  # секрет-экран (PR #10, п.1)
-                    ranked = self._rescorer.scores(query, docs) if docs else None
-                    if ranked is not None:
-                        ranked = self._rescored(ranked, send_idx)
-                        order = [i for i, _ in ranked if i < len(candidates)]
-                        # rerank_weight > 0: min-max-normalised cross-encoder score blended into the blend score, so the
-                        # order is decided by both, not by the reranker alone (order-only when weight is 0).
-                        if self._rescorer.settings.weight > 0.0 and ranked:
-                            scores = [s for _, s in ranked]
-                            lo, hi = min(scores), max(scores)
-                            span = (hi - lo) or 1.0
-                            w = self._rescorer.settings.weight
-                            for i, s in ranked:
-                                if i < len(candidates):
-                                    score = candidates[i].get("score") or 0.0
-                                    candidates[i]["score"] = (1.0 - w) * score + w * ((s - lo) / span)
-                            candidates.sort(key=lambda f: f.get("score") or 0.0, reverse=True)
-                        else:
-                            candidates = [candidates[i] for i in order]
-                # De-dup and safety ran before the endpoint saw the pool; re-checked here as a backstop before the top five are
-                # taken, so they leave room for others either way.
-                if self._rescorer and self._rescorer.settings.mode == "gate_reads_score" and ranked:
-                    # Optional ratio veto (_margin_clears): the top must clear the runner-up by rerank_margin or
-                    # NOTHING is admitted. Off by default (1.0 — a sorted top can't fail it): the provenance sweep
-                    # showed the ratio criterion rejects the wrong pools on a sigmoid scale (whenever
-                    # second > 1/margin the rejection is unconditional — pools where BOTH facts score ~0.99) and
-                    # adds no noise protection beyond coverage. What passes goes to coverage below.
-                    # Нормализация для гейта (rerank.normalized): логиты приводятся sigmoid к
-                    # (0,1) — иначе при отрицательных логитах условие best < second*margin
-                    # недостижимо и гейт никогда не отказывает (проверено на llama-server:
-                    # шкала сырая, +6.36/-11.01). Относительно [0,1]-серверов правило по
-                    # ответу не применяет sigmoid дважды.
-                    scores = rerank.normalized(ranked)
-                    # The ratio veto (_margin_clears, off by default — 1.0) judges the FULL spread first: an enabled veto
-                    # must see the flat tail it exists for, before the cut narrows the pool.
-                    best = scores[0]
-                    second = scores[1] if len(scores) > 1 else None
-                    # Bottom cut: trim the low-scoring tail, then admission — the default keeps everything within
-                    # _BOTTOM_WINDOW of the best (see _bottom_cut); experiments swap the hook per document.
-                    # weight > 0 reorders the pool away from the ranked order the scores belong to — the cut is
-                    # only defined for order-only runs.
-                    keep = _bottom_cut(scores) if self._rescorer.settings.weight == 0.0 else None
-                    if not _margin_clears(best, second, self._rescorer.settings.margin) or (keep is not None and not keep):
-                        # The veto refused the flat spread, or nothing survived the cut: the pool admits nothing.
-                        gate = []
-                    else:
-                        if keep is not None:
-                            candidates = [candidates[i] for i in keep]
-                        # Admission stays the non-semantic pipeline's own: coverage filters the word-found candidates
-                        # exactly as mode off does — the cross-encoder contributes the cut above and the order below.
-                        # (Admitting the whole ranked pool let chit-chat through: the provenance probe showed every
-                        # gate-mode leak `pool-only`, coverage never asked.) The semantic stream is not here: by_meaning
-                        # enters after this gate on its own terms.
-                        gate = self._retriever.relevant(query, candidates, self._min_coverage)
-                elif (self._rescorer and self._rescorer.settings.mode == "override"
-                      and ranked is not None and candidates):
-                    # Эксперимент "реранкер либо фильтр как фолбэк": успешный ответ реранка
-                    # авторитетен для верха списка — топ-_OVERRIDE_N проходит вопреки низкому
-                    # покрытию; дальше решает coverage. ranked None (ошибка/таймаут/одиночный
-                    # кандидат) в эту ветку не попадает -> фолбэк на coverage в else ниже.
-                    top = candidates[:_OVERRIDE_N]
-                    covered = self._retriever.relevant(query, candidates, self._min_coverage)
-                    seen = {f["fact_id"] for f in top}
-                    gate = top + [f for f in covered if f["fact_id"] not in seen]
-                else:
-                    gate = self._retriever.relevant(query, candidates, self._min_coverage)
+                gate = self._retriever.relevant(query, candidates, self._min_coverage)
                 fresh = [f for f in gate
                          if self._not_recent(key, f, turn) and self._recallable(f)][:_PREFETCH_FACTS]
                 have, extra = {f["fact_id"] for f in fresh}, 0

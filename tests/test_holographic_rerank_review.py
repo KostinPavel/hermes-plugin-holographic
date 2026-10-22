@@ -119,7 +119,7 @@ def _without_rerank(tmp_path, query, extra=(), name="off.db") -> str:
 # -- 1. секрет-экран на обоих путях -------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("mode", ["reorder_before_gate", "gate_reads_score", "override"])
+@pytest.mark.parametrize("mode", ["reorder_before_gate", "gate_reads_score"])
 def test_secret_fact_is_never_in_the_payload(tmp_path, endpoint, mode):
     cfg = dict(RANK, rerank_mode=mode)
     p = _provider(tmp_path, **cfg)

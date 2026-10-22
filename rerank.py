@@ -35,7 +35,7 @@ DEFAULT_TOP_K = 40  # depth of the pool the cross-encoder sees; the first stage'
 DEFAULT_TIMEOUT = 3.0  # seconds; 3.0, not 2.0: a slow local endpoint is the normal case (issue #5)
 DEFAULT_MARGIN = 1.0  # gate_reads_score's ratio veto (the default has no teeth: 1.0 can never reject a sorted top)
 
-_MODES = {"off", "reorder_before_gate", "gate_reads_score", "override"}  # override: эксперимент (contrast-ru)
+_MODES = {"off", "reorder_before_gate", "gate_reads_score"}  # override удалён (п.6 ревью)
 
 
 def _number(config: dict, key: str, default, low, high, kind=float):

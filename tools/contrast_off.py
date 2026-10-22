@@ -68,8 +68,6 @@ MODES = {
     "gate_m102": ("gate_reads_score", "0.0", "1.02"),
     # гипотеза "реранкер либо фильтр":
     "gate_m100": ("gate_reads_score", "0.0", "1.0"),   # чистый admit-all при ranked (порог не кусается)
-    "override_0": ("override", "0.0"),                  # топ-3 реранка проходит вопреки coverage,
-                                                        # остальные по coverage; ranked=None -> только coverage
 }
 
 
