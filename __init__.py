@@ -1487,8 +1487,10 @@ class HolographicMemoryProvider(MemoryProvider):
             else:
                 ranked = None
                 if self._rescorer and candidates:
-                    ranked = self._rescorer.scores(query, [f.get("content") or "" for f in candidates])
+                    send_idx, docs = self._sendable_docs(candidates)  # секрет-экран (PR #10, п.1)
+                    ranked = self._rescorer.scores(query, docs) if docs else None
                     if ranked is not None:
+                        ranked = self._rescored(ranked, send_idx)
                         order = [i for i, _ in ranked if i < len(candidates)]
                         # rerank_weight > 0: min-max-normalised cross-encoder score blended into the blend score, so the
                         # order is decided by both, not by the reranker alone (order-only when weight is 0).
@@ -1594,6 +1596,20 @@ class HolographicMemoryProvider(MemoryProvider):
             self._recall_failed(e)
             return ""
 
+    @staticmethod
+    def _sendable_docs(facts: list[dict]) -> tuple[list[int], list[str]]:
+        """Позиции и тексты для эндпоинта: проходят только facts, которые допустимо ОТПРАВИТЬ (_sendable).
+        _recallable пускает факты с «похожим на секрет» текстом (OPENAI_API_KEY=..., Authorization: ...), а
+        показывать их recall может — на эндпоинт они не уходят (PR #10, п.1). Индексы отвечают позициям в
+        facts: ответ эндпоинта маппится обратно, состав пула для recall не меняется."""
+        idx = [i for i, f in enumerate(facts) if _sendable(f.get("content") or "")]
+        return idx, [facts[i].get("content") or "" for i in idx]
+
+    @staticmethod
+    def _rescored(ranked, send_idx: list[int]):
+        """Ответ эндпоинта (индексы по send-списку) -> индексы по исходному пулу."""
+        return [(send_idx[i], score) for i, score in ranked if 0 <= i < len(send_idx)]
+
     def _unified_stream(self, query: str, meaning, candidates: list[dict], key: str,
                         turn: int) -> tuple[list[dict], set[int]]:
         """Блок 3: один rerank на union-выборке трёх потоков → top-5 строго по рангу (режимы
@@ -1639,10 +1655,15 @@ class HolographicMemoryProvider(MemoryProvider):
                     have.add(fact["fact_id"])
         # Union: disjoint by construction (each stream excluded what the previous one admitted).
         union = meaning_facts + entity_facts + lexical
-        ranked = self._rescorer.scores(query, [f.get("content") or "" for f in union]) if union else None
+        send_idx, docs = self._sendable_docs(union)  # секрет-экран (PR #10, п.1)
+        ranked = self._rescorer.scores(query, docs) if docs else None
+        if ranked is not None:
+            ranked = self._rescored(ranked, send_idx)
         if ranked is None:
-            # A failed call (or an empty pool): the blend order decides, lexical first — the old layout.
-            return (lexical + meaning_facts + entity_facts)[:_PREFETCH_FACTS], by_meaning
+            # A failed call (or an empty pool): ровно то, что показывает off — до пяти лексических фактов,
+            # потом meaning/entity-дополнения (disjoint по построению), которых top-5 не вытесняет
+            # (PR #10, п.4).
+            return lexical[:_PREFETCH_FACTS] + meaning_facts + entity_facts, by_meaning
         order = [i for i, _ in ranked if i < len(union)]
         w = self._rescorer.settings.weight
         if w > 0.0:
@@ -2210,9 +2231,16 @@ class HolographicMemoryProvider(MemoryProvider):
         # Rescoring, after search() and before the by_meaning / beyond_words splice (rerank.py): the pool is
         # reordered, then the meaning splice fills what is left. Any failure keeps the current order.
         if self._rescorer and results:
-            indexes = self._rescorer.order(a["query"], [f.get("content") or "" for f in results])
+            # Секрет-экран: search намеренно показывает факты, которые recall не инжектит (включая
+            # учётные данные) — на эндпоинт они не уходят (PR #10, п.1).
+            send_idx, docs = self._sendable_docs(results)
+            indexes = self._rescorer.order(a["query"], docs) if docs else None
             if indexes is not None:
-                results = [results[i] for i in indexes if i < len(results)]
+                mapped = [send_idx[i] for i in indexes if i < len(send_idx)]
+                # Что реранк не оценил (хвост limit > top_k) сохраняет место ПОСЛЕ ранжированных
+                # (PR #10, п.4): раньше пересборка из ≤top_k индексов молча резала хвост.
+                seen = set(mapped)
+                results = [results[i] for i in mapped + [j for j in range(len(results)) if j not in seen]]
                 words = list(results)
         min_score = self._embedding.min_score if self._embedding is not None else None
         if meaning is not None and len(results) < limit:  # by meaning: after every fact that holds the words

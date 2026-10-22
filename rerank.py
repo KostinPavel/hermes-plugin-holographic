@@ -61,7 +61,10 @@ class Settings:
     __slots__ = ("mode", "url", "model", "top_k", "weight", "timeout", "margin")
 
     def __init__(self, config: dict):
-        raw_mode = str(config.get("rerank_mode") or "off").strip().lower()
+        # Пустой ключ -> дефолт, который показывает UI (reorder_before_gate): rerank: on без rerank_mode
+        # должен работать (PR #10, п.5). Мусорное значение -> off, как и раньше.
+        raw = config.get("rerank_mode")
+        raw_mode = str(raw if raw is not None and str(raw).strip() else "reorder_before_gate").strip().lower()
         self.mode = raw_mode if raw_mode in _MODES else "off"
         if raw_mode not in _MODES:
             logger.warning("holographic: rerank_mode must be one of %s; using off", sorted(_MODES))
@@ -215,13 +218,11 @@ class Rescorer:
             isinstance(error, urllib.error.URLError) and isinstance(error.reason, TimeoutError))
         if timed_out:
             with self._lock:
-                if alive:
-                    # A request given up on: the endpoint is paused (no abandoned machinery — synchronous recall).
-                    noted = self._fail_locked("no answer (timeout)")
-                else:
-                    noted = None
-            if noted:
-                self._log_failure(*noted)
+                # Both cases pause the endpoint: join() вышел по таймауту (alive) ИЛИ сам воркер закончился
+                # TimeoutError — сокетный таймаут должен ставить паузу и расти failures, иначе медленный
+                # сервер опрашивается каждый turn (PR #10, п.2).
+                noted = self._fail_locked("no answer (timeout)" if alive else "no answer (socket timeout)")
+            self._log_failure(*noted)
             return None
         try:
             if "error" in box:
