@@ -1430,11 +1430,20 @@ class HolographicMemoryProvider(MemoryProvider):
             else:
                 width = _PREFETCH_CANDIDATES
             candidates = self._retriever.search(query, min_trust=self._min_trust, limit=width, meaning=meaning)
+            # Safety and de-dup BEFORE the endpoint can see them: a fact recall would refuse (_recall_problem: a
+            # credential, an instruction, hidden markup) or a fact injected within prefetch_repeat_turns is never
+            # sent out for scoring — rerank.py refuses a query holding a secret, the documents must be refused here
+            # for the same reason. Both checks are order-independent, so filtering here gives the same top-5 as
+            # filtering after the gate (the `fresh` re-check below stays as a backstop), only the doomed documents
+            # cost no request and the margin below compares admissible candidates only.
+            candidates = [f for f in candidates
+                          if self._recallable(f) and self._not_recent(key, f, turn)]
             # Two integration points, both strictly after the blend (rerank.py):
             #   reorder_before_gate — the pool is reordered, then the relevance (coverage) gate decides;
-            #   gate_reads_score — the cross-encoder's score IS the gate: the pool the reranker ranked decides,
-            #   coverage is not consulted; a top that does not clear the runner-up by rerank_margin admits nothing,
-            #   and a single candidate (no runner-up) falls back to the coverage gate.
+            #   gate_reads_score — a top that does not clear the runner-up by rerank_margin admits NOTHING (a flat
+            #   spread: chit-chat where no fact stands out); otherwise admission is still the coverage gate, and the
+            #   cross-encoder's part in the gate is the margin plus the ORDER the top five is taken in. A failed call
+            #   or a single candidate (no runner-up) → coverage decides, as in mode off.
             # Any failure keeps the current order (rescorer.scores returns None).
             ranked = None
             if self._rescorer and candidates:
@@ -1455,15 +1464,13 @@ class HolographicMemoryProvider(MemoryProvider):
                         candidates.sort(key=lambda f: f.get("score") or 0.0, reverse=True)
                     else:
                         candidates = [candidates[i] for i in order]
-            # Recently injected facts are dropped BEFORE the top five are taken, so they leave room for others; so are
-            # facts the write filter would refuse today (_recall_problem).
+            # De-dup and safety ran before the endpoint saw the pool; re-checked here as a backstop before the top five are
+            # taken, so they leave room for others either way.
             if self._rescorer and self._rescorer.settings.mode == "gate_reads_score" and ranked:
-                # The cross-encoder's score is the gate: the pool is admitted only when its top score clears the
-                # runner-up by rerank_margin (model-independent — absolute scores vary by model). A flat spread,
-                # chit-chat where no fact stands out, admits nothing. On a failed call (ranked None) or a single
-                # candidate (no runner-up to compare, so the model's confidence cannot be judged) the coverage
-                # gate below decides — a single BM25 hit can still be chit-chat (a reranker's -10.1 on it is the
-                # signal, but an absolute floor would be endpoint-dependent).
+                # The margin is the cross-encoder's veto: the pool's top must clear the runner-up by rerank_margin
+                # (model-independent — absolute scores vary by model), or NOTHING is admitted. What passes the veto
+                # goes to coverage below (a failed call or a single candidate lands there too — a single BM25 hit can
+                # still be chit-chat).
                 # Нормализация для гейта (rerank.normalized): логиты приводятся sigmoid к
                 # (0,1) — иначе при отрицательных логитах условие best < second*margin
                 # недостижимо и гейт никогда не отказывает (проверено на llama-server:
@@ -1474,10 +1481,13 @@ class HolographicMemoryProvider(MemoryProvider):
                 second = scores[1] if len(scores) > 1 else None
                 if second is not None and best < second * self._rescorer.settings.margin:
                     gate = []
-                elif second is None:
-                    gate = self._retriever.relevant(query, candidates, self._min_coverage)
                 else:
-                    gate = candidates  # the reranker ranked the pool: its order is the gate
+                    # Admission stays the non-semantic pipeline's own: coverage filters the word-found candidates
+                    # exactly as mode off does — the cross-encoder contributes the margin above and the order below.
+                    # (Admitting the whole ranked pool let chit-chat through: the provenance probe showed every
+                    # gate-mode leak `pool-only`, coverage never asked.) The semantic stream is not here: by_meaning
+                    # enters after this gate on its own terms.
+                    gate = self._retriever.relevant(query, candidates, self._min_coverage)
             elif (self._rescorer and self._rescorer.settings.mode == "override"
                   and ranked is not None and candidates):
                 # Эксперимент "реранкер либо фильтр как фолбэк": успешный ответ реранка
