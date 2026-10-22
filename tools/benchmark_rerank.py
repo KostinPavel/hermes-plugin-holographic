@@ -217,11 +217,21 @@ def main(argv: list[str]) -> None:
                     help="a real /v1/rerank URL (llama-server); default: a mock ranker")
     ap.add_argument("--reverse", action="store_true", help="the mock ranker inverts the order (worst case)")
     ap.add_argument("--json", action="store_true", help="print JSON instead of a markdown table")
+    ap.add_argument("--label", default=None, help="run label (model x device) stamped into every row")
+    ap.add_argument("--out", default=None, help="append rows as JSON-lines to this file (accumulate runs)")
     args = ap.parse_args(argv)
 
     langs = [x.strip() for x in args.langs.split(",") if x.strip()]
     modes = [x.strip() for x in args.modes.split(",") if x.strip()]
     rows = [run(langs, mode, args.endpoint, args.reverse) for mode in modes]
+    if args.label:
+        for r in rows:
+            r["label"] = args.label
+    if args.out:
+        # Overwrite: each cell writes its own file fresh, so re-runs never duplicate rows.
+        with open(args.out, "w", encoding="utf-8") as fh:
+            for r in rows:
+                fh.write(json.dumps(r, ensure_ascii=False) + "\n")
     if args.json:
         print(json.dumps(rows, indent=2, ensure_ascii=False))
     else:
