@@ -18,14 +18,15 @@
 
 - **Second-stage rescoring by a cross-encoder** (RFC itpartypattaya/hermes-plugin-holographic#9). Off by default
   (`rerank: off`); with it on, a Cohere-compatible `/v1/rerank` endpoint (llama-server `--reranking`, TEI, vLLM,
-  Infinity, Jina, Cohere) reorders the candidate pool before a turn, after the blend. New keys: `rerank`,
-  `rerank_mode`, `rerank_url`, `rerank_model`, `rerank_top_k` (40), `rerank_weight` (0 = order-only), `rerank_margin`
-  (1.5), `rerank_timeout` (3 s). Two gate designs compared in the issue: `reorder_before_gate` (the reranker only
-  advises the order; the coverage gate decides as before) and `gate_reads_score` (the cross-encoder's score IS the
-  gate; a top that does not clear the runner-up by `rerank_margin` admits nothing, and a single candidate or a failed
-  call falls back to the coverage gate). A failure or a slow answer keeps the current order and pauses the endpoint
-  (60 s doubling to 900 s); a query holding a secret is never sent. One stdlib client, no new dependency
-  (`rerank.py`); with the feature off, scores and recall are 0.17.7's (tests pin them).
+  Infinity, Jina, Cohere) reorders the candidate pool before a turn, after the blend. One mode (the two designs
+  were compared in the issue and collapsed after review 2026-10-22): membership always stays with coverage, the
+  reranker advises the order. New keys: `rerank`, `rerank_url`, `rerank_model`, `rerank_top_k` (40),
+  `rerank_weight` (0 = order-only), `rerank_window` (0.05 = the tail below δ of the best score is cut before
+  coverage and the top five; 0 keeps all), `rerank_timeout` (3 s). `rerank_mode` and `rerank_margin` existed in
+  the drafts and are gone: a config carrying them is ignored with a warning. A failure or a slow answer keeps the
+  current order and pauses the endpoint (60 s doubling to 900 s); a query holding a secret is never sent. One
+  stdlib client, no new dependency (`rerank.py`); with the feature off, scores and recall are 0.17.7's (tests
+  pin them).
 - **`tools/benchmark_rerank.py`** — the five modes (off, reorder × weight {0, >0}, gate × weight {0, >0}) measured on
   the multilingual set: recall@5, wrong-entity hits, chit-chat noise, latency p50/p95. Latency against a real
   llama-server reranker (`--endpoint=…`); with no endpoint a mock ranker shows the mechanics only. Measured on a CPU

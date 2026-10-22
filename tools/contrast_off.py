@@ -52,22 +52,17 @@ contrast = importlib.util.module_from_spec(_cspec)
 _cspec.loader.exec_module(contrast)
 
 # Режимы PR #10 против реального эндпоинта (llama-server, логиты — проверено пробой).
-# Второй элемент — rerank_weight, третий (необязательный) — rerank_margin для свипа порога.
+# Второй элемент — rerank_weight, третий — rerank_window (δ; 0 = окно выключено).
 # RERANK_URL переопределяется окружением: сравнение iGPU-инстанса и CPU (-dev none).
 import os as _os
 RERANK_URL = _os.environ.get("RERANK_URL", "http://127.0.0.1:8091/v1/rerank")
 MODES = {
+    # один режим (п.6 ревью 2026-10-22): (rerank_weight, rerank_window); gate_* = окно δ включено
     "off": None,
-    "reorder_0": ("reorder_before_gate", "0.0"),
-    "reorder_05": ("reorder_before_gate", "0.5"),
-    "gate_0": ("gate_reads_score", "0.0"),
-    "gate_05": ("gate_reads_score", "0.5"),
-    "gate_m12": ("gate_reads_score", "0.0", "1.2"),
-    "gate_m11": ("gate_reads_score", "0.0", "1.1"),
-    "gate_m105": ("gate_reads_score", "0.0", "1.05"),
-    "gate_m102": ("gate_reads_score", "0.0", "1.02"),
-    # гипотеза "реранкер либо фильтр":
-    "gate_m100": ("gate_reads_score", "0.0", "1.0"),   # чистый admit-all при ranked (порог не кусается)
+    "reorder_0": ("0.0", "0.0"),
+    "reorder_05": ("0.5", "0.0"),
+    "gate_0": ("0.0", "0.05"),
+    "gate_05": ("0.5", "0.05"),
 }
 
 
@@ -131,10 +126,8 @@ def run(axis: str, mode: str = "off") -> dict:
     spec = MODES[mode]
     config = {}
     if spec:
-        config = {"rerank": "on", "rerank_mode": spec[0], "rerank_weight": spec[1],
+        config = {"rerank": "on", "rerank_weight": spec[0], "rerank_window": spec[1],
                   "rerank_url": RERANK_URL, "rerank_model": "local-reranker"}
-        if len(spec) > 2:
-            config["rerank_margin"] = spec[2]
     db = Path(tempfile.gettempdir()) / f"contrast_ru_{axis}_{mode}.db"
     for suffix in ("", "-shm", "-wal"):
         try:

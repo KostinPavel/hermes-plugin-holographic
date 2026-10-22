@@ -7,8 +7,8 @@ prefetch_repeat_turns (6), recall_indicator (true), recall_source (off | short),
 user | chat | thread); search by meaning, online and off by default: embeddings (off | on), embedding_url,
 embedding_model, embedding_key_env, embedding_dimensions, embedding_timeout, embedding_min_score,
 embedding_prefetch_facts, embedding_weight, embedding_space, embedding_catch_up_seconds (embeddings.py, README).
-Rescoring by a cross-encoder (rerank.py, off by default): rerank (off | on), rerank_mode (reorder_before_gate |
-gate_reads_score), rerank_url, rerank_model, rerank_top_k, rerank_weight, rerank_margin,
+Rescoring by a cross-encoder (rerank.py, off by default; one mode — the pool is reordered, admission stays
+with coverage): rerank (off | on), rerank_url, rerank_model, rerank_top_k, rerank_weight, rerank_window,
 rerank_timeout (README).
 Fact history, provenance and forgetting: docs/history.md."""
 
@@ -926,9 +926,6 @@ _PREFETCH_CANDIDATES, _PREFETCH_FACTS, _ENTITY_FACTS = 15, 5, 2
 # receives a pool several times deeper than the final need (rerank_top_k), and the FTS query is cheap while the
 # rerank call is what costs, so widening the candidates is nearly free.
 _RERANK_WIDEN = 4
-# gate_reads_score, дефолт: пул перед coverage и top-5 отсекается СНИЗУ — остаётся всё в пределах этой
-# дистанции от лучшего скор (эмпирически: wrong-entity 30→8 при hit 433→430, provenance-свип, 4 сета).
-_BOTTOM_WINDOW = 0.05
 _PREFETCH_LINE_CHARS = 300
 _COUNT_FLUSH_AT = 25  # buffered recall counts are written in one go at this many, and at session boundaries
 _MAX_TRACKED_SESSIONS, _MAX_TRACKED_FACTS = 16, 512
@@ -1039,39 +1036,22 @@ def _source_line(src: dict | None) -> str:
     return " · ".join(p for p in parts if p)
 
 
-def _bottom_cut(scores: list[float]) -> list[int] | None:
-    """Bottom criterion: which ranked positions to KEEP — None disables the cut.
+def _bottom_cut(scores: list[float], window: float) -> list[int] | None:
+    """Which ranked positions to KEEP under `rerank_window` (δ); the cut runs before coverage and the top five.
 
-    The counterpart of `_margin_clears`: instead of all-or-nothing admission judged from the gap at the TOP, a
-    per-document cut judged from the BOTTOM of the score list, applied before coverage and the top five. The
-    default keeps everything within `_BOTTOM_WINDOW` of the best score: the top (usually the target fact) always
-    survives — a window can't reject the winner — while the low-scoring tail, where partner distractors sit, is
-    trimmed. Measured on the provenance sweep (4 sets, 450 real queries): wrong-entity top-5 30→8 at hit
-    433→430, noise unchanged. An absolute FLOOR (τ on the score) was rejected instead: sigmoid scores are
-    model/language dependent, τ=0.5 alone lost 54 hits on multi.
+    A per-document cut judged from the BOTTOM of the score list: everything within δ of the best score survives —
+    the top (usually the target fact) always does, a window can't reject the winner — while the low-scoring tail,
+    where partner distractors sit, is trimmed. Measured on the provenance sweep (4 sets, 450 real queries):
+    wrong-entity top-5 30→8 at hit 433→430, noise unchanged. An absolute FLOOR (τ on the score) was rejected
+    instead: sigmoid scores are model/language dependent, τ=0.5 alone lost 54 hits on multi.
     Returns indices into the reordered pool; [] means every candidate is cut.
     Only read when rerank_weight == 0: a blend reorders the pool away from the ranked order the scores belong to.
+    δ = 0 (the window off) is handled by the caller: no cut at all.
     """
     if not scores:
         return []
     top = scores[0]
-    return [i for i, s in enumerate(scores) if top - s <= _BOTTOM_WINDOW]
-
-
-def _margin_clears(best: float, second: float | None, margin: float) -> bool:
-    """True when the cross-encoder's top clears the runner-up — gate_reads_score's veto.
-
-    `second is None` (a single candidate) never vetoes: a lone BM25 hit still goes
-    to coverage below. The criterion lives here so experiments (provenance_probe)
-    can swap the formula without touching the pipeline. NOTE on scales: the scores
-    are sigmoid-normalised to (0,1), so a MULTIPLICATIVE margin gets pathological
-    near saturation — `best < second*margin` is unsatisfiable whenever
-    `second > 1/margin` (at 1.05: second > 0.952 vetoes unconditionally, rejecting
-    pools where both facts are confidently relevant). Measured on contrast_zh.
-    """
-    if second is None:
-        return True
-    return best >= second * margin
+    return [i for i, s in enumerate(scores) if top - s <= window]
 
 
 class HolographicMemoryProvider(MemoryProvider):
@@ -1219,10 +1199,9 @@ class HolographicMemoryProvider(MemoryProvider):
              "Off: the current order is kept exactly",
              "default": current("rerank", "off"),
              "choices": ["off", "on"]},
-            {"key": "rerank_mode", "description": "reorder_before_gate: the pool is reordered, then the relevance "
-             "gate decides; gate_reads_score: the gate reads the cross-encoder's score",
-             "default": current("rerank_mode", "reorder_before_gate"),
-             "choices": ["reorder_before_gate", "gate_reads_score"]},
+            {"key": "rerank_window", "description": "δ: the tail below this distance of the best score is cut "
+             "before coverage and the top five (0 = keep everything; only with rerank_weight 0)",
+             "default": current("rerank_window", "0.05")},
             {"key": "rerank_url", "description": "Cohere-compatible rerank API (https; plain http only to "
              "localhost or a private address, e.g. llama-server --reranking)",
              "default": current("rerank_url", "http://127.0.0.1:8080/v1/rerank")},
@@ -1234,11 +1213,7 @@ class HolographicMemoryProvider(MemoryProvider):
             {"key": "rerank_weight", "description": "0 = order-only (recommended), >0 = min-max blend of the "
              "cross-encoder's score with the blend score",
              "default": current("rerank_weight", "0.0")},
-            {"key": "rerank_margin", "description": "gate_reads_score ratio veto: the top must clear the runner-up by "
-             "this ratio to admit the pool (1.0 = off; admission is decided by the bottom window instead, "
-             "see _BOTTOM_WINDOW)",
-             "default": current("rerank_margin", "1.0")},
-            {"key": "rerank_timeout", "description": "Seconds a rerank call may take (recall's only protection; "
+                        {"key": "rerank_timeout", "description": "Seconds a rerank call may take (recall's only protection; "
              "a slow local endpoint is the normal case)",
              "default": current("rerank_timeout", "3.0")},
         ]
@@ -1474,9 +1449,9 @@ class HolographicMemoryProvider(MemoryProvider):
                           if self._recallable(f) and self._not_recent(key, f, turn)]
             # Развилка: rerank включён -> единый поток (блок 3); выключен (rescorer None) -> старый путь.
             # Блок 3: coverage адмиит лексику, meaning/entity идут той же safety/dedup до эндпоинта, ОДИН
-            # rerank ранжирует union, top-5 строго по рангу; режимы reorder/gate различаются только окном и
-            # вето внутри потока. Override и legacy-ветки реранка удалены (п.6 ревью): rescorer существует
-            # только для двух режимов, и оба идут через _unified_stream.
+            # rerank ранжирует union, top-5 строго по рангу; окно (rerank_window) и вес —
+            # единственные переключатели (п.6: override и режимы удалены; rescorer существует
+            # только для одного режима, и он идёт через _unified_stream.
             if self._rescorer is not None:
                 fresh, by_meaning = self._unified_stream(query, meaning, candidates, key, turn)
             else:
@@ -1554,6 +1529,9 @@ class HolographicMemoryProvider(MemoryProvider):
           wide-пула.
         - Пустой/упавший реранк → прежний порядок (лексика первой, потоки в придачу), как в off.
         """
+        rescorer = self._rescorer
+        assert rescorer is not None  # вызывается только при включённом rerank
+
         # Stream 1: membership is decided by the words, before any rank.
         lexical = self._retriever.relevant(query, candidates, self._min_coverage)
         have = {f["fact_id"] for f in lexical}
@@ -1584,7 +1562,7 @@ class HolographicMemoryProvider(MemoryProvider):
         # Union: disjoint by construction (each stream excluded what the previous one admitted).
         union = meaning_facts + entity_facts + lexical
         send_idx, docs = self._sendable_docs(union)  # секрет-экран (PR #10, п.1)
-        ranked = self._rescorer.scores(query, docs) if docs else None
+        ranked = rescorer.scores(query, docs) if docs else None
         if ranked is not None:
             ranked = self._rescored(ranked, send_idx)
         if ranked is None:
@@ -1593,7 +1571,7 @@ class HolographicMemoryProvider(MemoryProvider):
             # (PR #10, п.4).
             return lexical[:_PREFETCH_FACTS] + meaning_facts + entity_facts, by_meaning
         order = [i for i, _ in ranked if i < len(union)]
-        w = self._rescorer.settings.weight
+        w = rescorer.settings.weight
         if w > 0.0:
             # rerank_weight > 0: min-max-normalised cross-encoder score blended into the blend score —
             # the order is decided by both (order-only when weight is 0).
@@ -1611,17 +1589,12 @@ class HolographicMemoryProvider(MemoryProvider):
             tail = [i for i in range(len(union)) if i not in set(order)]
             union = [union[i] for i in order + tail]
         fresh = union
-        if self._rescorer.settings.mode == "gate_reads_score":
-            # Optional ratio veto on the FULL spread (off by default, see _margin_clears), then the bottom
-            # cut — both judge the COMMON rank of every stream now (the sweep's semantics, one rank).
-            norm = rerank.normalized(ranked)
-            best = norm[0]
-            second = norm[1] if len(norm) > 1 else None
-            keep = _bottom_cut(norm) if w == 0.0 else None  # a blend reorders away from the ranked order
-            if not _margin_clears(best, second, self._rescorer.settings.margin) or (keep is not None and not keep):
-                fresh = []
-            elif keep is not None:
-                fresh = [union[i] for i in keep]
+        window = rescorer.settings.window
+        if w == 0.0 and window > 0.0:
+            # rerank_window (δ): срез НИЖНЕГО хвоста до coverage и top-5 (п.6: вето-по-margin удалено,
+            # осталось окно). Сигмоид-нормализация — чтобы δ был одинаков для сырых логитов и [0,1].
+            keep = _bottom_cut(rerank.normalized(ranked), window)
+            fresh = [union[i] for i in keep] if keep else []
         return fresh[:_PREFETCH_FACTS], by_meaning
 
     def _recall_failed(self, exc: Exception) -> None:

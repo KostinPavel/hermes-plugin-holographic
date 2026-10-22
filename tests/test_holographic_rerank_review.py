@@ -8,7 +8,7 @@
 4. Упавший реранк в `_unified_stream` отдаёт в точности раскладку off: lexical[:5],
    затем meaning/entity-дополнения, а не (lexical+…+…)[:5], который их вытесняет.
    Плюс `_search`: хвост limit > top_k сохраняет место ПОСЛЕ ранжированных.
-5. `rerank: on` без `rerank_mode` получает дефолт UI (reorder_before_gate), а не off.
+5. `rerank: on` сам по себе включает единственный режим; ключи `rerank_mode`/`rerank_margin` удалены (п.6) — старая конфигурация игнорируется с предупреждением.
 """
 from __future__ import annotations
 
@@ -73,7 +73,7 @@ def endpoint(monkeypatch):
 
 # -- store --------------------------------------------------------------------------------------------------------
 
-RANK = {"rerank": "on", "rerank_mode": "reorder_before_gate",
+RANK = {"rerank": "on",
         "rerank_url": "https://rerank.example.net/v1/rerank", "rerank_model": "fake-reranker"}
 QUERY = "when does the backup run?"
 # Нейтральные fillers: без них IDF-вес «backup» почти во всех фактах роняет покрытие relevant()
@@ -119,10 +119,8 @@ def _without_rerank(tmp_path, query, extra=(), name="off.db") -> str:
 # -- 1. секрет-экран на обоих путях -------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("mode", ["reorder_before_gate", "gate_reads_score"])
-def test_secret_fact_is_never_in_the_payload(tmp_path, endpoint, mode):
-    cfg = dict(RANK, rerank_mode=mode)
-    p = _provider(tmp_path, **cfg)
+def test_secret_fact_is_never_in_the_payload(tmp_path, endpoint):
+    p = _provider(tmp_path, **RANK)
     _fill(p, extra=[SECRET, KEY_FACT, VIOLET])
     # посылка п.1: recallable, но не sendable — и на эндпоинт не уходит
     assert _sendable(SECRET) is False
@@ -230,7 +228,8 @@ def test_search_keeps_the_unscored_tail(tmp_path, endpoint):
 # -- 5. дефолт режима = UI ---------------------------------------------------------------------------------------
 
 
-def test_rerank_on_alone_uses_the_ui_default():
+def test_rerank_on_alone_is_enough():
+    """п.6: один режим — rerank: on включает его без каких-либо режимных ключей."""
     settings = rerank.settings_from({"rerank": "on"})
     assert settings is not None
-    assert settings.mode == "reorder_before_gate"
+    assert settings.window == rerank.DEFAULT_WINDOW

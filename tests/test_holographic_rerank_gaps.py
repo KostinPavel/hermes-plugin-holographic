@@ -6,7 +6,7 @@ is replaced by a fake, so every request the endpoint *would* have seen is record
 1. ``Rescorer._request``'s HTTP branches — HTTPError (500 / 429), URLError, a body json cannot parse — were
    covered only for ConnectionRefused and an out-of-range index.
 2. No test ever looked at WHAT was sent: ``FakeRerank.documents`` is asserted here on BOTH paths of prefetch —
-   the unified stream (reorder_before_gate / gate_reads_score) — so a stored
+   the unified stream — so a stored
    credential and a fact injected one turn ago are provably cut before the endpoint sees the pool.
 3. ``_unified_stream`` had no direct test at all: the union of the three streams, the safety / de-dup it does
    itself, the top five strictly by the rank the endpoint answered, and the fall back to the old order when
@@ -84,9 +84,8 @@ def endpoint(monkeypatch):
 
 # -- a store to run on -------------------------------------------------------------------------------------------
 
-RANK = {"rerank": "on", "rerank_mode": "reorder_before_gate", "rerank_url": "https://rerank.example.net/v1/rerank",
-        "rerank_model": "fake-reranker"}
-MODES = ["reorder_before_gate", "gate_reads_score"]  # the unified stream's two modes (п.6: override removed)
+RANK = {"rerank": "on", "rerank_url": "https://rerank.example.net/v1/rerank",
+        "rerank_model": "fake-reranker"}  # one mode since п.6: rerank_mode is gone
 QUERY = "when does the backup run?"
 FACTS = ["The nightly backup runs from the OES box at 2 am.", "Lena's birthday is on June 3.",
          "Mark plays the violin on Sundays.", "Tom is allergic to peanut satay."]
@@ -188,11 +187,10 @@ def test_broken_body_keeps_order_and_pauses(tmp_path, endpoint, caplog, body):
 
 # -- 2. what never leaves the machine: safety and de-dup BEFORE the endpoint --------------------------------------
 
-@pytest.mark.parametrize("mode", MODES)
-def test_a_stored_credential_is_never_sent(tmp_path, endpoint, mode):
+def test_a_stored_credential_is_never_sent(tmp_path, endpoint):
     """A fact recall refuses (a credential) IS a candidate of the query — only the safety check before the
-    fork keeps it out of the request. Asserted in both modes of the unified stream."""
-    p = _provider(tmp_path, **{**RANK, "rerank_mode": mode})
+    fork keeps it out of the request."""
+    p = _provider(tmp_path, **RANK)
     _fill(p)
     p._store.add_fact(SECRET)
     pool = [c["content"] for c in p._retriever.search(QUERY, min_trust=p._min_trust, limit=60)]
@@ -205,12 +203,11 @@ def test_a_stored_credential_is_never_sent(tmp_path, endpoint, mode):
     p.shutdown()
 
 
-@pytest.mark.parametrize("mode", MODES)
-def test_a_fact_injected_one_turn_ago_is_never_sent_again(tmp_path, endpoint, mode):
+def test_a_fact_injected_one_turn_ago_is_never_sent_again(tmp_path, endpoint):
     """prefetch_repeat_turns: seven facts answer the message, only five fit into one turn's top. The next turn
     finds all seven again — the five already injected are cut BEFORE the endpoint sees the pool, the two fresh
-    ones go out. Asserted in both modes of the unified stream."""
-    p = _provider(tmp_path, **{**RANK, "rerank_mode": mode})
+    ones go out."""
+    p = _provider(tmp_path, **RANK)
     _fill(p)
     for note in EXTRA_NOTES:
         p._store.add_fact(note)
@@ -300,11 +297,10 @@ def test_unified_stream_falls_back_to_the_old_order_when_scores_is_none(tmp_path
 
 # -- 4. rerank on, the endpoint unusable -------------------------------------------------------------------------
 
-@pytest.mark.parametrize("mode", MODES)
-def test_dead_endpoint_degrades_to_the_order_without_rerank(tmp_path, endpoint, mode):
+def test_dead_endpoint_degrades_to_the_order_without_rerank(tmp_path, endpoint):
     """rerank on, but an address rerank.py refuses outright: the provider must not fail, must not send
     anything, and must recall exactly what it recalls with rerank off."""
-    p = _provider(tmp_path, **{**RANK, "rerank_mode": mode, "rerank_url": "ftp://nowhere.invalid/v1/rerank"})
+    p = _provider(tmp_path, **{**RANK, "rerank_url": "ftp://nowhere.invalid/v1/rerank"})
     _fill(p)
     assert p._rescorer is not None  # the config asks for rerank ...
     assert p._rescorer.unavailable()  # ... and rerank.py refuses the address before any request

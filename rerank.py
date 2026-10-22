@@ -33,9 +33,7 @@ PAUSE_FIRST, PAUSE_MAX = 60.0, 900.0  # seconds the endpoint is left alone after
 MAX_RESPONSE = 64 << 20
 DEFAULT_TOP_K = 40  # depth of the pool the cross-encoder sees; the first stage's limit is widened to match
 DEFAULT_TIMEOUT = 3.0  # seconds; 3.0, not 2.0: a slow local endpoint is the normal case (issue #5)
-DEFAULT_MARGIN = 1.0  # gate_reads_score's ratio veto (the default has no teeth: 1.0 can never reject a sorted top)
-
-_MODES = {"off", "reorder_before_gate", "gate_reads_score"}  # override удалён (п.6 ревью)
+DEFAULT_WINDOW = 0.05  # rerank_window: доля хвоста ниже которой пул отсекается (0 = ничего не отсекать)
 
 
 def _number(config: dict, key: str, default, low, high, kind=float):
@@ -56,23 +54,22 @@ def _number(config: dict, key: str, default, low, high, kind=float):
 
 
 class Settings:
-    """The plugin config's rerank_* keys, validated (see README, \"Search by meaning\")."""
+    """The plugin config's rerank_* keys, validated (see README). One mode: the cross-encoder reorders the pool,
+    admission stays with coverage; `rerank_window` (δ) trims the tail below δ of the best score, 0 keeps all."""
 
-    __slots__ = ("mode", "url", "model", "top_k", "weight", "timeout", "margin")
+    __slots__ = ("url", "model", "top_k", "weight", "timeout", "window")
 
     def __init__(self, config: dict):
-        # Пустой ключ -> дефолт, который показывает UI (reorder_before_gate): rerank: on без rerank_mode
-        # должен работать (PR #10, п.5). Мусорное значение -> off, как и раньше.
-        raw = config.get("rerank_mode")
-        raw_mode = str(raw if raw is not None and str(raw).strip() else "reorder_before_gate").strip().lower()
-        self.mode = raw_mode if raw_mode in _MODES else "off"
-        if raw_mode not in _MODES:
-            logger.warning("holographic: rerank_mode must be one of %s; using off", sorted(_MODES))
+        # rerank_mode / rerank_margin удалены (п.6 ревью 2026-10-22): один режим, окно - отдельная клавиша.
+        for gone, replacement in (("rerank_mode", "one mode; rerank: on is the switch"),
+                                  ("rerank_margin", "rerank_window instead")):
+            if config.get(gone) is not None and str(config.get(gone)).strip():
+                logger.warning("holographic: %s was removed (%s); ignoring it", gone, replacement)
         self.url = str(config.get("rerank_url") or "http://127.0.0.1:8080/v1/rerank").strip()
         self.model = str(config.get("rerank_model") or "local-reranker").strip()
         self.top_k = _number(config, "rerank_top_k", DEFAULT_TOP_K, 1, 1000, int)  # int (kind=int)
         self.weight = _number(config, "rerank_weight", 0.0, 0.0, 1.0)
-        self.margin = _number(config, "rerank_margin", DEFAULT_MARGIN, 1.0, 10.0)
+        self.window = _number(config, "rerank_window", DEFAULT_WINDOW, 0.0, 1.0)
         self.timeout = _number(config, "rerank_timeout", DEFAULT_TIMEOUT, 0.5, 10.0)
 
 
@@ -82,8 +79,7 @@ def settings_from(config: dict) -> Settings | None:
     on = value is True or str(value).strip().lower() in {"on", "true", "yes", "1"}
     if not on:
         return None
-    settings = Settings(config)
-    return settings if settings.mode != "off" else None
+    return Settings(config)
 
 
 def _local(host: str) -> bool:

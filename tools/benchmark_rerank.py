@@ -52,13 +52,14 @@ assert _data_spec and _data_spec.loader
 data = importlib.util.module_from_spec(_data_spec)
 _data_spec.loader.exec_module(data)
 
-# mode -> (rerank_mode, rerank_weight)
+# mode -> (rerank_weight, rerank_window): один режим (п.6 ревью 2026-10-22), ярлыки сохранены как
+# историческая номенклатура таблиц: gate_* = окно δ включено (0.05), reorder_* = окно выключено.
 MODES = {
-    "off": ("off", "0.0"),
-    "reorder_only": ("reorder_before_gate", "0.0"),
-    "reorder_blend": ("reorder_before_gate", "0.5"),
-    "gate_only": ("gate_reads_score", "0.0"),
-    "gate_blend": ("gate_reads_score", "0.5"),
+    "off": ("0.0", "0.0"),
+    "reorder_only": ("0.0", "0.0"),
+    "reorder_blend": ("0.5", "0.0"),
+    "gate_only": ("0.0", "0.05"),
+    "gate_blend": ("0.5", "0.05"),
 }
 
 
@@ -138,10 +139,10 @@ def _percentile(times: list[float], q: float) -> float:
 
 def run(langs: list[str], mode: str, endpoint_url: str | None, reverse: bool) -> dict:
     """One mode over the given languages: recall@5, wrong-entity hits, noise, latency p50/p95."""
-    rerank_mode, weight = MODES[mode]
-    config = {"rerank": "on" if rerank_mode != "off" else "off"}
-    if rerank_mode != "off":
-        config.update({"rerank_mode": rerank_mode, "rerank_weight": weight,
+    weight, window = MODES[mode]
+    config = {"rerank": "off" if mode == "off" else "on"}
+    if mode != "off":
+        config.update({"rerank_weight": weight, "rerank_window": window,
                        "rerank_model": "bench-reranker"})
         config["rerank_url"] = endpoint_url or "https://rerank.example.net/v1/rerank"
 
