@@ -120,6 +120,12 @@ def main() -> None:
         lost = sum(1 for r in real if not r[stat])
         killed = sum(1 for r in chit if not r[stat])
         print(f"{stat:>5}: убивает chit {killed}/{len(chit)}, теряет real {lost}/{len(real)}")
+    print("\n-- фиксированные пороги (для сравнения с multi) --")
+    for t in (2.3, 2.35, 2.4, 2.5, 2.6, 2.7, 2.73):
+        lost = sum(1 for r in real if r["z"] is None or r["z"] < t)
+        killed = sum(1 for r in chit if r["z"] is None or r["z"] < t)
+        print(f"  t={t}: потеря real {lost}/90, убито chit {killed}/135")
+
     print("\n-- свип порога: лучший шум-килл при бюджете потерь real --")
     print("| стат | б0 | б1 | б2 | б3 | б5 |")
     print("|---|---|---|---|---|---|")
