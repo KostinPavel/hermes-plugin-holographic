@@ -884,7 +884,7 @@ HERMES_AGENT_REPO=~/.hermes/hermes-agent PYTHONPATH=~/.hermes/hermes-agent pytho
 
 CI runs the suite on Linux, macOS and Windows against hermes-agent `main`, `ruff check .` with the rules in
 `pyproject.toml`, and `hermes plugins validate`, the check the plugin catalog runs at admission. 0.11.0: 612 tests pass without the core (2 skipped; the auto-extraction tests
-need it), 600 with snowballstemmer 2.2.0 (14 skipped: no Polish stemmer). Maintenance notes are in [HANDOFF.md](HANDOFF.md).
+need it), 600 with snowballstemmer 2.2.0 (14 skipped: no Polish stemmer).
 
 Original plugin by dusterbloom (hermes-agent PR #2351); its history is in hermes-agent
 (`git log -- plugins/memory/holographic`). MIT licence. The bundled language data live in `dictionaries/` (the list
