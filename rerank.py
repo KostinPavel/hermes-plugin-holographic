@@ -140,6 +140,7 @@ class Rescorer:
         self._last_error = ""
         self._epoch = 0
         self.calls = 0  # requests sent (stats, tests)
+        self.failures = 0  # counted fallbacks: scores() returned None on a failure (diagnostics)
 
     def unavailable(self) -> str:
         """Why the endpoint cannot be used at all (\"\" when it can): the address, the key."""
@@ -253,6 +254,7 @@ class Rescorer:
     def _fail_locked(self, why: str) -> tuple:
         """Under _lock: count a failure — pause the endpoint, longer each time — and return what to log."""
         first = not self._last_error
+        self.failures += 1
         self._pause = min(PAUSE_MAX, self._pause * 2) if self._pause else PAUSE_FIRST
         self._paused_until = time.monotonic() + self._pause
         self._last_error = why

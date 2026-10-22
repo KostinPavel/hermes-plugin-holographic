@@ -837,18 +837,23 @@ plugins:
 
 - **reorder_before_gate** — the reranker reorders the pool, then the relevance (coverage) gate decides as always. The
   conservative mode: the cross-encoder only advises the order.
-- **gate_reads_score** — the cross-encoder's score IS the gate: the pool it ranked decides, coverage is not consulted.
-  A top that does not clear the runner-up by ``rerank_margin`` (1.5) admits nothing — a flat score spread, chit-chat
-  where no fact stands out — and a single candidate (no runner-up to compare) or a failed call falls back to the
-  coverage gate.
+- **gate_reads_score** — the cross-encoder's rank decides the order and the tail; coverage still admits membership
+  first (the words' own criterion, exactly as in off), so the gate can only lose a fact the words themselves reject.
+  The tail below 5% of the best score is cut before the top five is taken by rank, meaning- and entity-based facts
+  compete in the same rank as the lexical pool, and ``rerank_margin`` > 1 optionally demands the top clear the
+  runner-up by that ratio before anything is admitted (off at the default 1.0). A failed call falls back to the
+  pool's blend order.
 
 Other keys: ``rerank_top_k`` (40: how deep a pool the cross-encoder sees; the first stage's limit is widened to
 match), ``rerank_weight`` (0 = order-only, recommended; >0 = the min-max-normalised cross-encoder score blended into
-the blend score), ``rerank_timeout`` (3 s), ``rerank_margin`` (1.5: the ratio the gate mode requires between the top
-score and the runner-up). A query that holds a secret is never sent.
+the blend score), ``rerank_timeout`` (3 s), ``rerank_margin`` (1.0 = no veto; when > 1, the ratio the gate mode requires
+between the top score and the runner-up — measured to cost recall without cutting noise on a sigmoid-scale
+model, kept as a manual lever). A query that holds a secret is never sent.
 
-Measured on a real llama-server with bge-m3-reranker-v2 (Bge-M3-568M-Q4_K_M) on a CPU box, three languages
-(en/ru/zh), 60 questions and 15 that must recall nothing (``tools/benchmark_rerank.py --endpoint=…``):
+Measured on a real llama-server with bge-m3-reranker-v2 (Bge-M3-568M-Q4_K_M), three languages (en/ru/zh),
+60 questions and 15 that must recall nothing (``tools/benchmark_rerank.py --endpoint=…``). The first table is
+the PR author's CPU box; the same run on a GTX 1050 Ti (2026-10-22) gives p50 32–35 ms / p95 47–51 ms for the
+four rerank modes and p50 4 ms off — the same order of cost, and recall/wrong/noise identical:
 
 | mode | recall@5 | wrong-entity | noise | p50 (ms) | p95 (ms) |
 |---|---|---|---|---|---|
@@ -859,9 +864,10 @@ Measured on a real llama-server with bge-m3-reranker-v2 (Bge-M3-568M-Q4_K_M) on 
 | gate_reads_score, weight 0.5 | 100% (60/60) | 0 | 0% | 37 | 51 |
 
 This store's recall was already 100% before the turn (its data are calibrated to ≥95%): the reranker keeps it there.
-The honest number this table adds is the per-turn cost — 3-4 ms to 37-40 ms median, 8 ms to ~52 ms p95 — the price
-the maintainer's acceptance asked to see next to the gain. A second reranker of different quality and a larger public
-set are run before merging (issue #9).
+The honest number this table adds is the per-turn cost — 3-4 ms to 40 ms median, ~52 ms p95 on the author's box,
+32–35 ms median / 47–51 ms p95 on a GTX 1050 Ti — the price the maintainer's acceptance asked to see next to the
+gain (a CPU-only llama-server costs ~400 ms per call, see docs/contrast-benchmark.md §5). A second reranker of
+different quality and a larger public set are run before merging (issue #9).
 
 ## Data and privacy
 

@@ -153,6 +153,7 @@ def run(langs: list[str], mode: str, endpoint_url: str | None, reverse: bool) ->
 
     hit5 = asked = wrong = quiet = negatives = 0
     times: list[float] = []
+    failures = 0  # ranked is None: fallbacks to the coverage order (counted in rerank.Rescorer)
     try:
         for li, lang in enumerate(langs):
             p = _provider(f"/tmp/bench_{lang}_{mode}.db", **config)
@@ -176,6 +177,7 @@ def run(langs: list[str], mode: str, endpoint_url: str | None, reverse: bool) ->
                 else:
                     negatives += 1
                     quiet += not injected
+            failures += getattr(getattr(p, "_rescorer", None), "failures", 0)
             p.shutdown()
     finally:
         if not endpoint_url:
@@ -193,6 +195,7 @@ def run(langs: list[str], mode: str, endpoint_url: str | None, reverse: bool) ->
         "p50_ms": _percentile(times, 0.50) * 1000.0,
         "p95_ms": _percentile(times, 0.95) * 1000.0,
         "calls": mock.requests if not endpoint_url else None,
+        "failures": failures,
         "langs": langs,
     }
 
@@ -206,6 +209,9 @@ def table(rows: list[dict], endpoint: str | None) -> str:
         body.append(f"| {r['mode']} | {recall} | {r['hit5']}/{r['asked']} | {r['wrong']} | "
                     f"{r['noise']:.0%} | {r['p50_ms']:.0f} | {r['p95_ms']:.0f} |")
     note = ("\nEndpoint: " + (endpoint or "mock (order only; latency is the mock's, not a server's)"))
+    failed = sum(r.get("failures", 0) for r in rows)
+    if failed:
+        note += f"\nranked is None (fallbacks to coverage order): {failed}"
     return head + "\n".join(body) + note + "\n"
 
 
