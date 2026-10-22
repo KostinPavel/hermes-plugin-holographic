@@ -4,8 +4,9 @@ A fake endpoint stands in for the /v1/rerank server: it answers with a fixed or 
 sent, or fails as told. The five benchmark modes are covered: off, reorder_before_gate (order-only / blended),
 gate_reads_score (order-only / blended).
 
-The gate variant is the cross-encoder's own ranking as the gate (coverage not consulted); order-only (weight 0)
-reorders the pool before the coverage gate. Any failure keeps the current order and pauses the endpoint."""
+The gate variant cuts the pool from the bottom (_bottom_cut window), applies the optional ratio veto
+(rerank_margin, off by default) and hands the survivors to the coverage gate; order-only (weight 0) reorders
+the pool before the coverage gate. Any failure keeps the current order and pauses the endpoint."""
 from __future__ import annotations
 
 import json
@@ -14,6 +15,7 @@ import time
 import pytest
 
 from hermes_plugin_holographic import HolographicMemoryProvider, rerank  # noqa: E402
+from hermes_plugin_holographic import _bottom_cut, _BOTTOM_WINDOW  # noqa: E402
 
 
 class _Response:
@@ -147,8 +149,10 @@ def test_gate_reads_score_uses_ranking(tmp_path, endpoint):
 
 
 def test_gate_reads_score_margin_closes_on_flat_spread(tmp_path, endpoint):
-    """A reranker that sees no clear winner (chit-chat, a flat score spread) must admit nothing — the margin gate."""
-    p = _provider(tmp_path, **{**RANK, "rerank_mode": "gate_reads_score"})
+    """The ratio veto, ENABLED (rerank_margin > 1.0), must admit nothing on a flat score spread. The default
+    (1.0) has no teeth — admission is decided by the bottom window instead (see _bottom_cut / _BOTTOM_WINDOW);
+    the veto stays configurable for stores that want it."""
+    p = _provider(tmp_path, **{**RANK, "rerank_mode": "gate_reads_score", "rerank_margin": "1.5"})
     _fill(p)
     # a chit-chat query that still pulls several candidates (the filler facts all contain "note")
     endpoint.scores = [1.0, 0.9, 0.89, 0.88, 0.87]  # flat tail, no confident top: top 1.0 vs 0.9 = 1.11 < 1.5
@@ -156,6 +160,20 @@ def test_gate_reads_score_margin_closes_on_flat_spread(tmp_path, endpoint):
     # the same query with a confident top is recalled: the margin, not the query, is what refused it
     endpoint.scores = [1.0, 0.2, 0.19, 0.18, 0.17]  # top 1.0 vs 0.2 = 5.0 > 1.5
     assert _block(p, "what about the note?") != ""
+    p.shutdown()
+
+
+def test_bottom_cut_default_keeps_the_window(tmp_path, endpoint):
+    """The default gate cuts the pool FROM THE BOTTOM: everything within _BOTTOM_WINDOW of the best score
+    survives, the top always survives (a window can't reject the winner), a flat tail does NOT veto."""
+    assert _BOTTOM_WINDOW == 0.05
+    assert _bottom_cut([0.99, 0.96, 0.93, 0.5]) == [0, 1]  # gap 0.03 in, 0.06 and 0.49 out
+    assert _bottom_cut([0.4]) == [0]  # a lone candidate always survives
+    assert _bottom_cut([]) == []
+    p = _provider(tmp_path, **{**RANK, "rerank_mode": "gate_reads_score"})
+    _fill(p)
+    endpoint.scores = [1.0, 0.9, 0.89, 0.88, 0.87]  # flat tail — the DEFAULT has no ratio veto
+    assert _block(p, "what about the note?") != ""  # unlike the enabled veto in the test above
     p.shutdown()
 
 

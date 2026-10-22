@@ -33,7 +33,7 @@ PAUSE_FIRST, PAUSE_MAX = 60.0, 900.0  # seconds the endpoint is left alone after
 MAX_RESPONSE = 64 << 20
 DEFAULT_TOP_K = 40  # depth of the pool the cross-encoder sees; the first stage's limit is widened to match
 DEFAULT_TIMEOUT = 3.0  # seconds; 3.0, not 2.0: a slow local endpoint is the normal case (issue #5)
-DEFAULT_MARGIN = 1.5  # gate_reads_score admits only when the top score clears the runner-up by this ratio
+DEFAULT_MARGIN = 1.0  # gate_reads_score's ratio veto (the default has no teeth: 1.0 can never reject a sorted top)
 
 _MODES = {"off", "reorder_before_gate", "gate_reads_score", "override"}  # override: эксперимент (contrast-ru)
 

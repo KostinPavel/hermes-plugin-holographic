@@ -931,6 +931,9 @@ _RERANK_WIDEN = 4
 # цель на ранге 1-3 вырезал relevant()); остальные решает coverage, ranked=None ->
 # только coverage (чистый фолбэк).
 _OVERRIDE_N = 3
+# gate_reads_score, дефолт: пул перед coverage и top-5 отсекается СНИЗУ — остаётся всё в пределах этой
+# дистанции от лучшего скор (эмпирически: wrong-entity 30→8 при hit 433→430, provenance-свип, 4 сета).
+_BOTTOM_WINDOW = 0.05
 _PREFETCH_LINE_CHARS = 300
 _COUNT_FLUSH_AT = 25  # buffered recall counts are written in one go at this many, and at session boundaries
 _MAX_TRACKED_SESSIONS, _MAX_TRACKED_FACTS = 16, 512
@@ -1039,6 +1042,41 @@ def _source_line(src: dict | None) -> str:
              f"session {src['session_id']}" if src.get("session_id") else "",
              f"recorded {src['recorded_on']}" if src.get("recorded_on") else ""]
     return " · ".join(p for p in parts if p)
+
+
+def _bottom_cut(scores: list[float]) -> list[int] | None:
+    """Bottom criterion: which ranked positions to KEEP — None disables the cut.
+
+    The counterpart of `_margin_clears`: instead of all-or-nothing admission judged from the gap at the TOP, a
+    per-document cut judged from the BOTTOM of the score list, applied before coverage and the top five. The
+    default keeps everything within `_BOTTOM_WINDOW` of the best score: the top (usually the target fact) always
+    survives — a window can't reject the winner — while the low-scoring tail, where partner distractors sit, is
+    trimmed. Measured on the provenance sweep (4 sets, 450 real queries): wrong-entity top-5 30→8 at hit
+    433→430, noise unchanged. An absolute FLOOR (τ on the score) was rejected instead: sigmoid scores are
+    model/language dependent, τ=0.5 alone lost 54 hits on multi.
+    Returns indices into the reordered pool; [] means every candidate is cut.
+    Only read when rerank_weight == 0: a blend reorders the pool away from the ranked order the scores belong to.
+    """
+    if not scores:
+        return []
+    top = scores[0]
+    return [i for i, s in enumerate(scores) if top - s <= _BOTTOM_WINDOW]
+
+
+def _margin_clears(best: float, second: float | None, margin: float) -> bool:
+    """True when the cross-encoder's top clears the runner-up — gate_reads_score's veto.
+
+    `second is None` (a single candidate) never vetoes: a lone BM25 hit still goes
+    to coverage below. The criterion lives here so experiments (provenance_probe)
+    can swap the formula without touching the pipeline. NOTE on scales: the scores
+    are sigmoid-normalised to (0,1), so a MULTIPLICATIVE margin gets pathological
+    near saturation — `best < second*margin` is unsatisfiable whenever
+    `second > 1/margin` (at 1.05: second > 0.952 vetoes unconditionally, rejecting
+    pools where both facts are confidently relevant). Measured on contrast_zh.
+    """
+    if second is None:
+        return True
+    return best >= second * margin
 
 
 class HolographicMemoryProvider(MemoryProvider):
@@ -1201,9 +1239,10 @@ class HolographicMemoryProvider(MemoryProvider):
             {"key": "rerank_weight", "description": "0 = order-only (recommended), >0 = min-max blend of the "
              "cross-encoder's score with the blend score",
              "default": current("rerank_weight", "0.0")},
-            {"key": "rerank_margin", "description": "gate_reads_score admits a pool only when its top score clears "
-             "the runner-up by this ratio (model-independent; a flat spread, chit-chat, admits nothing)",
-             "default": current("rerank_margin", "1.5")},
+            {"key": "rerank_margin", "description": "gate_reads_score ratio veto: the top must clear the runner-up by "
+             "this ratio to admit the pool (1.0 = off; admission is decided by the bottom window instead, "
+             "see _BOTTOM_WINDOW)",
+             "default": current("rerank_margin", "1.0")},
             {"key": "rerank_timeout", "description": "Seconds a rerank call may take (recall's only protection; "
              "a slow local endpoint is the normal case)",
              "default": current("rerank_timeout", "3.0")},
@@ -1440,10 +1479,12 @@ class HolographicMemoryProvider(MemoryProvider):
                           if self._recallable(f) and self._not_recent(key, f, turn)]
             # Two integration points, both strictly after the blend (rerank.py):
             #   reorder_before_gate — the pool is reordered, then the relevance (coverage) gate decides;
-            #   gate_reads_score — a top that does not clear the runner-up by rerank_margin admits NOTHING (a flat
-            #   spread: chit-chat where no fact stands out); otherwise admission is still the coverage gate, and the
-            #   cross-encoder's part in the gate is the margin plus the ORDER the top five is taken in. A failed call
-            #   or a single candidate (no runner-up) → coverage decides, as in mode off.
+            #   gate_reads_score — the pool is first cut FROM THE BOTTOM (_bottom_cut: everything within
+            #   _BOTTOM_WINDOW of the best score — the target at the top always survives, the low-scoring
+            #   distractor tail is trimmed; measured wrong-entity top-5 30→8 at ~equal hit), then admission
+            #   is the coverage gate, and the cross-encoder's part in the gate is the optional ratio veto
+            #   (rerank_margin, off by default) plus the ORDER the top five is taken in. A failed call →
+            #   coverage decides, as in mode off.
             # Any failure keeps the current order (rescorer.scores returns None).
             ranked = None
             if self._rescorer and candidates:
@@ -1467,23 +1508,34 @@ class HolographicMemoryProvider(MemoryProvider):
             # De-dup and safety ran before the endpoint saw the pool; re-checked here as a backstop before the top five are
             # taken, so they leave room for others either way.
             if self._rescorer and self._rescorer.settings.mode == "gate_reads_score" and ranked:
-                # The margin is the cross-encoder's veto: the pool's top must clear the runner-up by rerank_margin
-                # (model-independent — absolute scores vary by model), or NOTHING is admitted. What passes the veto
-                # goes to coverage below (a failed call or a single candidate lands there too — a single BM25 hit can
-                # still be chit-chat).
+                # Optional ratio veto (_margin_clears): the top must clear the runner-up by rerank_margin or
+                # NOTHING is admitted. Off by default (1.0 — a sorted top can't fail it): the provenance sweep
+                # showed the ratio criterion rejects the wrong pools on a sigmoid scale (whenever
+                # second > 1/margin the rejection is unconditional — pools where BOTH facts score ~0.99) and
+                # adds no noise protection beyond coverage. What passes goes to coverage below.
                 # Нормализация для гейта (rerank.normalized): логиты приводятся sigmoid к
                 # (0,1) — иначе при отрицательных логитах условие best < second*margin
                 # недостижимо и гейт никогда не отказывает (проверено на llama-server:
                 # шкала сырая, +6.36/-11.01). Относительно [0,1]-серверов правило по
                 # ответу не применяет sigmoid дважды.
                 scores = rerank.normalized(ranked)
+                # The ratio veto (_margin_clears, off by default — 1.0) judges the FULL spread first: an enabled veto
+                # must see the flat tail it exists for, before the cut narrows the pool.
                 best = scores[0]
                 second = scores[1] if len(scores) > 1 else None
-                if second is not None and best < second * self._rescorer.settings.margin:
+                # Bottom cut: trim the low-scoring tail, then admission — the default keeps everything within
+                # _BOTTOM_WINDOW of the best (see _bottom_cut); experiments swap the hook per document.
+                # weight > 0 reorders the pool away from the ranked order the scores belong to — the cut is
+                # only defined for order-only runs.
+                keep = _bottom_cut(scores) if self._rescorer.settings.weight == 0.0 else None
+                if not _margin_clears(best, second, self._rescorer.settings.margin) or (keep is not None and not keep):
+                    # The veto refused the flat spread, or nothing survived the cut: the pool admits nothing.
                     gate = []
                 else:
+                    if keep is not None:
+                        candidates = [candidates[i] for i in keep]
                     # Admission stays the non-semantic pipeline's own: coverage filters the word-found candidates
-                    # exactly as mode off does — the cross-encoder contributes the margin above and the order below.
+                    # exactly as mode off does — the cross-encoder contributes the cut above and the order below.
                     # (Admitting the whole ranked pool let chit-chat through: the provenance probe showed every
                     # gate-mode leak `pool-only`, coverage never asked.) The semantic stream is not here: by_meaning
                     # enters after this gate on its own terms.
