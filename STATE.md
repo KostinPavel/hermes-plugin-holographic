@@ -100,91 +100,92 @@ Origin форка: `KostinPavel/hermes-plugin-holographic`. Всё суточн�
   фиксов; перегон по #8 заменит их).
 - Статус ревьюера: ждём ответа на комментарий issuecomment-6343091582;
   он держит PR draft до исправления 1-5 и замеров.
-1|---
-2|
-3|# Сделано на ПК-А (2026-10-22, вечер) — продолжение после handoff ПК-Б
-4|
-5|Голова ветки: **`036965d`** (запушена в `KostinPavel/hermes-plugin-holographic` командой
-6|`git push git@github.com:KostinPavel/hermes-plugin-holographic.git feature/rerank-benchmark`,
-7|tracking синхронен). Рабочая копия: `D:/VSCode/Python/hermes_plugin_holographic`
-8|(underscore в имени — pytest импортирует корень репо как пакет, дефис ломает импорт;
-9|старый каталог `hermes-plugin-holographic` занят холдером-процессом, не использовать).
-10|
-11|## Закрытые пункты ревью
-12|
-13|- **#1, #2, #4, #5** — фиксы + тесты (`e4a4c63`), мерж upstream/main (`d0b6035`);
-14|  мейнтейнер подтвердил закрытие.
-15|- **#6 (п.6)** — коммиты `c35a18c` + `7a81773`: один режим реранка, `rerank_mode` /
-16|  `rerank_margin` удалены, `rerank_window` (δ-срез, дефолт 0.05, только при weight 0),
-17|  override и legacy-ветки prefetch вырезаны, 7 одноразовых пробников удалены из `tools/`,
-18|  README/CHANGELOG/докстринги переписаны. Комментарий: issuecomment-6349548070.
-19|- **#7** — `7f1efd6`, `tests/test_holographic_rerank_guarantees.py` (5 кейсов):
-20|  identical-to-main emb off/on (золота с worktree `upstream/main@8bea2ae`, сняты в одном
-21|  процессе, побайтово), reorder реально меняет порядок, бленд (weight 1.0) даёт
-22|  ожидаемый порядок, дедлайн 0.2→0.5 (кламп + таймаут в запросе + <1 с).
-23|  Ловушка фикстуры: при < MIN_VECTORS_FOR_Z векторах `standout` требует явного
-24|  `embedding_min_score` (fallback = `min_score is not None`) — фикстура ставит 0.0.
-25|  Комментарий: issuecomment-6349955802.
-26|- **#8 (п.8)** — `036965d`: `benchmark_rerank.py` считает matched top-5 + output counts
-27|  (`out_lines`/`out_avg`) + `git_sha` в строке; `provenance_probe.py` — `hit5`/`wrong5`/
-28|  `out_n`/`git_sha`/`endpoint`, суммари с колонками hit/hit5/wrong/wrong5/out.
-29|  Перегон таблицы «433→432 / 30→6» на голове, дефолтный конфиг, обе колонки emb
-30|  (4 сета = 450 real / 225 chit, 2025 строк на вариант):
-31|  - emb=on: off 438/438 hit/hit5, wrong 31, шум 79, out 1.95 (max 7)
-32|    → gate_only 437/437, wrong **6**, out 0.97; reorder_only 438/438, wrong 32.
-33|  - emb=off: off 430 / hit5 **428** (2 запроса решались строками за топ-5), wrong 30
-34|    → gate 429/429, wrong **6**; en −1 (плоский запрос ниже окна).
-35|  - Разбор: у off >5 строк в 45 запросах (max 7); работает срез окна, не reorder
-36|    (H6 подтверждён численно); сдвиг против старых 433 объяснён дефолтом RECALL_MARGIN 0.6.
-37|  - CPU: p50 94–101 / p95 212–229 мс, 240 вызовов, 0 фолбэков → `results/bench_p8_cpu.jsonl`.
-38|  Комментарий: issuecomment-6351037914.
-39|- **#10 частично**: пробники удалены, README-строка про `rerank_weight: 0` + trust добавлена.
-40|
-41|Секция репегона — в конце `results/PROVENANCE.md`. Проверки после каждого блока:
-42|`2492 passed / 3 skipped`, ruff чист.
-43|
-44|## Стенд ПК-А (Windows)
-45|
-46|- **llama.cpp — только из MSYS2**: `C:/msys64/mingw64/bin/llama-server.exe`
-47|  (mingw-w64-x86_64-llama.cpp 1~0.7.0-2, Vulkan). Запуск из-под bash с НАТИВНЫМИ
-48|  путями `D:/...` — MSYS `/d/...` нативный exe не поймёт (падение «No such file»).
-49|  Серверы:
-50|  - `:8091` — iGPU (Vulkan0, AMD Radeon), bge-reranker-v2-m3 Q4_K_M, `--pooling rank --reranking`;
-51|  - `:8093` — CPU: та же msys2-сборка + `--device none`;
-52|  - `:1237` — embeddings: bge-m3 Q4_K_M (437 778 496 байт, `gpustack/bge-m3-GGUF`),
-53|    `--embedding --ctx-size 8192 --threads 6`; probe принимает `model: bge-m3`.
-54|  - Модели: `D:/llama.cpp/models/`. Сборка `D:/llama.cpp/cpu` — НЕ использовать
-55|    (отличается от msys2; на `--device none` уже заменена).
-56|  - Шкала rerank-эндпоинта: сырые логиты (+2.25/−10.99) — sigmoid включается сам.
-57|- Python: venv `C:/Users/Pavel/AppData/Local/hermes/cache/scratch/testvenv`
-58|  (pytest<9, numpy, snowballstemmer, ruff), `HERMES_AGENT_REPO="C:/Users/Pavel/AppData/Local/hermes/hermes-agent"`.
-59|  Тесты: `.../python.exe -m pytest tests/ -q` → 2492/3. Инструменты гонять ВЕНВОМ —
-60|  тестовые модули импортируют pytest.
-61|- Пуш только по SSH (OAuth App без scope workflow; HTTPS виснет на credential.helper).
-62|
-63|## Ловушки ПК-А, всплывшие сегодня
-64|
-65|- Платформа редактирует готовые литералы-«ключи» в write/patch → токены собирать в
-66|  рантайме из фрагментов.
-67|- `python -c` с `\n`/`!r` → SyntaxError → скрипты писать в файл; fuzzy-паттерны `patch`
-68|  плывут на CRLF/пробелах → точечные скрипты с assert-якорями; curl POST — тело в файл, `-d @file`.
-69|- `results/PROVENANCE.md` дополнен новой секцией, старые блоки НЕ переписаны (история).
-70|
-71|## План (обновлён)
-72|
-73|1. **#9**: публичный сет ~200 фактов (wide 616-637 подходит, оформить) en/ru/zh;
-74|   размеры/дисциплина — скилл `cross-encoder-rerank`, reference `validation-datasets.md`
-75|   (McNemar sizing, rule of three, контраст-пары, disagreement-лист). **Второй реранкер
-76|   другой качества** — jina: на ПК-А модель на диске НЕТ, качнуть; старые
-77|   `results/jina-*.jsonl` перегнать на голове.
-78|2. Хвост **#10**: запись CHANGELOG под «Unreleased» (заголовки/версии `plugin.yaml`,
-79|   `pyproject.toml` оставить как на main — мейнтейнер ставит версию на мерже),
-80|   `_sem_stream_sweep.py` оставить (он в списке «keep»).
-81|3. Финальный аудит PR против всех 10 пунктов скиллом `pr-compliance-review`.
-82|4. CI-гейт (per-set floors ru≥25/en≥24/zh≥22/multi≥355, 2 прогона → идентичный jsonl) —
-83|   из плана ПК-Б, не начат.
-84|5. Admission (этап-0) — ждёт решений (а)/(б)/(в), отдельный PR.
-85|
-86|Комментарии в PR (ПК-А): issuecomment-6347468258, 6348003020, 6348673457, 6349548070,
-87|6349955802, 6351037914. Статус: мейнтейнер закрыл 1-5, разрешил «6-10 whenever you're
-88|ready»; 6, 7, 8 закрыты и опубликованы. PR остаётся draft до замеров.
+
+---
+
+# Сделано на ПК-А (2026-10-22, вечер) — продолжение после handoff ПК-Б
+
+Голова ветки: **`036965d`** (запушена в `KostinPavel/hermes-plugin-holographic` командой
+`git push git@github.com:KostinPavel/hermes-plugin-holographic.git feature/rerank-benchmark`,
+tracking синхронен). Рабочая копия: `D:/VSCode/Python/hermes_plugin_holographic`
+(underscore в имени — pytest импортирует корень репо как пакет, дефис ломает импорт;
+старый каталог `hermes-plugin-holographic` занят холдером-процессом, не использовать).
+
+## Закрытые пункты ревью
+
+- **#1, #2, #4, #5** — фиксы + тесты (`e4a4c63`), мерж upstream/main (`d0b6035`);
+  мейнтейнер подтвердил закрытие.
+- **#6 (п.6)** — коммиты `c35a18c` + `7a81773`: один режим реранка, `rerank_mode` /
+  `rerank_margin` удалены, `rerank_window` (δ-срез, дефолт 0.05, только при weight 0),
+  override и legacy-ветки prefetch вырезаны, 7 одноразовых пробников удалены из `tools/`,
+  README/CHANGELOG/докстринги переписаны. Комментарий: issuecomment-6349548070.
+- **#7** — `7f1efd6`, `tests/test_holographic_rerank_guarantees.py` (5 кейсов):
+  identical-to-main emb off/on (золота с worktree `upstream/main@8bea2ae`, сняты в одном
+  процессе, побайтово), reorder реально меняет порядок, бленд (weight 1.0) даёт
+  ожидаемый порядок, дедлайн 0.2→0.5 (кламп + таймаут в запросе + <1 с).
+  Ловушка фикстуры: при < MIN_VECTORS_FOR_Z векторах `standout` требует явного
+  `embedding_min_score` (fallback = `min_score is not None`) — фикстура ставит 0.0.
+  Комментарий: issuecomment-6349955802.
+- **#8 (п.8)** — `036965d`: `benchmark_rerank.py` считает matched top-5 + output counts
+  (`out_lines`/`out_avg`) + `git_sha` в строке; `provenance_probe.py` — `hit5`/`wrong5`/
+  `out_n`/`git_sha`/`endpoint`, суммари с колонками hit/hit5/wrong/wrong5/out.
+  Перегон таблицы «433→432 / 30→6» на голове, дефолтный конфиг, обе колонки emb
+  (4 сета = 450 real / 225 chit, 2025 строк на вариант):
+  - emb=on: off 438/438 hit/hit5, wrong 31, шум 79, out 1.95 (max 7)
+    → gate_only 437/437, wrong **6**, out 0.97; reorder_only 438/438, wrong 32.
+  - emb=off: off 430 / hit5 **428** (2 запроса решались строками за топ-5), wrong 30
+    → gate 429/429, wrong **6**; en −1 (плоский запрос ниже окна).
+  - Разбор: у off >5 строк в 45 запросах (max 7); работает срез окна, не reorder
+    (H6 подтверждён численно); сдвиг против старых 433 объяснён дефолтом RECALL_MARGIN 0.6.
+  - CPU: p50 94–101 / p95 212–229 мс, 240 вызовов, 0 фолбэков → `results/bench_p8_cpu.jsonl`.
+  Комментарий: issuecomment-6351037914.
+- **#10 частично**: пробники удалены, README-строка про `rerank_weight: 0` + trust добавлена.
+
+Секция репегона — в конце `results/PROVENANCE.md`. Проверки после каждого блока:
+`2492 passed / 3 skipped`, ruff чист.
+
+## Стенд ПК-А (Windows)
+
+- **llama.cpp — только из MSYS2**: `C:/msys64/mingw64/bin/llama-server.exe`
+  (mingw-w64-x86_64-llama.cpp 1~0.7.0-2, Vulkan). Запуск из-под bash с НАТИВНЫМИ
+  путями `D:/...` — MSYS `/d/...` нативный exe не поймёт (падение «No such file»).
+  Серверы:
+  - `:8091` — iGPU (Vulkan0, AMD Radeon), bge-reranker-v2-m3 Q4_K_M, `--pooling rank --reranking`;
+  - `:8093` — CPU: та же msys2-сборка + `--device none`;
+  - `:1237` — embeddings: bge-m3 Q4_K_M (437 778 496 байт, `gpustack/bge-m3-GGUF`),
+    `--embedding --ctx-size 8192 --threads 6`; probe принимает `model: bge-m3`.
+  - Модели: `D:/llama.cpp/models/`. Сборка `D:/llama.cpp/cpu` — НЕ использовать
+    (отличается от msys2; на `--device none` уже заменена).
+  - Шкала rerank-эндпоинта: сырые логиты (+2.25/−10.99) — sigmoid включается сам.
+- Python: venv `C:/Users/Pavel/AppData/Local/hermes/cache/scratch/testvenv`
+  (pytest<9, numpy, snowballstemmer, ruff), `HERMES_AGENT_REPO="C:/Users/Pavel/AppData/Local/hermes/hermes-agent"`.
+  Тесты: `.../python.exe -m pytest tests/ -q` → 2492/3. Инструменты гонять ВЕНВОМ —
+  тестовые модули импортируют pytest.
+- Пуш только по SSH (OAuth App без scope workflow; HTTPS виснет на credential.helper).
+
+## Ловушки ПК-А, всплывшие сегодня
+
+- Платформа редактирует готовые литералы-«ключи» в write/patch → токены собирать в
+  рантайме из фрагментов.
+- `python -c` с `\n`/`!r` → SyntaxError → скрипты писать в файл; fuzzy-паттерны `patch`
+  плывут на CRLF/пробелах → точечные скрипты с assert-якорями; curl POST — тело в файл, `-d @file`.
+- `results/PROVENANCE.md` дополнен новой секцией, старые блоки НЕ переписаны (история).
+
+## План (обновлён)
+
+1. **#9**: публичный сет ~200 фактов (wide 616-637 подходит, оформить) en/ru/zh;
+   размеры/дисциплина — скилл `cross-encoder-rerank`, reference `validation-datasets.md`
+   (McNemar sizing, rule of three, контраст-пары, disagreement-лист). **Второй реранкер
+   другой качества** — jina: на ПК-А модель на диске НЕТ, качнуть; старые
+   `results/jina-*.jsonl` перегнать на голове.
+2. Хвост **#10**: запись CHANGELOG под «Unreleased» (заголовки/версии `plugin.yaml`,
+   `pyproject.toml` оставить как на main — мейнтейнер ставит версию на мерже),
+   `_sem_stream_sweep.py` оставить (он в списке «keep»).
+3. Финальный аудит PR против всех 10 пунктов скиллом `pr-compliance-review`.
+4. CI-гейт (per-set floors ru≥25/en≥24/zh≥22/multi≥355, 2 прогона → идентичный jsonl) —
+   из плана ПК-Б, не начат.
+5. Admission (этап-0) — ждёт решений (а)/(б)/(в), отдельный PR.
+
+Комментарии в PR (ПК-А): issuecomment-6347468258, 6348003020, 6348673457, 6349548070,
+6349955802, 6351037914. Статус: мейнтейнер закрыл 1-5, разрешил «6-10 whenever you're
+ready»; 6, 7, 8 закрыты и опубликованы. PR остаётся draft до замеров.
