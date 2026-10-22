@@ -47,8 +47,13 @@ def voc_admit(msg: str) -> bool:
     return not (sep and len(head.split()) <= 3 and htext.is_greeting(rest.strip()))
 
 
+WIDE = "wide" in sys.argv[1:]
+
+
 def collect(set_name: str) -> list[dict]:
     contrast = pp.load_contrast(set_name)
+    if WIDE:
+        import _wide_store as ws
     db = Path(tempfile.gettempdir()) / f"adm_{set_name}.db"
     for s in ("", "-shm", "-wal"):
         try:
@@ -58,6 +63,14 @@ def collect(set_name: str) -> list[dict]:
     p = pp.make_provider(db, "gate_only", "on")
     for _key, (text, entities) in contrast.FACTS.items():
         p.handle_tool_call("fact_store", {"action": "add", "content": text, "entities": entities})
+    if WIDE:
+        lang = set_name.replace("contrast_", "")
+        for _key, text, entities in ws.crowd_facts(contrast, lang):
+            p.handle_tool_call("fact_store", {"action": "add", "content": text, "entities": entities})
+        multi = pp.load_multilingual()
+        for _lg, facts in multi.CORPUS.items():
+            for _k, (text, entities) in facts.items():
+                p.handle_tool_call("fact_store", {"action": "add", "content": text, "entities": entities})
     assert pp.catch_up_vectors(p), "векторы не готовы"
     rows: list[dict] = []
     msgs = [(q, "real", "real") for pair in contrast.PAIRS for (q, _t) in pair["queries"]]
@@ -105,11 +118,17 @@ def sweep(vals_real: list, vals_chit: list) -> dict[int, tuple[int, str]]:
 
 def main() -> None:
     rows: list[dict] = []
-    for set_name in ("contrast_ru", "contrast_en", "contrast_zh"):
+    for set_name in ("contrast_ru", "contrast_en", "contrast_zh"):  # noqa: SIM115
         rows.extend(collect(set_name))
     real = [r for r in rows if r["kind"] == "real"]
     chit = [r for r in rows if r["kind"] == "chit"]
-    print(f"сообщений: real {len(real)}, chit {len(chit)}")
+    print(f"сообщений: real {len(real)}, chit {len(chit)} | база: {'WIDE' if WIDE else 'base'}")
+    import json as _json
+    out = _REPO / "results" / f"admission_{'wide' if WIDE else 'base'}.jsonl"
+    with out.open("w", encoding="utf-8") as fh:
+        for r in rows:
+            fh.write(_json.dumps(r, ensure_ascii=False) + "\n")
+    print(f"артефакт: {out}")
     print("\n-- медианы / None по классам --")
     for stat in ("cmax", "z", "s1", "gap"):
         rv = [r[stat] for r in real if r[stat] is not None]

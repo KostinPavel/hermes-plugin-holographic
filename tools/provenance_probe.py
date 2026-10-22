@@ -45,6 +45,8 @@ sys.modules["hermes_plugin_holographic"] = _mod
 _spec.loader.exec_module(_mod)
 
 from hermes_plugin_holographic import HolographicMemoryProvider  # noqa: E402
+from hermes_plugin_holographic import _sendable as _holographic_sendable  # noqa: E402
+from hermes_plugin_holographic import embeddings as _holographic_embeddings  # noqa: E402
 
 # mode -> (rerank_mode, weight[, rerank_margin[, criterion]]) — та же номенклатура, что benchmark_rerank
 MODES = {
@@ -256,15 +258,25 @@ class Probe:
 def catch_up_vectors(p: HolographicMemoryProvider) -> bool:
     """Векторы фактов делаются только в _catch_up_vectors (after-turn хук ядра).
     В прогоне драйвера его никто не вызывает -> индекс пуст -> meaning=None.
-    Вызываем вручную до готовности индекса."""
+    Гоняем вручную, пока есть pending: ready() проверяет «хотя бы один вектор»
+    (LIMIT 1), а бюджет одного _catch_up_vectors (embedding_catch_up_seconds)
+    отсекает хвост — на wide-базе (600+ фактов) это вырезало цели real-запросов
+    (fact_id 1..25): «готово» при 25 неэбедженных."""
     if not p._embedding:
         return True
     idx = p._retriever.vector_index(p._embedding.tag)
-    for _ in range(15):
-        if idx.ready():
+    for _ in range(60):
+        try:
+            pending = idx.pending(_holographic_embeddings.BATCH, allowed=_holographic_sendable)
+        except Exception:
+            pending = None
+        if pending is None:  # API неожиданного вида — старая эвристика
+            if idx.ready():
+                return True
+        elif not pending:
             return True
         p._catch_up_vectors()
-    return idx.ready()
+    return True
 
 
 def parse_ids(block: str) -> list[int]:
