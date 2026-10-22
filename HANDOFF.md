@@ -59,8 +59,12 @@ build now stops without the forms).
 
 ## Entities
 
-Names come from a fact's text (`store._extract_entities`: capitalized runs, quotes, `X aka Y`) through
-`_name_shaped`, or from someone (`entities=[...]`, `alias`, `rename`), which only `_valid_entity` checks. Any change
+Names come from a fact's text (`_extract_entities`: capitalized runs, quotes, `X aka Y`) through
+`_name_shaped`, or from someone (`entities=[...]`, `alias`, `rename`), which only `_valid_entity` checks. Where it
+lives: the name rules (`entity_key`, `_valid_entity`, `_name_shaped`, the text readers) are module functions in
+`entity_names.py`; the entity methods of `MemoryStore` are `EntityMixin` in `entities.py`; the index rebuild and
+its limits stay in `store.py`, where tests patch them (`monkeypatch.setattr(store_module, …)` patches only what
+store.py defines itself, so do not move them). Any change
 of the text rules that drops what they used to take must raise `_ENTITY_RULES` in `store.py`: a writer's first open
 then rebuilds the index of every store up to `_AUTO_REBUILD_MAX_FACTS` facts (0.40 ms per fact measured, 0.16.0),
 leaving declared entities, given and legacy aliases (`entity_aliases.source` other than `aka`) and their links
@@ -101,6 +105,13 @@ are in `plans/2026-10-21-*`):
    `ruff check .`, the dream's screen comparison when the screen changed.)
 
 ## Open work
+
+- Split of `store.py` (2026-10-23, plan `plans/2026-10-22-refactor-entities-screen.md`, steps H-A and H-B): branch
+  `refactor/entity-mixin`, `entity_names.py` + `entities.py`, moved byte for byte (checked by script against
+  `HEAD:store.py`); pytest against hermes-agent `main` 41dfcf2c: 2453 passed, 2 skipped before and after, tests
+  untouched; ruff clean; Codex review: no findings. Unreleased, goes out with the next functional release. Left:
+  rebuild the Graphify graph and relabel `graphify-out/callflow-sections.json` once it is in `main`; H-C
+  (`screen.py` out of `__init__.py`) waits for PR #10, which changes `_sendable` / `_search`.
 
 - 0.17.6 (2026-10-21, `aca7b19`; 0.17.7 the same day, `fd68b1a`: a double negation or an exception cancels the prohibition, Codex passes three to five; catalog bump NousResearch/hermes-agent#142449 open): an Antigravity review in Russian, English and Chinese and two Codex passes. "Your
   instructions" is an instruction in all 18 languages (ambiguous "your" left out: German "ihre" only after "Sie",

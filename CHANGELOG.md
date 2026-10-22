@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Internal
+
+- **`store.py` is three files.** The rules of what a name is (`entity_key`, `_valid_entity`, `_name_shaped`, the
+  readers that find names in a fact's text) moved to `entity_names.py`, and the entity half of `MemoryStore`
+  (resolving names, linking facts, aliases, deleting and renaming a name) to `entities.py` as `EntityMixin`, mixed in
+  as `HistoryMixin` is. Moved as they were, byte for byte: nothing the agent or a user sees changes. `store.py` still
+  exports what the provider and the tests import from it; the entity index rebuild (`rebuild_entity_index`,
+  `_ENTITY_RULES`, the `_AUTO_REBUILD_*` limits) stays there. One trace of the move: the log line for a declared name
+  that is no name now comes from the logger of `entities`, not `store`.
+
 ## 0.17.7 — 2026-10-21
 
 ### Fixed
