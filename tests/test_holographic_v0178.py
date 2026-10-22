@@ -378,3 +378,38 @@ def test_a_bug_inside_remove_is_not_called_a_missing_fact(tmp_path, monkeypatch)
     monkeypatch.undo()
     assert _call(p, action="remove", fact_id=fact_id + 100) == {"removed": False}  # a real miss still is one
     p.shutdown()
+
+
+# -- after the Codex review on GitHub (PR #12) -------------------------------------------------------------------------
+
+def test_a_key_error_naming_a_given_argument_is_not_called_missing(tmp_path, monkeypatch):
+    """query was given: a KeyError('query') from inside the search is a fault, not a missing argument."""
+    p = _provider(tmp_path)
+
+    def buggy(*a, **k):
+        return {}["query"]
+
+    monkeypatch.setattr(p._retriever, "search", buggy)
+    error = _call(p, action="search", query="tea")["error"]
+    assert "Missing required argument" not in error and "failed (KeyError)" in error
+    p.shutdown()
+
+
+@pytest.mark.parametrize("value", ["", "  ", None])
+def test_an_empty_switch_is_its_default_not_its_opposite(tmp_path, value):
+    """recall_indicator and cron_writes default to true: empty in config.yaml is that default (it was false)."""
+    p = HolographicMemoryProvider(config={"db_path": str(tmp_path / "m.db"), "hrr_dim": DIM,
+                                          "recall_indicator": value, "cron_writes": value})
+    p.initialize(session_id="s1", agent_context="cron")
+    assert p._recall_indicator is True
+    assert _call(p, action="add", content="Masha likes green tea")["status"] == "added"  # cron_writes stays on
+    p.shutdown()
+
+
+def test_an_empty_setting_does_not_change_the_cores_cached_config(_isolated_hermes_home):
+    """The section comes from the core's read-only config cache: the plugin must not edit it in place."""
+    (_isolated_hermes_home / "config.yaml").write_text(
+        "plugins:\n  hermes-memory-store:\n    recall_indicator: ''\n    hrr_dim: 64\n", encoding="utf-8")
+    loaded = holo._load_plugin_config()
+    HolographicMemoryProvider(config=loaded)
+    assert holo._load_plugin_config() == {"recall_indicator": "", "hrr_dim": 64}

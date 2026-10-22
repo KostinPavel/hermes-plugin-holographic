@@ -936,6 +936,12 @@ def _join_tags(tags: str | None, keywords: list[str]) -> str:
 _SCOPES = frozenset({"profile", "user", "chat", "thread"})
 # How a switch may be written (the core's truthy strings, and their opposites)
 _TRUE_WORDS, _FALSE_WORDS = frozenset({"1", "true", "yes", "on"}), frozenset({"0", "false", "no", "off"})
+# Settings with a fixed set of values (0.17.8): one outside it was read as the default, so "scope: users" put every
+# person in one store; now it is a problem like a number that is none. (key, allowed, what it must be)
+_CHOICES = (("scope", _SCOPES, "one of profile, user, chat, thread"), ("recall_source", {"off", "short"}, "off or short"),
+            ("embeddings", _TRUE_WORDS | _FALSE_WORDS, "on or off"),
+            *((key, _TRUE_WORDS | _FALSE_WORDS, "true or false")
+              for key in ("recall_indicator", "cron_writes", "auto_extract", "mirror_memory_writes")))
 # A separate database per chat (or per forum topic / thread): facts meet in the FTS index, n-gram scan, entities, HRR
 # banks and the write checks, so a chat_id column would need a filter in each of them; a file isolates by construction.
 _CHAT_SCOPES = frozenset({"chat", "thread"})
@@ -1067,13 +1073,9 @@ class HolographicMemoryProvider(MemoryProvider):
         if isinstance(self._config, _UnreadConfig):
             self._config_problems.append("config.yaml could not be read, so these settings (scope above all) are "
                                          "unknown")
-        # Settings with a fixed set of values (0.17.8): one outside it was read as the default, so "scope: users" put
-        # every person in one store; now it is a problem like a number that is none
-        self._choice("scope", _SCOPES, "one of profile, user, chat, thread")
-        self._choice("recall_source", {"off", "short"}, "off or short")
-        self._choice("embeddings", _TRUE_WORDS | _FALSE_WORDS, "on or off")
-        for key in ("recall_indicator", "cron_writes", "auto_extract", "mirror_memory_writes"):
-            self._choice(key, _TRUE_WORDS | _FALSE_WORDS, "true or false")
+        empty ={key for key, allowed, said in _CHOICES if self._choice(key, allowed, said)}
+        if empty:  # unset or empty is the default, so the key goes: from a copy, the core's cached section is not ours
+            self._config = {k: v for k, v in self._config.items() if k not in empty}
         self._min_trust = self._number("min_trust_threshold", 0.3)
         self._min_coverage = self._number("prefetch_min_coverage", 0.3)
         self._repeat_turns = self._number("prefetch_repeat_turns", 6, int)
@@ -1126,19 +1128,21 @@ class HolographicMemoryProvider(MemoryProvider):
                                          f"{'a whole number' if kind is int else 'a number'}")
             return default
 
-    def _choice(self, key: str, allowed, said: str) -> None:
-        """A setting with a fixed set of values: none (unset or empty) or one of *allowed*, in any case and spacing;
-        a bool, or 0 / 1, as YAML writes a switch. Anything else is a line in _config_problems naming the key."""
+    def _choice(self, key: str, allowed, said: str) -> bool:
+        """A setting with a fixed set of values: none (unset or empty: True, the default applies) or one of *allowed*,
+        in any case and spacing; a bool, or 0 / 1, as YAML writes a switch. Anything else is a line in
+        _config_problems naming the key."""
         value = self._config.get(key)
-        if value is None:
-            return
+        if value is None or isinstance(value, str) and not value.strip():
+            return True
         if isinstance(value, int) and value in (0, 1):  # true / false (a bool is an int), or 0 / 1
             # a switch; or a bare off, which Hermes's YAML 1.1 reads as false ("recall_source: off", Codex review)
             if "1" in allowed or (value is False and "off" in allowed):
-                return
-        elif isinstance(value, str) and (not value.strip() or value.strip().lower() in allowed):
-            return
+                return False
+        elif isinstance(value, str) and value.strip().lower() in allowed:
+            return False
         self._config_problems.append(f"plugins.hermes-memory-store.{key} must be {said}")
+        return False
 
     @property
     def name(self) -> str:
@@ -1644,8 +1648,10 @@ class HolographicMemoryProvider(MemoryProvider):
         except NotFound as exc:  # a fact or a name that does not exist: an answer, not a missing argument
             return tool_error(f"{exc.args[0] if exc.args else exc}; nothing was changed.")
         except KeyError as exc:
-            # args[...] of an argument the schema has (a str: a key of any type may come from a fault)
-            if exc.args and isinstance(exc.args[0], str) and exc.args[0] in _ARGUMENTS.get(tool_name, ()):
+            # args[...] of an argument the schema has and the call left out (a str: a key of any type may come from a
+            # fault; a given one too, review of PR #12)
+            if exc.args and isinstance(exc.args[0], str) and exc.args[0] in _ARGUMENTS.get(tool_name, ()) \
+                    and exc.args[0] not in args:
                 return tool_error(f"Missing required argument: {exc}")
             return self._failed(tool_name, args, exc)
         except DuplicateContentError as exc:
