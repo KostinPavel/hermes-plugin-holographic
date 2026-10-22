@@ -1,0 +1,1 @@
+{"mode": "off", "recall5": 0.9916666666666667, "hit5": 357, "asked": 360, "wrong": 1, "noise": 0.0, "quiet": 90, "negatives": 90, "p50_ms": 3.931949962861836, "p95_ms": 7.484312984161079, "calls": 0, "langs": ["ar", "bn", "de", "en", "es", "fr", "hi", "id", "it", "ja", "ko", "nl", "pl", "pt", "ru", "th", "tr", "zh"], "label": "baseline (off)"}
