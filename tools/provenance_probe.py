@@ -60,6 +60,8 @@ MODES = {
     "gate_m10": ("gate_reads_score", "0.0", "1.0"),
     # верхний критерий (всё-или-ничего по пулу): gap/пол/пол+гап вместо ratio-вето
     "topgap": ("gate_reads_score", "0.0", "1.5", "topgap:0.05"),
+    "gate_gap03": ("gate_reads_score", "0.0", "1.0", "topgap:0.03"),
+    "gate_gap02": ("gate_reads_score", "0.0", "1.0", "topgap:0.02"),
     "topfloor": ("gate_reads_score", "0.0", "1.5", "topfloor:0.5"),
     "topfg": ("gate_reads_score", "0.0", "1.5", "topfloorgap:0.5:0.05"),
     # нижний критерий (побитовое отсечение хвоста), вето выключено (margin 1.0)
@@ -128,7 +130,7 @@ def load_contrast(name: str):
 
 # ---------------------------------------------------------------- провайдер
 
-def make_provider(db: Path, mode: str, emb) -> HolographicMemoryProvider:
+def make_provider(db: Path, mode: str, emb, extra: dict | None = None) -> HolographicMemoryProvider:
     spec = MODES[mode]
     config = {"db_path": str(db), "hrr_dim": 1024}
     if spec:
@@ -141,6 +143,8 @@ def make_provider(db: Path, mode: str, emb) -> HolographicMemoryProvider:
         apply_criterion(None)
     if emb == "on":
         config.update({"embeddings": "on", "embedding_url": EMB_URL, "embedding_model": EMB_MODEL})
+    if extra:
+        config.update(extra)
     p = HolographicMemoryProvider(config=config)
     p.initialize(session_id="prov")
     return p
@@ -303,7 +307,7 @@ def classify(fid: int | None, ctx: dict) -> str:
 
 # ---------------------------------------------------------------- прогоны
 
-def run_multilingual(langs, modes, emb, endpoint) -> list[dict]:
+def run_multilingual(langs, modes, emb, endpoint, extra: dict | None = None) -> list[dict]:
     data = load_multilingual()
     rows = []
     for mode in modes:
@@ -314,7 +318,7 @@ def run_multilingual(langs, modes, emb, endpoint) -> list[dict]:
                     Path(str(db) + s).unlink()
                 except OSError:
                     pass
-            p = make_provider(db, mode, emb)
+            p = make_provider(db, mode, emb, extra)
             back = {}
             for key, (text, entities) in data.CORPUS[lang].items():
                 r = json.loads(p.handle_tool_call(
@@ -362,7 +366,7 @@ def li(mode, lang):  # префикс сессии — уникален на р�
     return f"{mode}_{lang}"
 
 
-def run_contrast(set_name, modes, emb, endpoint) -> list[dict]:
+def run_contrast(set_name, modes, emb, endpoint, extra: dict | None = None) -> list[dict]:
     contrast = load_contrast(set_name)
     rows = []
     for mode in modes:
@@ -372,7 +376,7 @@ def run_contrast(set_name, modes, emb, endpoint) -> list[dict]:
                 Path(str(db) + s).unlink()
             except OSError:
                 pass
-        p = make_provider(db, mode, emb)
+        p = make_provider(db, mode, emb, extra)
         back = {}
         for key, (text, entities) in contrast.FACTS.items():
             r = json.loads(p.handle_tool_call(
