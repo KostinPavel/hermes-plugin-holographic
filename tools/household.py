@@ -654,10 +654,13 @@ QUERIES = {
     # --- dev / plain (18) ---
     "q001": {"split": "dev", "slice": "plain", "targets": ["andrey_bd"],
              "en": "When is Andrey's birthday?", "ru": "Когда день рождения Андрея?",
-             "zh": "安德烈的生日是哪天？"},
+             "zh": "安德烈的生日是哪天？",
+             "confused": ["cat_bd", "dima_bd", "irina_bd", "lena_bd",
+                          "olya_bd", "pavel_bd", "sonia_bd"]},
     "q002": {"split": "dev", "slice": "plain", "targets": ["olga_job"],
              "en": "Where does Olya work?", "ru": "Где работает Оля?",
-             "zh": "奥莉娅在哪里工作？"},
+             "zh": "奥莉娅在哪里工作？",
+             "confused": ["andrey_job", "lena_job"]},
     "q003": {"split": "dev", "slice": "plain", "targets": ["dima_football"],
              "en": "What days does Dima have football?", "ru": "В какие дни у Димы футбол?",
              "zh": "季马哪几天有足球训练？"},
@@ -669,7 +672,8 @@ QUERIES = {
              "zh": "家里的Wi-Fi网络叫什么？"},
     "q006": {"split": "dev", "slice": "plain", "targets": ["sonia_bed"],
              "en": "What time does Sonya go to bed on school nights?",
-             "ru": "Во сколько Соня ложится в школьные дни?", "zh": "上学日索妮娅几点睡觉？"},
+             "ru": "Во сколько Соня ложится в школьные дни?", "zh": "上学日索妮娅几点睡觉？",
+             "confused": ["dima_bed"]},
     "q007": {"split": "dev", "slice": "plain", "targets": ["washer_bought"],
              "en": "When was the washing machine bought?", "ru": "Когда купили стиральную машину?",
              "zh": "洗衣机是什么时候买的？"},
@@ -695,7 +699,8 @@ QUERIES = {
     "q014": {"split": "dev", "slice": "plain", "targets": ["irina_tea"],
              "en": "What does Grandma Irina drink with two sugars?",
              "ru": "Что пьёт бабушка Ирина с двумя ложками сахара?",
-             "zh": "伊琳娜奶奶喝什么加两勺糖？"},
+             "zh": "伊琳娜奶奶喝什么加两勺糖？",
+             "confused": ["lena_tea"]},
     "q015": {"split": "dev", "slice": "plain", "targets": ["olga_pharmacy"],
              "en": "What time does Olya's pharmacy shift start?",
              "ru": "Во сколько начинается смена Оли в аптеке?",
@@ -708,7 +713,8 @@ QUERIES = {
              "ru": "Когда семья переехала в эту квартиру?", "zh": "全家什么时候搬进这套房子的？"},
     "q018": {"split": "dev", "slice": "plain", "targets": ["andrey_lunch"],
              "en": "Where does Andrey eat his lunch?", "ru": "Где Андрей обедает?",
-             "zh": "安德烈在哪里吃午饭？"},
+             "zh": "安德烈在哪里吃午饭？",
+             "confused": ["lena_lunch"]},
 
     # --- dev / multi, 2+ right facts (7) ---
     "q019": {"split": "dev", "slice": "multi", "targets": ["dima_football", "sonia_swim"],
@@ -716,16 +722,22 @@ QUERIES = {
              "zh": "季马和索妮娅哪几天训练？"},
     "q020": {"split": "dev", "slice": "multi", "targets": ["andrey_coffee", "lena_tea"],
              "en": "How do Andrey and Lena take their hot drinks?",
-             "ru": "Как пьют горячие напитки Андрей и Лена?", "zh": "安德烈和列娜怎么喝热饮？"},
+             "ru": "Как пьют горячие напитки Андрей и Лена?", "zh": "安德烈和列娜怎么喝热饮？",
+             "confused": ["irina_tea", "olya_coffee"]},
     "q021": {"split": "dev", "slice": "multi", "targets": ["irina_bread", "lena_bread"],
              "en": "Who bakes bread on Sundays?", "ru": "Кто печёт хлеб по воскресеньям?",
              "zh": "谁在星期天烤面包？"},
     "q022": {"split": "dev", "slice": "multi", "targets": ["pavel_bd", "irina_bd"],
              "en": "When are the grandparents' birthdays?",
-             "ru": "Когда дни рождения у бабушки и дедушки?", "zh": "爷爷奶奶的生日是哪天？"},
-    "q023": {"split": "dev", "slice": "multi", "targets": ["marina_flat", "marina_pool"],
-             "en": "What do we know about Marina?", "ru": "Что мы знаем о Марине?",
-             "zh": "我们知道玛丽娜的哪些事？"},
+             "ru": "Когда дни рождения у бабушки и дедушки?", "zh": "爷爷奶奶的生日是哪天？",
+             "confused": ["andrey_bd", "cat_bd", "dima_bd", "lena_bd",
+                          "olya_bd", "sonia_bd"]},
+    "q023": {"split": "dev", "slice": "multi",
+             "targets": ["marina_flat", "walk_dog_neighbour"],
+             "en": "What do we know about Marina the neighbour?",
+             "ru": "Что мы знаем о соседке Марине?",
+             "zh": "我们知道邻居玛丽娜的哪些事？",
+             "confused": ["marina_pool"]},
     "q024": {"split": "dev", "slice": "multi", "targets": ["sonia_homework", "dima_hw_time"],
              "en": "When do the kids do their homework?", "ru": "Когда дети делают уроки?",
              "zh": "孩子们什么时候做作业？"},
@@ -776,7 +788,8 @@ QUERIES = {
              "ru": "Как часто он тренируется у воды?", "zh": "他多久在水边锻炼一次？"},
     "q038": {"split": "dev", "slice": "nooverlap", "targets": ["irina_bread"],
              "en": "When does she produce the fresh loaf?", "ru": "Когда у неё получается свежая булка?",
-             "zh": "她什么时候做出新鲜的长面包？"},
+             "zh": "她什么时候做出新鲜的长面包？",
+             "confused": ["lena_bread"]},
     "q039": {"split": "dev", "slice": "nooverlap", "targets": ["sonia_sweets"],
              "en": "When may the little one have sugary treats?",
              "ru": "Когда дают малышке кушанья?", "zh": "什么时候小女孩才能尝到糖果？"},
@@ -789,7 +802,9 @@ QUERIES = {
     # --- test / plain (12) ---
     "q041": {"split": "test", "slice": "plain", "targets": ["lena_bd"],
              "en": "When is Lena's birthday?", "ru": "Когда день рождения Лены?",
-             "zh": "列娜的生日是哪天？"},
+             "zh": "列娜的生日是哪天？",
+             "confused": ["andrey_bd", "cat_bd", "dima_bd", "irina_bd",
+                          "olya_bd", "pavel_bd", "sonia_bd"]},
     "q042": {"split": "test", "slice": "plain", "targets": ["dima_club"],
              "en": "When does the robotics club meet?", "ru": "Когда собирается робоклуб?",
              "zh": "机器人俱乐部什么时候活动？"},
@@ -800,10 +815,12 @@ QUERIES = {
              "en": "Where is the TV remote kept?", "ru": "Где лежит пульт от телевизора?",
              "zh": "电视遥控器放在哪里？"},
     "q045": {"split": "test", "slice": "plain", "targets": ["marina_flat"],
-             "en": "Where does Marina live?", "ru": "Где живёт Марина?", "zh": "玛丽娜住在哪里？"},
+             "en": "Where does Marina live?", "ru": "Где живёт Марина?", "zh": "玛丽娜住在哪里？",
+             "confused": ["marina_pool"]},
     "q046": {"split": "test", "slice": "plain", "targets": ["sergey_g_retired"],
              "en": "When did Sergey Ivanovich retire?",
-             "ru": "Когда ушёл на пенсию Сергей Иванович?", "zh": "谢尔盖·伊万诺维奇什么时候退休的？"},
+             "ru": "Когда ушёл на пенсию Сергей Иванович?", "zh": "谢尔盖·伊万诺维奇什么时候退休的？",
+             "confused": ["sergey_colleague"]},
     "q047": {"split": "test", "slice": "plain", "targets": ["printer_toner"],
              "en": "What does the printer need?", "ru": "Что нужно принтеру?", "zh": "打印机需要什么？"},
     "q048": {"split": "test", "slice": "plain", "targets": ["andrey_patent"],
@@ -825,7 +842,9 @@ QUERIES = {
     # --- test / multi (5) ---
     "q053": {"split": "test", "slice": "multi", "targets": ["dima_bd", "sonia_bd"],
              "en": "When are the children's birthdays?", "ru": "Когда дни рождения детей?",
-             "zh": "孩子们的生日是哪天？"},
+             "zh": "孩子们的生日是哪天？",
+             "confused": ["andrey_bd", "cat_bd", "irina_bd", "lena_bd",
+                          "olya_bd", "pavel_bd"]},
     "q054": {"split": "test", "slice": "multi", "targets": ["andrey_workdays", "lena_workdays"],
              "en": "Which days are the parents at work or teaching?",
              "ru": "В какие дни родители на работе?", "zh": "父母哪几天在上班或有课？"},
@@ -870,7 +889,8 @@ QUERIES = {
     "q065": {"split": "test", "slice": "nooverlap", "targets": ["lena_music"],
              "en": "What does she do when loud guitars play?",
              "ru": "Что она делает, когда играют громкие гитары?",
-             "zh": "大声吉他响起时她会怎么做？"},
+             "zh": "大声吉他响起时她会怎么做？",
+             "confused": ["andrey_music", "sonia_music"]},
     "q066": {"split": "test", "slice": "nooverlap", "targets": ["pavel_tv"],
              "en": "Which broadcast does he follow at twenty-one hundred?",
              "ru": "Какую программу он ловит в двадцать один час?",
@@ -992,10 +1012,34 @@ CHITCHAT = {
 }
 
 
+def entities(lang: str) -> dict[str, set[str]]:
+    """fact key -> entity names in `lang` (named-person lookup per language)."""
+    return {k: set(v[lang][1]) for k, v in FACTS.items()}
+
+
+def named_extra(lang: str, query: str, keys, targets,
+                ents: dict | None = None) -> list[str]:
+    """Non-target output facts that mention a person named in the query:
+    right-person extras and namesake facts. Substring matching is case-weak on
+    ru (Андрей is not inside Андрея), so this column is descriptive — the
+    measure is confusion() on static labels (the old probe looked facts up in
+    the name map and always got nothing: PR #10 review, 2026-10-23)."""
+    ents = entities(lang) if ents is None else ents
+    qents = {e for es in ents.values() for e in es if e in query}
+    return sorted({k for k in keys if k not in targets and ents.get(k, set()) & qents})
+
+
+def confusion(q: dict, top5) -> list[str]:
+    """Labelled wrong answers among the top five: static keys, so the count is
+    language-independent (namesake or another person's same-attribute fact)."""
+    return sorted(set(top5) & set(q.get("confused", ())))
+
+
 def self_check() -> None:
     """Design-time invariants of the frozen set (recipe: labels must be right).
 
     - every target key exists; labels for noanswer are exactly [];
+    - confused labels are known keys and never overlap targets;
     - en/ru/zh present for every record; one shared id => one shared split;
     - slice counts (dev 18/7/7/8, test 12/5/5/8) and chit (30/15);
     - nooverlap en: content words of the question do not appear in the target
@@ -1023,6 +1067,11 @@ def self_check() -> None:
             errs.append(f"{qid}: unknown target")
         if (q["slice"] == "noanswer") != (q["targets"] == []):
             errs.append(f"{qid}: noanswer label mismatch")
+        conf = set(q.get("confused", []))
+        if not conf <= keys:
+            errs.append(f"{qid}: unknown confused {sorted(conf - keys)}")
+        if conf & set(q["targets"]):
+            errs.append(f"{qid}: confused overlaps targets")
     splits = {q["split"] for q in QUERIES.values()}
     if splits != {"dev", "test"}:
         errs.append(f"bad splits {splits}")

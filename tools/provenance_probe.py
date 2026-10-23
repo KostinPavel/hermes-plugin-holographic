@@ -131,8 +131,10 @@ class Probe:
         self._wrap(p, "_sendable_docs", self._sendable_docs)
         self._wrap(p, "_not_recent", self._not_recent)
         self._wrap(p, "_recallable", self._recallable)
-        if p._rescorer is not None:
-            self._wrap(p._rescorer, "scores", self._scores)
+        # runner на main не имеет _rescorer вообще — getattr, не прямой доступ (п.5 фикс-листа)
+        rsc = getattr(p, "_rescorer", None)
+        if rsc is not None:
+            self._wrap(rsc, "scores", self._scores)
 
     def _wrap(self, obj, name: str, wrapper):
         orig = getattr(obj, name, None)
@@ -477,10 +479,7 @@ def run_household(modes, emb, endpoint, split="all", names_fit="on",
                 r = json.loads(p.handle_tool_call(
                     "fact_store", {"action": "add", "content": text, "entities": ents}))
                 back[int(r["fact_id"])] = key
-            persons: dict[str, set[str]] = {}
-            for key, v in hh.FACTS.items():
-                for e in v[lang][1]:
-                    persons.setdefault(e, set()).add(key)
+            ent_map = hh.entities(lang)  # key -> имена сущностей этого языка
             probe = Probe(p)
             if emb == "on":
                 ok = catch_up_vectors(p)
@@ -494,9 +493,13 @@ def run_household(modes, emb, endpoint, split="all", names_fit="on",
                 ms = (time.perf_counter() - t0) * 1000
                 found = parse_ids(block)
                 keys = [back[f] for f in found if f in back]
-                qents = {e for e in persons if e in query}
-                wrong = sorted({k for k in keys if k not in targets
-                                and set(persons.get(k, ())) & qents})
+                # старый wrong-лукап искал fact key в словаре имён (всегда пусто —
+                # баг из ревью 10:05). Теперь две колонки:
+                #   named   — не-цели, упоминающие лицо из запроса (правильные
+                #             extra и тёзки; описание, case-слабо на ru);
+                #   confused — лейблы неправильных ответов в топ-5 (мера, статика).
+                named = hh.named_extra(lang, query, keys, targets, ent_map)
+                conf = hh.confusion(q, keys[:5])
                 hit = bool(set(keys) & targets) if targets else None
                 hit5 = bool(set(keys[:5]) & targets) if targets else None
                 cov = (len(set(keys) & targets) / len(targets)) if targets else None
@@ -512,7 +515,7 @@ def run_household(modes, emb, endpoint, split="all", names_fit="on",
                              "split": q["split"], "slice": q["slice"], "qid": qid,
                              "kind": "real", "q": query, "keys": keys,
                              "targets": sorted(targets), "hit": hit, "hit5": hit5,
-                             "cov": cov, "wrong": wrong, "out_n": len(keys),
+                             "cov": cov, "named": named, "confused": conf, "out_n": len(keys),
                              "miss": miss, "ms": round(ms, 1),
                              "sources": {str(f): ctx["tags"].get(f, ["pool-only"]) for f in found},
                              "pool_n": len(ctx.get("pool") or []),
@@ -529,7 +532,7 @@ def run_household(modes, emb, endpoint, split="all", names_fit="on",
                 rows.append({"set": "household", "lang": lang, "mode": mode, "emb": emb,
                              "split": h["split"], "slice": "chit", "qid": hid, "kind": "chit",
                              "cat": h["cat"], "q": query, "keys": keys, "targets": [],
-                             "hit": None, "hit5": None, "cov": None, "wrong": [],
+                             "hit": None, "hit5": None, "cov": None, "named": [], "confused": [],
                              "out_n": len(keys), "miss": [], "ms": None,
                              "sources": {str(f): ctx["tags"].get(f, ["pool-only"]) for f in found},
                              "pool_n": len(ctx.get("pool") or []),
@@ -545,15 +548,17 @@ def _cls(misses: list[str], prefix: str) -> int:
 
 
 def summarize_household(rows: list[dict]) -> None:
-    """Таблица по языкам × сплиту: hit@5, покрытие, wrong, шум (только где
-    лейбл пустой) и три класса промаха — E срезан окном / A нет в пуле /
-    C ниже top-5 (запрос майнтейнера 2026-10-23, per language)."""
+    """Таблица по языкам × сплиту: hit@5, покрытие, named/confused, шум (только
+    где лейбл пустой) и три класса промаха — E срезан окном / A нет в пуле /
+    C ниже top-5 (запрос майнтейнера 2026-10-23, per language). В конце —
+    парный счёт confused off→режим: строка «путаница», когда лейбл неправильного
+    ответа попал в топ-5 (его 10:34: считать парно off против on)."""
     modes = sorted({(r["mode"], r["emb"]) for r in rows})
     for mode, emb in modes:
         sel = [r for r in rows if r["mode"] == mode and r["emb"] == emb]
         print(f"\n=== household mode={mode} emb={emb} ===")
-        print(f"{'lang':<4} {'split':<5} {'real':>4} {'hit5':>4} {'cov%':>5} {'wrong':>5} "
-              f"{'шум':>4} {'E':>2} {'A':>2} {'C':>2} {'проч':>4}")
+        print(f"{'lang':<4} {'split':<5} {'real':>4} {'hit5':>4} {'cov%':>5} {'named':>5} "
+              f"{'conf':>4} {'шум':>4} {'E':>2} {'A':>2} {'C':>2} {'проч':>4}")
         cells = [(lang, sp) for lang in ("en", "ru", "zh") for sp in ("dev", "test")]
         for lang, sp in cells:
             real = [r for r in sel if r["kind"] == "real" and r["lang"] == lang
@@ -566,17 +571,35 @@ def summarize_household(rows: list[dict]) -> None:
             noise = sum(bool(r["keys"]) for r in noise_rows)
             hits5 = sum(bool(r["hit5"]) for r in labelled)
             cov = sum(r["cov"] or 0 for r in labelled)
-            wrong = sum(1 for r in real if r["wrong"])
+            named = sum(1 for r in real if r["named"])
+            conf = sum(1 for r in real if r["confused"])
             misses = [m for r in labelled for m in r["miss"]]
             e, a, c = _cls(misses, "E:"), _cls(misses, "A:"), _cls(misses, "C:")
             other = len(misses) - e - a - c
             print(f"{lang:<4} {sp:<5} {len(labelled):>4} {hits5:>4} "
-                  f"{100 * cov / max(1, len(labelled)):>5.1f} {wrong:>5} "
+                  f"{100 * cov / max(1, len(labelled)):>5.1f} {named:>5} {conf:>4} "
                   f"{noise:>2}/{len(noise_rows):<2} {e:>2} {a:>2} {c:>2} {other:>4}")
         lab = [r for r in sel if r["kind"] == "real" and r["targets"]]
         hits5 = sum(bool(r["hit5"]) for r in lab)
-        wrong = sum(1 for r in sel if r["kind"] == "real" and r["wrong"])
-        print(f"{'итого':<9} {len(lab):>4} {hits5:>4} hit5={hits5}/{len(lab)} wrong={wrong}")
+        named = sum(1 for r in sel if r["kind"] == "real" and r["named"])
+        conf = sum(1 for r in sel if r["kind"] == "real" and r["confused"])
+        print(f"{'итого':<9} {len(lab):>4} {hits5:>4} "
+              f"hit5={hits5}/{len(lab)} named={named} confused={conf}")
+
+    # парный счёт (майнтейнера 10:34): строка confusion, если хотя бы один лейбл
+    # неправильного ответа в топ-5; off против каждого режима — снято/добавлено
+    for emb in sorted({str(r["emb"]) for r in rows}):
+        sel = [r for r in rows if str(r["emb"]) == emb and r["kind"] == "real"]
+        base = {(r["lang"], r["qid"]): bool(r["confused"])
+                for r in sel if r["mode"] == "off"}
+        for m2 in sorted({r["mode"] for r in sel} - {"off"}):
+            cur = {(r["lang"], r["qid"]): bool(r["confused"])
+                   for r in sel if r["mode"] == m2}
+            both = base.keys() & cur.keys()
+            cut = sum(1 for k in both if base[k] and not cur[k])
+            add = sum(1 for k in both if not base[k] and cur[k])
+            print(f"confused paired emb={emb} off→{m2}: "
+                  f"снято {cut}, добавлено {add} (строк {len(both)})")
 
 
 def summarize(rows: list[dict]) -> None:
