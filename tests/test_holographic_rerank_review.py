@@ -81,7 +81,9 @@ QUERY = "when does the backup run?"
 FILLERS = ["apple note", "brick note", "cloud note", "daisy note", "eagle note"]
 PLAIN = ["The nightly backup runs from the OES box at 2 am.",
          "The backup rotation keeps seven days of archives.",
-         "Mark plays the violin on Sundays."]
+         "Mark plays the violin on Sundays.",
+         # п.9: единственный кандидат вызова не делает — endpoint-тесты нуждаются в пуле >= 2
+         "The weekly backup runs from the NAS box at 4 am."]
 # Литералы-«ключи» собираются в рантайме: готовый похожий на ключ текст редактируется при записи файла.
 _BEARER = "ey" + "JhbGciOiJIUzI1NiJ9." + "abc123DEF456" * 3
 _KEY = "sk-" + "proj-" + "aB3" * 8 + "z9"

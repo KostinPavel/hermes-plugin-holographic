@@ -201,7 +201,8 @@ def test_timeout_is_clamped_and_enforced(tmp_path, monkeypatch):
     _fill(p)
     assert p._rescorer.settings.timeout == 0.5  # кламп: минимум 0.5
     start = time.perf_counter()
-    block = p.prefetch("when does the backup run?")
+    # п.9: единственный кандидат вызова не делает — берём пул из трёх note-фактов
+    block = p.prefetch("what about the note?")
     elapsed = time.perf_counter() - start
     p.shutdown()
     assert block

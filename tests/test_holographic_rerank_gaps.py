@@ -88,7 +88,9 @@ RANK = {"rerank": "on", "rerank_url": "https://rerank.example.net/v1/rerank",
         "rerank_model": "fake-reranker"}  # one mode since п.6: rerank_mode is gone
 QUERY = "when does the backup run?"
 FACTS = ["The nightly backup runs from the OES box at 2 am.", "Lena's birthday is on June 3.",
-         "Mark plays the violin on Sundays.", "Tom is allergic to peanut satay."]
+         "Mark plays the violin on Sundays.", "Tom is allergic to peanut satay.",
+         # п.9: единственный кандидат вызова не делает — endpoint-тесты нуждаются в пуле >= 2
+         "The weekly backup runs from the NAS box at 4 am."]
 FILLERS = ["apple note", "brick note", "cloud note", "daisy note", "eagle note"]
 SECRET = "The backup password: violet-quilt-77."  # stored, but recall refuses it (a credential with its value)
 NOTE_QUERY = "what about the note?"  # every note fact is a candidate of it, in every turn
@@ -271,17 +273,18 @@ def test_unified_stream_sends_the_union_and_ranks_it_strictly(tmp_path, endpoint
     p, meaning_fact = _unified_store(tmp_path, endpoint, monkeypatch)
     query, meaning, candidates, key, turn = _stream_arguments(p)
     lexical = [f["content"] for f in p._retriever.relevant(query, candidates, p._min_coverage)]
-    assert lexical == [FACTS[0]]  # stream 1: the words alone decide membership
+    # stream 1: the words alone decide membership (п.9: пул backup-запроса теперь из двух фактов)
+    assert lexical == [FACTS[0], FACTS[4]]
     endpoint.reverse = True  # the endpoint answers the pool backwards: worst rank first
     fresh, by_meaning = p._unified_stream(query, meaning, candidates, key, turn)
     # What the endpoint saw: both streams first, then the lexical pool — the credential the meaning stream
     # offered was dropped by _unified_stream itself, and the entity fact the meaning stream had already
     # admitted was not offered twice.
-    assert endpoint.documents == [MEANING, ENTITY, FACTS[0]]
+    assert endpoint.documents == [MEANING, ENTITY, FACTS[0], FACTS[4]]
     assert endpoint.documents.count(MEANING) == 1
     assert by_meaning == {meaning_fact["fact_id"]}
     # The answer was reversed, so the top of the result is the endpoint's LAST rank: five strictly by rank.
-    assert [f["content"] for f in fresh] == [FACTS[0], ENTITY, MEANING]
+    assert [f["content"] for f in fresh] == [FACTS[4], FACTS[0], ENTITY, MEANING]
     p.shutdown()
 
 
@@ -290,7 +293,8 @@ def test_unified_stream_falls_back_to_the_old_order_when_scores_is_none(tmp_path
     query, meaning, candidates, key, turn = _stream_arguments(p)
     endpoint.fail = ConnectionRefusedError("refused")  # scores() returns None
     fresh, by_meaning = p._unified_stream(query, meaning, candidates, key, turn)
-    assert [f["content"] for f in fresh] == [FACTS[0], MEANING, ENTITY]  # lexical first, streams after: as in off
+    # lexical first (оба backup-факта, п.9), streams after: as in off
+    assert [f["content"] for f in fresh] == [FACTS[0], FACTS[4], MEANING, ENTITY]
     assert by_meaning == {meaning_fact["fact_id"]}  # the marks are kept so the prompt can still say "(by meaning)"
     p.shutdown()
 

@@ -174,6 +174,11 @@ class Rescorer:
             return None
         if self._secret and self._secret((query or "")[:2000]):
             return None  # no call at all: what recall must not inject is never sent
+        if len(documents) == 1:
+            # One sendable document: nothing to reorder, the window cannot drop the only candidate
+            # (a cut judged from the top always keeps the top) and the blend of a single score is
+            # the same either way — so no call is made and the trivial rank comes back (PR #10, point 9).
+            return [(0, 1.0)]
         limit = int(self.settings.top_k)
         docs = [documents[i] for i in range(min(limit, len(documents)))]
         body = {"model": self.settings.model, "query": (query or "")[:2000],

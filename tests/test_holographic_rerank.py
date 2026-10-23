@@ -87,7 +87,9 @@ def _provider(tmp_path, name="memory_store.db", **config):
 
 
 FACTS = ["The nightly backup runs from the OES box at 2 am.", "Lena's birthday is on June 3.",
-         "Mark plays the violin on Sundays.", "Tom is allergic to peanut satay."]
+         "Mark plays the violin on Sundays.", "Tom is allergic to peanut satay.",
+         # п.9: единственный кандидат вызова не делает — endpoint-тесты нуждаются в пуле >= 2
+         "The weekly backup runs from the NAS box at 4 am."]
 FILLERS = ["apple note", "brick note", "cloud note", "daisy note", "eagle note"]
 
 
