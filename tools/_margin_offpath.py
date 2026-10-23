@@ -16,7 +16,7 @@ import os
 import sys
 from pathlib import Path
 
-_REPO = Path("/home/pavel/.hermes/cache/scratch/holographic_rerank")
+_REPO = Path(__file__).resolve().parent.parent
 _AGENT = Path(os.environ.get("HERMES_AGENT_REPO") or Path.home() / ".hermes" / "hermes-agent").expanduser()
 for _p in (str(_AGENT), str(_REPO)):
     if _p not in sys.path:
