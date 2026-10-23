@@ -944,6 +944,7 @@ _TRUE_WORDS, _FALSE_WORDS = frozenset({"1", "true", "yes", "on"}), frozenset({"0
 # person in one store; now it is a problem like a number that is none. (key, allowed, what it must be)
 _CHOICES = (("scope", _SCOPES, "one of profile, user, chat, thread"), ("recall_source", {"off", "short"}, "off or short"),
             ("embeddings", _TRUE_WORDS | _FALSE_WORDS, "on or off"),
+            ("rerank", _TRUE_WORDS | _FALSE_WORDS, "on or off"),
             *((key, _TRUE_WORDS | _FALSE_WORDS, "true or false")
               for key in ("recall_indicator", "cron_writes", "auto_extract", "mirror_memory_writes")))
 # A separate database per chat (or per forum topic / thread): facts meet in the FTS index, n-gram scan, entities, HRR

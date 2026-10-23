@@ -30,18 +30,23 @@ shipped configuration; the pre-0.17.8 labels map as in README, "Benchmark" secti
   PR thread; `topic_shared_words` 26/45; `vague` 2/45 (the upstream words-gate fix, PR #13,
   removed the stem collisions); the multilingual negatives 0/90.
 
-**CPU latency** (rerank layer only, quality at 100%): `results/bench_p8_cpu.jsonl` —
-bge-reranker-v2-m3 Q4_K_M, llama-server `--device none`, Ryzen 7 5800H (8 cores), pools avg 2–5
-docs (max 16), 60 queries × 4 rerank modes = 240 calls, 0 fallbacks. Measured on `7f1efd6`, before
-the upstream words-gate fix (which only shrinks the pools):
+**CPU latency** (rerank layer only, quality at 100%): `results/bench_cpu_t4.jsonl` —
+bge-reranker-v2-m3 Q4_K_M, llama-server `--threads 4`, **Ryzen 7 2700 (this machine)**, 60 queries ×
+4 rerank modes = 240 calls, 0 fallbacks, `git_sha 77c9325` (the head):
 
 | mode | p50 ms | p95 ms |
 |---|---|---|
-| off | 3 | 6 |
-| reorder_only | 94 | 222 |
-| reorder_blend | 99 | 212 |
-| gate_only | 101 | 229 |
-| gate_blend | 97 | 214 |
+| off | 3.7 | 9.2 |
+| reorder_only | 178 | 411 |
+| reorder_blend | 176 | 393 |
+| gate_only | 180 | 398 |
+| gate_blend | 184 | 413 |
+
+The earlier CPU table (`results/bench_p8_cpu.jsonl`, `git_sha 7f1efd6`, kept for history) was measured
+on a **different processor**: Ryzen 7 5800H laptop, msys2 llama-server `--device none`, before the
+upstream words-gate fix — off p50 3 / p95 6 ms, rerank modes p50 94–101 / p95 212–229 ms, pools avg 2–5
+docs (max 16). Same model and harness, but the two machines are not comparable; the 4-thread cap on the
+new run is deliberate — it is closer to the small servers people run this on.
 
 **History.** The per-model table (bge/jina, CPU vs GPU, 360 queries, measured before the fixes) and
 its raw rows (the `*_[...].jsonl` files) live at commit
