@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Internal
+
+- **The suite on Windows CI in minutes, not half an hour.** CI's Python links SQLite 3.50.4, which core holds to the
+  WAL-reset bug, so every test store ran in DELETE journal mode and each commit waited on two fsyncs; on the Windows
+  runner's disk the suite took 14–30 minutes against 2 on Linux. `tests/conftest.py` opens every connection with
+  `PRAGMA synchronous=OFF` (no test checks what survives a power cut; journal mode, locks and writes are as they
+  were; the plugin itself is unchanged). The pytest job stops after 40 minutes instead of GitHub's 6 hours and lists
+  the 25 slowest tests.
+
 ## 0.17.8 — 2026-10-23
 
 From a second review against "10 principles of good code for AI agents" (2026-10-23), and the chit-chat that the
