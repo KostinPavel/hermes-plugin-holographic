@@ -35,6 +35,12 @@ From a second review against "10 principles of good code for AI agents" (2026-10
   exports what the provider and the tests import from it; the entity index rebuild (`rebuild_entity_index`,
   `_ENTITY_RULES`, the `_AUTO_REBUILD_*` limits) stays there. One trace of the move: the log line for a declared name
   that is no name now comes from the logger of `entities`, not `store`.
+- **Less code, the same behaviour.** The derivation mode `"both"` nobody set is gone (`"dict"`, the default, and
+  `"rules"`, which a test uses, stay); two parameters no caller passed are folded in (`_drop_orphan_entities`
+  keep_aliased, `_detach_alias` declared). One `EntityMixin._drop_entity_row` deletes an entity with its aliases for
+  both delete and forget; `require_history` is public, since retrieval calls it. The provider no longer writes the
+  SQL of "tags of a fact" and "facts without keywords" twice each: `MemoryStore.fact_tags`,
+  `facts_without_keywords` and `count_without_keywords` do. Tests unchanged.
 
 ## 0.17.7 — 2026-10-21
 

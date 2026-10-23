@@ -246,7 +246,7 @@ class FactRetriever:
         """What held on *day*: the search runs over the versions that may have held then (candidates, IDF, the
         floor and the limit are all computed over them, so limit=1 is the best version for that date). Versions
         known to hold go to 'results', those whose start or end is not known to the day to 'undetermined'."""
-        self.store._require_history()
+        self.store.require_history()
         held, maybe = [], {}
         # A wide pool: FTS5 picks candidates by its global rank, which knows nothing of the date; the corpus rank
         # (_corpus_rank) then orders them by the versions of that date only.

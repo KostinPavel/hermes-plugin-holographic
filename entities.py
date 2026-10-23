@@ -272,7 +272,7 @@ class EntityMixin:
             kept = [a for a in row["aliases"].split(",") if a.strip() and entity_key(a) != alias_key]
             self._write("UPDATE entities SET aliases = ? WHERE entity_id = ?", (_legacy_aliases(kept), entity_id))
 
-    def _detach_alias(self, row, *, declared: bool = True, declaring: int | None = None) -> dict:
+    def _detach_alias(self, row, *, declaring: int | None = None) -> dict:
         """Make the alias *row* (see _alias_row) an entity of its own, inside the caller's transaction (0.17.0).
 
         1. The alias leaves the entity it belonged to (both representations) and becomes an entity (declared).
@@ -296,8 +296,7 @@ class EntityMixin:
         if row["source"] == "user":
             self._write("UPDATE entities SET entity_type = 'declared' WHERE entity_id = ?", (owner,))
         new = self._resolve_entity(alias)
-        if declared:
-            self._write("UPDATE entities SET entity_type = 'declared' WHERE entity_id = ?", (new,))
+        self._write("UPDATE entities SET entity_type = 'declared' WHERE entity_id = ?", (new,))
         self._bump()
         for _ in range(self._one("SELECT COUNT(*) FROM entity_aliases")[0] + 1):
             rows = self._conn.execute("SELECT alias_key, entity_id, alias FROM entity_aliases WHERE source = 'aka'").fetchall()
@@ -683,7 +682,13 @@ class EntityMixin:
             return int(self._write("INSERT INTO entities (name) VALUES (?)", (name,)).lastrowid)  # type: ignore[arg-type]
         return int(self._write("INSERT INTO entities (name, name_key) VALUES (?, ?)", (name, entity_key(name))).lastrowid)  # type: ignore[arg-type]
 
-    def _drop_orphan_entities(self, keep_aliased: bool = True, keep_declared: bool = False) -> None:
+    def _drop_entity_row(self, entity_id: int) -> None:
+        """The entity's row and its aliases; the caller unlinks its facts first and bumps the index generation."""
+        if self._entry.get("migrated"):  # a store no writer has migrated yet may lack entity_aliases
+            self._write("DELETE FROM entity_aliases WHERE entity_id = ?", (entity_id,))
+        self._write("DELETE FROM entities WHERE entity_id = ?", (entity_id,))
+
+    def _drop_orphan_entities(self, keep_declared: bool = False) -> None:
         """Entities no fact links to go — but not one the user gave an alias (alias may come before any fact names
         it; an unrelated rewrite used to wipe it with its aliases). Forget drops the names its fact gave itself.
         First, aliases "X aka Y" gave (0.16.0) go with the last current fact that says so (forget, end, a new text): an
@@ -691,7 +696,7 @@ class EntityMixin:
         a declared entity stays without facts too (the rebuild leaves what someone named as it is)."""
         self._prune_aka_aliases()
         keep = (f" AND entity_id NOT IN (SELECT entity_id FROM entity_aliases WHERE {_GIVEN_ALIAS})"
-                if keep_aliased and self._entry.get("migrated") else "")
+                if self._entry.get("migrated") else "")
         if keep_declared:
             keep += " AND COALESCE(entity_type, '') != 'declared'"
         if self._write("DELETE FROM entities WHERE entity_id NOT IN (SELECT entity_id FROM fact_entities)"
@@ -891,8 +896,7 @@ class EntityMixin:
                 aliases += len({entity_key(a) for a in (*own, *legacy)} - {entity_key(row["name"])})
                 facts |= {r[0] for r in self._conn.execute("SELECT fact_id FROM fact_entities WHERE entity_id = ?", (entity_id,))}
                 self._write("DELETE FROM fact_entities WHERE entity_id = ?", (entity_id,))
-                self._write("DELETE FROM entity_aliases WHERE entity_id = ?", (entity_id,))
-                self._write("DELETE FROM entities WHERE entity_id = ?", (entity_id,))
+                self._drop_entity_row(entity_id)
             if self._entry.get("migrated"):
                 for digest in sorted({d for n in names if entity_key(n) for d in self._name_digests(n)}):
                     self._write("INSERT OR IGNORE INTO entity_tombstones (digest) VALUES (?)", (digest,))
