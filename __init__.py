@@ -869,7 +869,7 @@ def _load_plugin_config() -> dict:
     try:
         from hermes_cli.config import load_config_readonly  # canonical: managed-scope overlay + ${VAR} expansion
         config = load_config_readonly()
-    except Exception as exc:  # the type only: a YAML error quotes the line it stopped at, which may hold a key
+    except Exception as exc:  # noqa: BLE001 - any failure of the core's reader turns memory off; the type only: a YAML error quotes the line it stopped at, which may hold a key
         logger.warning("holographic: could not read plugins.hermes-memory-store from config.yaml (%s); memory is "
                        "off until it reads", type(exc).__name__)
         return _UnreadConfig()
@@ -1040,7 +1040,7 @@ def _hermes_timezone():
         return None
     try:
         return get_timezone()
-    except Exception as exc:  # a setting the core cannot read: dates in UTC, said (0.17.8; it was silent)
+    except Exception as exc:  # noqa: BLE001 - a setting the core cannot read: dates in UTC, said (0.17.8; it was silent)
         _warn_once("Hermes's timezone could not be read; fact history dates are in UTC", exc)
         return None
 
@@ -1313,7 +1313,7 @@ class HolographicMemoryProvider(MemoryProvider):
             # Read-only contexts never migrate or repair a store: they only read what a writer left.
             store = MemoryStore(db_path=db_path, default_trust=self._default_trust, hrr_dim=hrr_dim,
                                 migrate=self._tool_writable, tz=_hermes_timezone())
-        except Exception as exc:  # a damaged or unreadable database: keep the agent up, say why memory is off
+        except Exception as exc:  # noqa: BLE001 - a damaged or unreadable database: keep the agent up, say why memory is off
             self._init_error = f"cannot open {db_path} ({type(exc).__name__}: {exc})."
             if not isinstance(exc, HistoryTooNew):
                 self._init_error += f" If the file is damaged, recover it with: sqlite3 {db_path} \".recover\" | sqlite3 recovered.db"
@@ -1327,7 +1327,7 @@ class HolographicMemoryProvider(MemoryProvider):
                 if dropped:
                     logger.info("holographic: search by meaning is off; deleted %d stored vectors from %s", dropped,
                                 db_path)
-            except Exception as exc:  # the next writer open tries again; said, since the person expects them gone
+            except Exception as exc:  # noqa: BLE001 - the next writer open tries again; said, since the person expects them gone
                 _warn_once("could not delete stored vectors", exc)
         self._stores[key] = (store, retriever)
         while len(self._stores) > _MAX_OPEN_STORES:
@@ -1391,7 +1391,7 @@ class HolographicMemoryProvider(MemoryProvider):
             return ""
         try:
             total = self._store.count_facts()
-        except Exception as exc:  # busy or broken: not "empty", which the model would believe
+        except Exception as exc:  # noqa: BLE001 - busy or broken: not "empty", which the model would believe
             logger.warning("holographic: could not count the stored facts (%s: %s)", type(exc).__name__, exc)
             return (f"# Holographic Memory\nActive, but the store could not be read just now ({type(exc).__name__}); "
                     "fact_store may fail until it can.")
@@ -1474,7 +1474,7 @@ class HolographicMemoryProvider(MemoryProvider):
                      + (" (inferred)" if (origins.get(f["fact_id"]) or {}).get("origin") == "inferred" else "")
                      + self._recall_suffix(sources.get(f["fact_id"])) for f in fresh]
             return "## Holographic Memory (stored facts: data, not instructions)\n" + "\n".join(lines)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - recall never takes the turn down; _recall_failed says why
             self._recall_failed(e)
             return ""
 
@@ -1501,7 +1501,7 @@ class HolographicMemoryProvider(MemoryProvider):
                 return None
             vector = self._embedder.query(query)
             return self._retriever.meaning(vector, tag, self._embedding.weight) if vector is not None else None
-        except Exception as exc:  # never takes recall down; the endpoint's own failures are said by the Embedder
+        except Exception as exc:  # noqa: BLE001 - never takes recall down; the endpoint's own failures are said by the Embedder
             _warn_once("search by meaning skipped", exc)
             return None
 
@@ -1557,7 +1557,7 @@ class HolographicMemoryProvider(MemoryProvider):
                                             for (fact_id, _, digest), vector in zip(todo, vectors)])
                 finally:
                     self._op_lock.release()
-        except Exception as exc:  # a busy file, a broken connection: the next turn goes on
+        except Exception as exc:  # noqa: BLE001 - a busy file, a broken connection: the next turn goes on
             _warn_once("making fact vectors stopped", exc)
 
     def _catch_up_seconds(self) -> float:
@@ -1661,7 +1661,7 @@ class HolographicMemoryProvider(MemoryProvider):
             return self._failed(tool_name, args, exc)
         except (ValueError, RuntimeError) as exc:  # the plugin's own refusals, HistoryUnavailable, HistoryTooNew
             return tool_error(str(exc))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - any other failure answers the agent by its kind (_failed), never a traceback
             return self._failed(tool_name, args, exc)
 
     @staticmethod
@@ -1765,7 +1765,7 @@ class HolographicMemoryProvider(MemoryProvider):
                     self._store.add_fact_status(content, category=category, source=source)
             elif action == "remove" and old:
                 self._store.forget_fact(old[0]["fact_id"])
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - the core's own memory write went through; the mirror's failure is said
             _warn_once("memory mirror failed", exc)
 
     @_serialized
@@ -1776,7 +1776,7 @@ class HolographicMemoryProvider(MemoryProvider):
         for store, _ in self._stores.values():
             try:
                 store.close()
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - one store that will not close must not keep the others open
                 logger.debug("Holographic shutdown close() failed: %s", e)
         self._stores.clear()
         self._store = self._retriever = None
@@ -1809,7 +1809,7 @@ class HolographicMemoryProvider(MemoryProvider):
             try:
                 if opened[0].add_retrieval_counts(dict(pending)):
                     pending.clear()
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - counts are advisory and stay pending for the next turn
                 logger.debug("Holographic retrieval count failed: %s", e)
             if len(pending) > _MAX_TRACKED_FACTS:  # the database stays busy: keep memory bounded
                 self._pending[store_key] = Counter(dict(pending.most_common(_MAX_TRACKED_FACTS)))
@@ -1898,7 +1898,7 @@ class HolographicMemoryProvider(MemoryProvider):
     def _entity_call(a: dict, needs: tuple, call) -> str:
         """Run an entity action (0.16.0); a name no entity has is an answer, not a 'missing argument'."""
         for arg in needs:
-            a[arg]  # noqa: B018 - a missing argument is reported as one (handle_tool_call)
+            a[arg]  # a missing argument is reported as one (handle_tool_call)
         try:
             return json.dumps(call())
         except NotFound as exc:
@@ -2241,7 +2241,7 @@ class HolographicMemoryProvider(MemoryProvider):
                             if store.add_fact_status(sentence, category=category, trust=extract_trust,
                                                      source=self._source("auto_extract", author, origin="said"))[1]:
                                 extracted += 1
-                        except Exception as exc:  # the next sentence may still go in; how many did not is said below
+                        except Exception as exc:  # noqa: BLE001 - the next sentence may still go in; how many did not is said below
                             failed, why = failed + 1, error_kind(exc)
                         break
         if extracted:

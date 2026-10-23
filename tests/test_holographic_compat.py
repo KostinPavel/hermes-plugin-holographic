@@ -45,7 +45,7 @@ def old(tmp_path_factory):
     module = importlib.util.module_from_spec(spec)
     sys.modules["holo_v011"] = module
     spec.loader.exec_module(module)
-    from holo_v011 import retrieval as old_retrieval, store as old_store  # noqa: E402
+    from holo_v011 import retrieval as old_retrieval, store as old_store
     return old_store, old_retrieval
 
 

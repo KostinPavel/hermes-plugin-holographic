@@ -20,6 +20,7 @@ line-length = 120
 extend-exclude = ["tools"]  # one-off builders of dictionaries/, run by hand
 
 [tool.ruff.lint]
-select = ["E", "F", "B"]
+# BLE: a blind except names why it may be blind (noqa: BLE001 - <why>); RUF100: a noqa that no longer applies goes
+select = ["E", "F", "B", "BLE", "RUF100"]
 # E501: lines run to 125 by the house style; B905: zip(strict=True) would change what a length mismatch does, not tidy it
 ignore = ["E501", "B905"]

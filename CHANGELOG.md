@@ -35,6 +35,11 @@ From a second review against "10 principles of good code for AI agents" (2026-10
   exports what the provider and the tests import from it; the entity index rebuild (`rebuild_entity_index`,
   `_ENTITY_RULES`, the `_AUTO_REBUILD_*` limits) stays there. One trace of the move: the log line for a declared name
   that is no name now comes from the logger of `entities`, not `store`.
+- **Checks that do not depend on review.** ruff now runs `BLE` and `RUF100`: each of the 21 places that catch any
+  exception says why it may (`noqa: BLE001 - …`; most reasons were comments already, five places in `__init__.py` had none), and a
+  `noqa` that no longer applies fails the lint. `tests/test_holographic_architecture.py` reads `entity_names.py` and
+  fails on any import beyond `bisect`, `re`, `unicodedata` and `.text`. CI runs the suite on Linux against the latest
+  core release as well as against core's `main`.
 
 ## 0.17.7 — 2026-10-21
 
