@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+From a second review against "10 principles of good code for AI agents" (2026-10-23).
+
+### Fixed
+
+- **A mistyped `scope` no longer puts everyone in one store.** A value that is none of profile, user, chat, thread
+  (`scope: users`) was read as `profile`: with per-user memory meant, every person's facts went into one database and
+  were recalled to the others. Now memory is off for the session with the key named, as for a setting that is no
+  number. The same for the other keys with a fixed set of values: `recall_source`, `embeddings` and the switches
+  `recall_indicator`, `cron_writes`, `auto_extract`, `mirror_memory_writes` (true / false, yes / no, on / off, 1 / 0, in
+  any case; unset or empty is the default; a bare `recall_source: off`, which Hermes's YAML reads as false, is off).
+- **A `config.yaml` that cannot be parsed no longer runs memory on the defaults.** Hermes 0.22 raises nothing for it: it
+  serves its last good copy or, without one, its defaults, and the plugin took `scope: profile` without a word. With
+  a copy that holds this plugin's settings they are used and a warning says so; without one (or on a core that
+  raises) memory is off until the file reads.
+- **"Not found" means not found.** A `KeyError` from a fault inside `change`, `forget`, `delete_entity` and the other
+  fact and entity actions was answered as "fact #N does not exist" or "no entity is named …" (`remove` as
+  `{"removed": false}`), and one from any other action as "Missing required argument". Now only a fact or name that does not exist is "not found", only an argument
+  the tool's schema has is "missing", and anything else answers `fact_store <action> failed (<kind>)` with a warning.
+  Such a failure's text no longer reaches the agent either: SQLite quotes a column's value in some messages, so it
+  could carry a fact; the plugin's own refusals (a date that is no date, a name that is taken) keep their words.
+- **Failures logged at debug only are warnings**, named by their kind: stored vectors not deleted after `embeddings`
+  was switched off, search by meaning or fact vectors stopped by something other than the endpoint, the memory mirror,
+  a missing or damaged dictionary of a language, a timezone the core cannot read (history dates were silently UTC).
+
 ### Internal
 
 - **`store.py` is three files.** The rules of what a name is (`entity_key`, `_valid_entity`, `_name_shaped`, the

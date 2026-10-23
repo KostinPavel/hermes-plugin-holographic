@@ -70,6 +70,10 @@ def _fact_text(fact: dict) -> str:
 
 
 _WARNED: set[str] = set()  # failures said once each (a damaged index fails on every turn)
+# Each line is a fixed place and an error's kind, so the set stays small by itself; the bound only stops a fault
+# from growing it for ever. 64 was reached by the provider's actions alone and hid the next new failure (Codex
+# review of 0.17.8).
+_WARNED_MAX = 4096
 
 
 def error_kind(exc: BaseException) -> str:
@@ -82,7 +86,7 @@ def error_kind(exc: BaseException) -> str:
 
 def _warn_once(what: str, exc: Exception) -> None:
     text = f"{what} ({error_kind(exc)})"
-    if text not in _WARNED and len(_WARNED) < 64:
+    if text not in _WARNED and len(_WARNED) < _WARNED_MAX:
         _WARNED.add(text)
         logger.warning("holographic: %s", text)
 
