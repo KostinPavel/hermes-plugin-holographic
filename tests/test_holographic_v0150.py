@@ -159,6 +159,31 @@ def test_review_lists_an_old_unconfirmed_inference(p):
     assert "inference nobody confirmed" in reasons.get(old, "") and fresh not in reasons and said not in reasons
 
 
+def test_the_tool_tells_the_agent_what_leaving_origin_out_does(p):
+    # issue #3: 10 of 24 new facts on a live store had no origin; the description named the three values but not what
+    # happens without one, so nothing nudged the agent to pass it
+    schema = next(s for s in p.get_tool_schemas() if s["name"] == "fact_store")
+    text = schema["parameters"]["properties"]["origin"]["description"]
+    assert "Pass it whenever you know" in text
+    assert "'unknown' in stats" in text and "default trust" in text
+    assert "keeps the version's" in text
+
+
+def test_leaving_origin_out_does_what_the_tool_says(p):
+    plain = _add(p, "The office is on the third floor")["fact_id"]
+    assert _trust(p, plain) == pytest.approx(0.5)
+    assert _call(p, action="stats")["origin"]["unknown"] == 1
+    p.on_session_switch("s2", reset=True)
+    again = _add(p, "The office is on the third floor")
+    assert again["fact_id"] == plain and "confirmations" not in again
+    said = _add(p, "The office is on the third floor", "said")
+    assert said["confirmations"] == 1
+    # the same text without an origin is not a new fact: the stored one keeps its origin and trust
+    tea = _add(p, "Anton prefers green tea", "said")["fact_id"]
+    assert _add(p, "Anton prefers green tea")["fact_id"] == tea
+    assert p._store.origins([tea])[tea]["origin"] == "said" and _trust(p, tea) == pytest.approx(0.6)
+
+
 def test_stats_count_the_origins(p):
     _add(p, "Mia is a British cat", "said")
     _add(p, "Mia likes the sofa", "inferred")

@@ -234,7 +234,10 @@ months on, a rule the user set and a guess the agent made looked the same.
   the user's own words); facts stored before 0.15.0 and mirrored memory entries have no origin. A `correct` that
   names no origin keeps the version's (fixing a typo does not make a fact nobody's); a `change` is a new claim and
   takes only the origin it is given. A session opened before an update keeps the tools it was given and offers no
-  `origin` until a new session starts: its facts land without one.
+  `origin` until a new session starts: its facts land without one. A new fact or a changed version stored with no
+  origin has none (`unknown` in `stats`), and the tool description says so; an `add` of a text already stored
+  keeps that fact's origin and trust. In the database the origin is kept with
+  the version, in `fact_versions.src_origin` of the current row (`status = 'current'`), not on `facts`.
 - **Starting trust.** What the person said or confirmed starts 0.1 above `default_trust`, the agent's conclusion 0.1
   below it (within 0 and 1), a fact without an origin at `default_trust` as before; a `change` starts over at its
   new origin's trust. Measured on 40 pairs of conflicting facts about the
