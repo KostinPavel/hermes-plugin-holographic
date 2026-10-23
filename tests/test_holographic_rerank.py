@@ -16,7 +16,7 @@ import time
 import pytest
 
 from hermes_plugin_holographic import HolographicMemoryProvider, rerank
-from hermes_plugin_holographic import _bottom_cut
+from hermes_plugin_holographic import _bottom_cut, _window_keep
 
 
 class _Response:
@@ -162,6 +162,64 @@ def test_bottom_cut_default_keeps_the_window(tmp_path, endpoint):
     endpoint.scores = [1.0, 0.9, 0.89, 0.88, 0.87]  # flat tail — the DEFAULT has no ratio veto
     assert _block(p, "what about the note?") != ""  # unlike the enabled veto in the test above
     p.shutdown()
+
+
+def test_window_variants_min_and_named(tmp_path):
+    """Варианты окна (майнтейнер PR #10, 10:34): (а) не резать ниже N фактов,
+    (б) факт, называющий лицо вопроса, не резать; выключены = поведение как раньше."""
+    # (а): добираем следующие по рангу позиции, но не дальше scored
+    assert _window_keep([0], 4, 4, need=2) == [0, 1]
+    assert _window_keep([0, 1], 4, 4, need=2) == [0, 1]   # уже не меньше двух
+    assert _window_keep([0], 1, 3, need=2) == [0]          # единственный scored не воскрешаем
+    assert _window_keep([0], 4, 4) == [0]                  # выключено -> идентично
+    assert _window_keep(None, 4, 4, need=2) is None        # пустой срез не оживляем
+    # (б): protected-позиции добавляются (в том числе за пределами scored)
+    assert _window_keep([0], 2, 5, protected={2, 0}) == [0, 2]
+    assert _window_keep([0], 2, 5, need=2, protected={4}) == [0, 1, 4]
+    # клавиши читаются из конфига, по умолчанию выключены
+    on = rerank.Settings({"rerank": "on", "rerank_window_min": "2", "rerank_window_named": "on"})
+    assert (on.window_min, on.window_named) == (2, True)
+    off = rerank.Settings({"rerank": "on"})
+    assert (off.window_min, off.window_named) == (0, False)
+
+
+def test_window_min_lifts_a_cut_pool(tmp_path, endpoint):
+    """(а) интеграция: окно срезает пул до одного факта, rerank_window_min держит два."""
+    p = _provider(tmp_path, **{**RANK, "rerank_window": "0.05"})
+    _fill(p)
+    endpoint.scores = [1.0, 0.0]  # второй факт глубоко за δ
+    base = _block(p, "when does the backup run?")
+    assert base.count("- #") == 1  # контроль: без варианта окно реально режет
+    p.shutdown()
+
+    p = _provider(tmp_path, name="min2.db", **{**RANK, "rerank_window": "0.05",
+                                               "rerank_window_min": "2"})
+    _fill(p)
+    endpoint.scores = [1.0, 0.0]
+    lifted = _block(p, "when does the backup run?")
+    assert lifted.count("- #") == 2  # вариант (а): пул не опускается ниже двух
+    p.shutdown()
+
+
+def test_window_named_spares_the_asked_person(tmp_path, endpoint):
+    """(б) интеграция: вопрос про Лену, в пуле её два факта — окно режет один,
+    но с rerank_window_named оба факта, связанных с Леной, в блоке."""
+    def lena_pool(name, extra):
+        p = _provider(tmp_path, name=name, **{**RANK, "rerank_window": "0.05", **extra})
+        for f in FILLERS:
+            p._store.add_fact(f"{f} number")
+        # линк на сущность задаём явно: add_fact extraction в тестовом харнессе не делает
+        p._store.add_fact_status("Lena's birthday is on June 3.", entities=("Lena",))
+        p._store.add_fact_status("Lena drinks tea with lemon.", entities=("Lena",))
+        endpoint.scores = [1.0, 0.0]  # ровно один факт за δ — какой, зависит от порядка
+        block = _block(p, "what about Lena?")
+        p.shutdown()
+        return block
+
+    base = lena_pool("lena_base.db", {})
+    assert base.count("- #") == 1  # контроль: базовый окно режет Лена-пул
+    spared = lena_pool("lena_named.db", {"rerank_window_named": "on"})
+    assert spared.count("- #") == 2 and "birthday" in spared  # (б): оба факта Лены целы
 
 
 def test_gate_reads_score_falls_back_to_coverage_on_failure(tmp_path, endpoint):

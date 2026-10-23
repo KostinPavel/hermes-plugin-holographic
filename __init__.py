@@ -1092,6 +1092,29 @@ def _bottom_cut(scores: list[float], window: float) -> list[int] | None:
     return [i for i, s in enumerate(scores) if top - s <= window]
 
 
+def _window_keep(keep: list[int] | None, ranked_len: int, union_len: int,
+                 need: int = 0, protected: set[int] | None = None) -> list[int] | None:
+    """Варианты окна поверх _bottom_cut (майнтейнер PR #10, 10:34), выключены по умолчанию:
+
+    (а) *need* — срез не опускается ниже стольких фактов: худшие позиции окна
+        добираются следующими по рангу (из scored — хвост за top_k не воскрешаем);
+    (б) *protected* — позиции фактов, связанных с лицом, названным в вопросе: окно
+        их не режет, даже если скор за δ (и хвост за top_k тоже — такой факт вообще
+        не должен выпадать из-за окна).
+
+    Пустой срез не оживляем: варианты спасают от частичного среза, а не от пустого
+    пула. keep от _bottom_cut — префикс позиций в порядке ранга; результат сортируется,
+    т.е. порядок переупорядоченного пула сохраняется."""
+    if not keep or (need <= len(keep) and not protected):
+        return keep
+    out = list(keep)
+    if len(out) < need:
+        out += [i for i in range(len(out), min(need, ranked_len))]
+    if protected:
+        out += [i for i in sorted(protected) if i < union_len and i not in out]
+    return sorted(set(out))
+
+
 class HolographicMemoryProvider(MemoryProvider):
     """Holographic memory with structured facts, entity resolution, and HRR retrieval."""
 
@@ -1573,6 +1596,21 @@ class HolographicMemoryProvider(MemoryProvider):
         """Ответ эндпоинта (индексы по send-списку) -> индексы по исходному пулу."""
         return [(send_idx[i], score) for i, score in ranked if 0 <= i < len(send_idx)]
 
+    def _window_spares(self, query: str, union: list[dict]) -> set[int]:
+        """(б) варианта окна: позиции фактов, связанных с сущностью, названной в
+        вопросе (store-линки, те же, что у names_fit) — такой факт окно не режет.
+        Без названных сущностей — пусто: защиты нет и не нужна."""
+        named_ids = self._store.mentioned_entity_ids(query) if self._store is not None else set()
+        if not named_ids:
+            return set()
+        spares = set()
+        for i, fact in enumerate(union):
+            linked = {row[0] for row in self._store.read(  # type: ignore[union-attr]
+                "SELECT entity_id FROM fact_entities WHERE fact_id = ?", (fact["fact_id"],))}
+            if named_ids & linked:
+                spares.add(i)
+        return spares
+
     def _unified_stream(self, query: str, meaning, candidates: list[dict], key: str,
                         turn: int) -> tuple[list[dict], set[int]]:
         """Блок 3: один rerank на union-выборке трёх потоков → top-5 строго по рангу (режимы
@@ -1654,6 +1692,12 @@ class HolographicMemoryProvider(MemoryProvider):
             # rerank_window (δ): срез НИЖНЕГО хвоста после coverage и реранкера, перед top-5 (п.6: вето-по-margin
             # удалено, осталось окно). Сигмоид-нормализация — чтобы δ был одинаков для сырых логитов и [0,1].
             keep = _bottom_cut(rerank.normalized(ranked), window)
+            # Варианты (майнтейнер 10:34): (а) не резать ниже N, (б) не резать факт,
+            # называющий лицо вопроса. Выключены -> поведение ровно как раньше.
+            keep = _window_keep(keep, len(ranked), len(union),
+                                rescorer.settings.window_min,
+                                self._window_spares(query, union)
+                                if rescorer.settings.window_named else None)
             fresh = [union[i] for i in keep] if keep else []
         return fresh[:_PREFETCH_FACTS], by_meaning
 

@@ -55,9 +55,11 @@ def _number(config: dict, key: str, default, low, high, kind=float):
 
 class Settings:
     """The plugin config's rerank_* keys, validated (see README). One mode: the cross-encoder reorders the pool,
-    admission stays with coverage; `rerank_window` (δ) trims the tail below δ of the best score, 0 keeps all."""
+    admission stays with coverage; `rerank_window` (δ) trims the tail below δ of the best score, 0 keeps all.
+    Two dev switches of the window (PR #10, 2026-10-23, off by default): `rerank_window_min` never cuts below
+    N facts, `rerank_window_named` never cuts a fact linked to a person the question names."""
 
-    __slots__ = ("url", "model", "top_k", "weight", "timeout", "window")
+    __slots__ = ("url", "model", "top_k", "weight", "timeout", "window", "window_min", "window_named")
 
     def __init__(self, config: dict):
         # rerank_mode / rerank_margin удалены (п.6 ревью 2026-10-22): один режим, окно - отдельная клавиша.
@@ -70,6 +72,12 @@ class Settings:
         self.top_k = _number(config, "rerank_top_k", DEFAULT_TOP_K, 1, 1000, int)  # int (kind=int)
         self.weight = _number(config, "rerank_weight", 0.0, 0.0, 1.0)
         self.window = _number(config, "rerank_window", DEFAULT_WINDOW, 0.0, 1.0)
+        # Варианты окна на dev (майнтейнер PR #10, 10:34): (а) не резать ниже
+        # window_min фактов; (б) факт, называющий лицо вопроса, не резать.
+        # Оба выключены (0/off) — продакшн-поведение не меняется.
+        self.window_min = int(_number(config, "rerank_window_min", 0, 0, 100, int))
+        self.window_named = str(config.get("rerank_window_named") or "").strip().lower() \
+            in {"on", "true", "yes", "1"}
         self.timeout = _number(config, "rerank_timeout", DEFAULT_TIMEOUT, 0.5, 10.0)
 
 

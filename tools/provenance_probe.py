@@ -62,6 +62,11 @@ MODES = {
     "win10": ("0.0", "0.10"),
     "win03": ("0.0", "0.03"),
     "win02": ("0.0", "0.02"),
+    # варианты окна (майнтейнер 10:34): (а) не резать ниже двух фактов,
+    # (б) факт, называющий лицо вопроса, — на базе gate_only (δ=0.05),
+    # счёт per-target lost против off в summarize_household:
+    "gate_min2": ("0.0", "0.05", {"rerank_window_min": "2"}),
+    "gate_named": ("0.0", "0.05", {"rerank_window_named": "on"}),
 }
 
 
@@ -107,6 +112,8 @@ def make_provider(db: Path, mode: str, emb, extra: dict | None = None) -> Hologr
     if spec:
         config.update({"rerank": "on", "rerank_weight": spec[0], "rerank_window": spec[1],
                        "rerank_url": ENDPOINT, "rerank_model": "probe-reranker"})
+        if len(spec) > 2:  # варианты окна несут свои клавиши конфига (gate_min2/gate_named)
+            config.update(spec[2])
     if emb == "on":
         config.update({"embeddings": "on", "embedding_url": EMB_URL, "embedding_model": EMB_MODEL})
     if extra:
@@ -600,6 +607,26 @@ def summarize_household(rows: list[dict]) -> None:
             add = sum(1 for k in both if not base[k] and cur[k])
             print(f"confused paired emb={emb} off→{m2}: "
                   f"снято {cut}, добавлено {add} (строк {len(both)})")
+
+    # per-target lost (майнтейнера 10:34): hit@5 «любая цель» скрывает частичные
+    # потери multi-target запросов — считаем, КАКИЕ именно цели не попали в топ-5
+    # у каждой конфигурации (qid:цель × языки, где потеряна)
+    for emb in sorted({str(r["emb"]) for r in rows}):
+        for mode in sorted({r["mode"] for r in rows}):
+            lost: dict[str, int] = {}
+            for r in rows:
+                if str(r["emb"]) != emb or r["mode"] != mode \
+                        or r["kind"] != "real" or not r["targets"]:
+                    continue
+                for t in sorted(set(r["targets"]) - set(r["keys"])):
+                    k = f"{r['qid']}:{t}"
+                    lost[k] = lost.get(k, 0) + 1  # сколько языков потеряло цель
+            if lost:
+                detail = ", ".join(f"{k}×{v}" for k, v in sorted(lost.items()))
+                print(f"lost per-target emb={emb} mode={mode}: "
+                      f"{sum(lost.values())} ({detail})")
+            else:
+                print(f"lost per-target emb={emb} mode={mode}: 0")
 
 
 def summarize(rows: list[dict]) -> None:
