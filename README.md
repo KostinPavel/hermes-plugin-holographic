@@ -644,7 +644,7 @@ What it does not do: find a fact through a synonym or another root that no keywo
 копии", Spanish `nada` for `natación`, 十月 for 10月). It can surface a fact that shares a word in another sense:
 "nightly backups" → "night market"; Hindi `बनाना` is both "to cook" and "to make a plan"; Portuguese `dirigir` is "to
 drive" and "to run a company". One shared word is not enough when other facts hold it too: "What day is today?" recalls
-none of the facts that happen "every day" (unreleased), but when one fact alone says "through the week", "How's the
+none of the facts that happen "every day" (0.17.8), but when one fact alone says "through the week", "How's the
 weather this week?" still recalls it, as "wifi password?" recalls the one fact about a password: one word cannot tell
 the two apart. In a script without capitals (Hebrew, Hindi, Arabic) a name cannot be told from a common word, so
 there one shared word recalls as it did. Stems are search keys, not lemmas: an irregular form can miss (`ponies` / `pony`). A

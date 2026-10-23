@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.17.8 — 2026-10-23
 
-From a second review against "10 principles of good code for AI agents" (2026-10-23).
+From a second review against "10 principles of good code for AI agents" (2026-10-23), and the chit-chat that the
+contrast sets of PR #10 showed recalling facts. Recall before a turn changes for everyone: fewer facts that share one
+common word with the message.
 
 ### Fixed
 
