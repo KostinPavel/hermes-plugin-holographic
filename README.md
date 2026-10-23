@@ -876,7 +876,8 @@ The four rows were measured when the two modes still existed: `reorder_before_ga
 This store's recall was already 100% before the turn (its data are calibrated to ≥95%): the reranker keeps it there.
 The honest number this table adds is the per-turn cost — 3-4 ms to 40 ms median, ~52 ms p95 on the author's box,
 32–35 ms median / 47–51 ms p95 on a GTX 1050 Ti — the price the maintainer's acceptance asked to see next to the
-gain (a CPU-only llama-server costs ~400 ms per call, see docs/contrast-benchmark.md §5). A second reranker of
+gain (a CPU-only llama-server costs ~400 ms per call on the older box, 94–101 ms median / 212–229 ms p95 on an
+8-core laptop — see docs/contrast-benchmark.md and results/bench_p8_cpu.jsonl). A second reranker of
 different quality and a larger public set are run before merging (issue #9).
 
 ## Data and privacy
