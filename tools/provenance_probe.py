@@ -446,6 +446,139 @@ def run_contrast(set_name, modes, emb, endpoint, extra: dict | None = None) -> l
 
 # ---------------------------------------------------------------- отчёт
 
+
+def run_household(modes, emb, endpoint, split="all", names_fit="on",
+                  extra: dict | None = None) -> list[dict]:
+    """П.9 (рецепт майнтейнера, PR #10 2026-10-22): один дом, en/ru/zh,
+    dev/test заморожены, лейблы на каждый вопрос.
+
+    Строки несут qid/split/slice/lang — отчёт считает rescued/lost и классы
+    промаха (E срезан окном / A нет в пуле / C ниже top-5) по языкам.
+    names_fit off = проверка имени выключена (как в tests ..._rerank_review).
+    """
+    hh = load_contrast("household")
+    rows = []
+    qids = [k for k, q in hh.QUERIES.items() if split == "all" or q["split"] == split]
+    hids = [k for k, h in hh.CHITCHAT.items() if split == "all" or h["split"] == split]
+    for mode in modes:
+        for lang in hh.LANGS:
+            db = Path(tempfile.gettempdir()) / f"prov_hh_{lang}_{mode}_{names_fit}.db"
+            for s in ("", "-shm", "-wal"):
+                try:
+                    Path(str(db) + s).unlink()
+                except OSError:
+                    pass
+            p = make_provider(db, mode, emb, extra)
+            if names_fit == "off":
+                p._retriever.names_fit = lambda *a, **k: True
+            back: dict[int, str] = {}
+            for key, v in hh.FACTS.items():
+                text, ents = v[lang]
+                r = json.loads(p.handle_tool_call(
+                    "fact_store", {"action": "add", "content": text, "entities": ents}))
+                back[int(r["fact_id"])] = key
+            persons: dict[str, set[str]] = {}
+            for key, v in hh.FACTS.items():
+                for e in v[lang][1]:
+                    persons.setdefault(e, set()).add(key)
+            probe = Probe(p)
+            if emb == "on":
+                ok = catch_up_vectors(p)
+                print(f"  [household {lang}] векторы готовы: {ok}")
+            for qid in qids:
+                q = hh.QUERIES[qid]
+                query, targets = q[lang], set(q["targets"])
+                p.on_session_switch(f"hh{lang}_{mode}_{qid}", reset=True)
+                t0 = time.perf_counter()
+                block, ctx = probe.prefetch(query)
+                ms = (time.perf_counter() - t0) * 1000
+                found = parse_ids(block)
+                keys = [back[f] for f in found if f in back]
+                qents = {e for e in persons if e in query}
+                wrong = sorted({k for k in keys if k not in targets
+                                and set(persons.get(k, ())) & qents})
+                hit = bool(set(keys) & targets) if targets else None
+                hit5 = bool(set(keys[:5]) & targets) if targets else None
+                cov = (len(set(keys) & targets) / len(targets)) if targets else None
+                miss = []
+                for t in q["targets"]:  # каждый лейбл, не попавший в top-5
+                    if t in keys[:5]:
+                        continue
+                    if t in keys:
+                        miss.append(f"C: ниже top-5 (позиция {keys.index(t) + 1})")
+                    else:
+                        miss.append(classify(next((f for f, k in back.items() if k == t), None), ctx))
+                rows.append({"set": "household", "lang": lang, "mode": mode, "emb": emb,
+                             "split": q["split"], "slice": q["slice"], "qid": qid,
+                             "kind": "real", "q": query, "keys": keys,
+                             "targets": sorted(targets), "hit": hit, "hit5": hit5,
+                             "cov": cov, "wrong": wrong, "out_n": len(keys),
+                             "miss": miss, "ms": round(ms, 1),
+                             "sources": {str(f): ctx["tags"].get(f, ["pool-only"]) for f in found},
+                             "pool_n": len(ctx.get("pool") or []),
+                             "gate_called": ctx.get("gate_called"),
+                             "rerank_top5": ctx.get("rerank_top5") or [],
+                             "rank_order": ctx.get("rank_order") or []})
+            for hid in hids:
+                h = hh.CHITCHAT[hid]
+                query = h[lang]
+                p.on_session_switch(f"hh{lang}_{mode}_{hid}", reset=True)
+                block, ctx = probe.prefetch(query)
+                found = parse_ids(block)
+                keys = [back[f] for f in found if f in back]
+                rows.append({"set": "household", "lang": lang, "mode": mode, "emb": emb,
+                             "split": h["split"], "slice": "chit", "qid": hid, "kind": "chit",
+                             "cat": h["cat"], "q": query, "keys": keys, "targets": [],
+                             "hit": None, "hit5": None, "cov": None, "wrong": [],
+                             "out_n": len(keys), "miss": [], "ms": None,
+                             "sources": {str(f): ctx["tags"].get(f, ["pool-only"]) for f in found},
+                             "pool_n": len(ctx.get("pool") or []),
+                             "gate_called": ctx.get("gate_called"),
+                             "rerank_top5": ctx.get("rerank_top5") or [],
+                             "rank_order": ctx.get("rank_order") or []})
+            p.shutdown()
+    return rows
+
+
+def _cls(misses: list[str], prefix: str) -> int:
+    return sum(1 for m in misses if m.startswith(prefix))
+
+
+def summarize_household(rows: list[dict]) -> None:
+    """Таблица по языкам × сплиту: hit@5, покрытие, wrong, шум (только где
+    лейбл пустой) и три класса промаха — E срезан окном / A нет в пуле /
+    C ниже top-5 (запрос майнтейнера 2026-10-23, per language)."""
+    modes = sorted({(r["mode"], r["emb"]) for r in rows})
+    for mode, emb in modes:
+        sel = [r for r in rows if r["mode"] == mode and r["emb"] == emb]
+        print(f"\n=== household mode={mode} emb={emb} ===")
+        print(f"{'lang':<4} {'split':<5} {'real':>4} {'hit5':>4} {'cov%':>5} {'wrong':>5} "
+              f"{'шум':>4} {'E':>2} {'A':>2} {'C':>2} {'проч':>4}")
+        cells = [(lang, sp) for lang in ("en", "ru", "zh") for sp in ("dev", "test")]
+        for lang, sp in cells:
+            real = [r for r in sel if r["kind"] == "real" and r["lang"] == lang
+                    and r["split"] == sp]
+            if not real:
+                continue
+            labelled = [r for r in real if r["targets"]]
+            noise_rows = [r for r in sel if r["lang"] == lang and r["split"] == sp
+                          and ((r["kind"] == "chit") or (r["kind"] == "real" and not r["targets"]))]
+            noise = sum(bool(r["keys"]) for r in noise_rows)
+            hits5 = sum(bool(r["hit5"]) for r in labelled)
+            cov = sum(r["cov"] or 0 for r in labelled)
+            wrong = sum(1 for r in real if r["wrong"])
+            misses = [m for r in labelled for m in r["miss"]]
+            e, a, c = _cls(misses, "E:"), _cls(misses, "A:"), _cls(misses, "C:")
+            other = len(misses) - e - a - c
+            print(f"{lang:<4} {sp:<5} {len(labelled):>4} {hits5:>4} "
+                  f"{100 * cov / max(1, len(labelled)):>5.1f} {wrong:>5} "
+                  f"{noise:>2}/{len(noise_rows):<2} {e:>2} {a:>2} {c:>2} {other:>4}")
+        lab = [r for r in sel if r["kind"] == "real" and r["targets"]]
+        hits5 = sum(bool(r["hit5"]) for r in lab)
+        wrong = sum(1 for r in sel if r["kind"] == "real" and r["wrong"])
+        print(f"{'итого':<9} {len(lab):>4} {hits5:>4} hit5={hits5}/{len(lab)} wrong={wrong}")
+
+
 def summarize(rows: list[dict]) -> None:
     modes = sorted({(r["mode"], r["emb"]) for r in rows})
     print(f"\n{'режим':<14} {'emb':<4} {'real':>5} {'hit':>5} {'hit5':>5} {'шум':>5} "
@@ -480,7 +613,12 @@ def summarize(rows: list[dict]) -> None:
 def main(argv):
     global ENDPOINT
     ap = argparse.ArgumentParser(description="Provenance probe: источники фактов в prefetch")
-    ap.add_argument("--set", default="multi", help="multi | contrast_ru | contrast_en | contrast_zh")
+    ap.add_argument("--set", default="multi",
+                    help="multi | contrast_ru | contrast_en | contrast_zh | household")
+    ap.add_argument("--split", default="all", choices=["all", "dev", "test"],
+                    help="для --set household: какой сплит гонять (по умолчанию все)")
+    ap.add_argument("--names-fit", default="on", choices=["on", "off"],
+                    help="для --set household: names_fit вкл/выкл (ось свипа п.9)")
     ap.add_argument("--langs", default="en,ru,zh,de,ja,it,nl,th",
                     help="языки для --set multi (по умолчанию: ключевые из бенча)")
     ap.add_argument("--modes", default="off,reorder_only,gate_only")
@@ -505,9 +643,14 @@ def main(argv):
         if args.set == "multi":
             rows = run_multilingual([lg.strip() for lg in args.langs.split(",") if lg.strip()],
                                     modes, emb, args.endpoint)
+        elif args.set == "household":
+            rows = run_household(modes, emb, args.endpoint, split=args.split,
+                                 names_fit=args.names_fit)
         else:
             rows = run_contrast(args.set, modes, emb, args.endpoint)
-        path = out_dir / f"provenance_{args.set}_{emb}.jsonl"
+        suffix = "" if args.set != "household" else (
+            f"_{args.split}" + ("_nfoff" if args.names_fit == "off" else ""))
+        path = out_dir / f"provenance_{args.set}{suffix}_{emb}.jsonl"
         sha = _git_sha()
         for r in rows:
             r["git_sha"] = sha
@@ -516,7 +659,10 @@ def main(argv):
             for r in rows:
                 fh.write(json.dumps(r, ensure_ascii=False) + "\n")
         print(f"\n=== {args.set} emb={emb}: {len(rows)} запросов -> {path}")
-        summarize(rows)
+        if args.set == "household":
+            summarize_household(rows)
+        else:
+            summarize(rows)
         all_rows.extend(rows)
     return all_rows
 
