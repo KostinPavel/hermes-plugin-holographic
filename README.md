@@ -65,7 +65,7 @@ In `config.yaml` under `plugins.hermes-memory-store`:
 | `temporal_decay_half_life` | `0` | Days; `0` turns recency decay off |
 | `hrr_dim` | `1024` | HRR vector dimensions |
 | `hrr_weight` | `0.3` | Weight of the HRR term in search ranking |
-| `prefetch_min_coverage` | `0.3` | Share of a message's informative words (rarer words weigh more) a fact must match to be recalled before the turn |
+| `prefetch_min_coverage` | `0.3` | Share of a message's informative words (rarer words weigh more) a fact must match to be recalled before the turn; a fact sharing one word of a longer message is recalled only when no other fact holds that word or it may be a name (capitalized inside the sentence, or in a script without capitals) |
 | `prefetch_repeat_turns` | `6` | A fact recalled before a turn is not injected again for this many turns of the session |
 | `recall_source` | `off` | `short`: each fact recalled before a turn also says where it was written (`recorded 2026-10-12 · Anton · this chat`; no ids). Off by default: it costs tokens and tells the room which chat a fact came from. `list`, `history` and `export` always show the source in full |
 | `cron_writes` | `true` | A cron job's explicit `fact_store` / `fact_feedback` calls may write (nightly memory jobs such as hermes-dreaming's extraction and keywords exist to make them). Automatic writes (auto-extraction, mirroring, recall counts) stay off in cron, subagents and flush contexts; with `embeddings` on, a cron job that may write also makes missing fact vectors; `false` makes cron read-only too |
@@ -643,7 +643,11 @@ keywords are as good as the agent that writes them, and facts stored without the
 What it does not do: find a fact through a synonym or another root that no keyword names ("бэкапы" for "резервные
 копии", Spanish `nada` for `natación`, 十月 for 10月). It can surface a fact that shares a word in another sense:
 "nightly backups" → "night market"; Hindi `बनाना` is both "to cook" and "to make a plan"; Portuguese `dirigir` is "to
-drive" and "to run a company". Stems are search keys, not lemmas: an irregular form can miss (`ponies` / `pony`). A
+drive" and "to run a company". One shared word is not enough when other facts hold it too: "What day is today?" recalls
+none of the facts that happen "every day" (unreleased), but when one fact alone says "through the week", "How's the
+weather this week?" still recalls it, as "wifi password?" recalls the one fact about a password: one word cannot tell
+the two apart. In a script without capitals (Hebrew, Hindi, Arabic) a name cannot be told from a common word, so
+there one shared word recalls as it did. Stems are search keys, not lemmas: an irregular form can miss (`ponies` / `pony`). A
 negation counts for the whole clause up to a "but" ("likes cats but not dogs" is detail, not a conflict), not for a
 single word. `auto_extract` recognises English, Russian and Chinese phrasing. The refusal of instruction-like text, of a
 credential with its value and of a request to send one covers all eighteen languages (0.15.1; English and Russian

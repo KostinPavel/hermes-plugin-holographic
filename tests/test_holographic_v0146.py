@@ -5,8 +5,8 @@ import json
 
 import pytest
 
-from hermes_plugin_holographic import HolographicMemoryProvider, _fact_problem, _recall_problem, _secret_in  # noqa: E402
-from hermes_plugin_holographic import text as T  # noqa: E402
+from hermes_plugin_holographic import HolographicMemoryProvider, _fact_problem, _recall_problem, _secret_in
+from hermes_plugin_holographic import text as T
 
 # Made-up tokens, put together at run time so that secret scanners do not flag the test file.
 BOT_TOKEN = "123456789" + ":" + "AA" + "y" * 33

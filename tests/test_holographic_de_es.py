@@ -7,9 +7,9 @@ import pytest
 
 pytest.importorskip("snowballstemmer")
 
-from hermes_plugin_holographic import text  # noqa: E402
-from hermes_plugin_holographic.store import MemoryStore  # noqa: E402
-from hermes_plugin_holographic.retrieval import FactRetriever  # noqa: E402
+from hermes_plugin_holographic import text
+from hermes_plugin_holographic.store import MemoryStore
+from hermes_plugin_holographic.retrieval import FactRetriever
 
 DIM = 512
 

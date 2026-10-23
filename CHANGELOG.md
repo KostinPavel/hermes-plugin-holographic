@@ -25,6 +25,22 @@ From a second review against "10 principles of good code for AI agents" (2026-10
 - **Failures logged at debug only are warnings**, named by their kind: stored vectors not deleted after `embeddings`
   was switched off, search by meaning or fact vectors stopped by something other than the endpoint, the memory mirror,
   a missing or damaged dictionary of a language, a timezone the core cannot read (history dates were silently UTC).
+- **Chit-chat that shared one common word recalled facts.** "What day is today?", "Any plans for this evening?",
+  «Какая погода на этой неделе?», «Объясни, как работает хеш-таблица» brought in every fact that happens "every day",
+  "in the evening", "once a week" or "works": after the function words such a message has one or two words left, and
+  the word the store did not know counted only as much as the commonest known one. A fact that shares one word of a
+  longer message is left out now when other facts hold that very word too (counted by the word, not by the FTS
+  prefix: "car" is not in "carpet"), unless it may be a name: capitalized inside the sentence ("What is Dina
+  studying?", "José", "Peter's"; in German any capitalized word, so there only words in lower case are held to it),
+  or in a script without capitals (Hebrew, Hindi, Arabic: as before). A message of that word alone ("Lena?"), an
+  identifier and Chinese n-grams are as before, and the facts of a known entity the message mentions still come by
+  the entity. Search is unchanged. Measured: the eighteen language sets recall what they did (357 / 360) with fewer
+  extra facts before the turn (698 → 685); on the contrast sets of PR #10 (64 facts, English and Russian) chit-chat
+  that recalls something falls 29 → 26 and 28 → 25 of 45, with every pair's fact recalled as before. Left: a common
+  word that only one fact holds, and scripts without capitals (README, Languages). Codex review: three findings (the
+  FTS prefix count, names compared by spelling, caseless scripts and German), each fixed with a test.
+  `test_holographic_v0140_embeddings.py` pinned prefetch to 0.13.0; four of its thirteen questions now recall fewer
+  facts, the ones that share only "run", "Lena", «Ева» or «Антон» with the question, and the test says which.
 
 ### Internal
 
@@ -35,6 +51,11 @@ From a second review against "10 principles of good code for AI agents" (2026-10
   exports what the provider and the tests import from it; the entity index rebuild (`rebuild_entity_index`,
   `_ENTITY_RULES`, the `_AUTO_REBUILD_*` limits) stays there. One trace of the move: the log line for a declared name
   that is no name now comes from the logger of `entities`, not `store`.
+- **Checks that do not depend on review.** ruff now runs `BLE` and `RUF100`: each of the 21 places that catch any
+  exception says why it may (`noqa: BLE001 - …`; most reasons were comments already, five places in `__init__.py` had none), and a
+  `noqa` that no longer applies fails the lint. `tests/test_holographic_architecture.py` reads `entity_names.py` and
+  fails on any import beyond `bisect`, `re`, `unicodedata` and `.text`. CI runs the suite on Linux against the latest
+  core release as well as against core's `main`.
 - **Less code, the same behaviour.** The derivation mode `"both"` nobody set is gone, from the code and the README
   (`"dict"`, the default, and `"rules"`, which a test uses, stay); two parameters no caller passed are folded in (`_drop_orphan_entities`
   keep_aliased, `_detach_alias` declared). One `EntityMixin._drop_entity_row` deletes an entity with its aliases for

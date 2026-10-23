@@ -6,7 +6,7 @@ import sqlite3
 
 import pytest
 
-from hermes_plugin_holographic import HolographicMemoryProvider  # noqa: E402
+from hermes_plugin_holographic import HolographicMemoryProvider
 
 
 def _provider(tmp_path, session="s1", **config):

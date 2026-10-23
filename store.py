@@ -756,8 +756,8 @@ class MemoryStore(EntityMixin, HistoryMixin):
                 try:
                     with entry["lock"]:
                         entry["conn"].close()
-                except Exception:
-                    pass  # an already-closed/broken connection must not abort releasing siblings
+                except Exception:  # noqa: BLE001 - an already-closed/broken connection must not abort releasing siblings
+                    pass
         return len(doomed)
 
     def close(self) -> None:
