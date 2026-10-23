@@ -200,7 +200,7 @@ class Rescorer:
                 with _OPENER.open(request, timeout=timeout) as response:
                     raw = response.read(MAX_RESPONSE)
                 box["payload"] = json.loads(raw)
-            except BaseException as exc:
+            except BaseException as exc:  # noqa: BLE001 - the worker must record every failure; a silent death would burn the whole join() timeout
                 box["error"] = exc
             finally:
                 box["ended"] = time.perf_counter()
@@ -232,7 +232,7 @@ class Rescorer:
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             self._failed(f"no answer ({type(exc).__name__})")
             return None
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - an unlisted endpoint error still counts as a failure and pauses, instead of escaping the turn
             self._failed(f"no answer ({type(exc).__name__})")
             return None
         payload = box.get("payload")

@@ -15,7 +15,7 @@ import zlib
 
 import pytest
 
-from hermes_plugin_holographic import HolographicMemoryProvider, embeddings, rerank  # noqa: E402
+from hermes_plugin_holographic import HolographicMemoryProvider, embeddings, rerank
 
 # -- золота (снято с upstream/main @8bea2ae) --------------------------------------------------------
 

@@ -18,7 +18,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_plugin_holographic import HolographicMemoryProvider, rerank, _sendable  # noqa: E402
+from hermes_plugin_holographic import HolographicMemoryProvider, rerank, _sendable
 
 
 # -- fake endpoint -----------------------------------------------------------------------------------------------

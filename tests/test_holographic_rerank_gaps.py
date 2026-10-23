@@ -22,7 +22,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_plugin_holographic import HolographicMemoryProvider, rerank  # noqa: E402
+from hermes_plugin_holographic import HolographicMemoryProvider, rerank
 
 # -- a fake endpoint --------------------------------------------------------------------------------------------
 
