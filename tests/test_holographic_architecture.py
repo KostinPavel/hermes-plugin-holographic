@@ -20,13 +20,24 @@ ALLOWED = {
 
 
 def _imports(path: Path) -> set[str]:
-    """Every import in the file, at any depth (one inside a function counts as well)."""
+    """Every import in the file, at any depth (one inside a function counts as well), and every call that imports
+    by name (__import__("x"), importlib.import_module("x")): those are imports too, which no list can allow."""
     found = set()
     for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
         if isinstance(node, ast.Import):
             found |= {alias.name.split(".")[0] for alias in node.names}
         elif isinstance(node, ast.ImportFrom):
-            found.add("." * node.level + (node.module or "") if node.level else (node.module or "").split(".")[0])
+            if not node.level:
+                found.add((node.module or "").split(".")[0])
+            elif node.module:
+                found.add("." * node.level + node.module)
+            else:  # from . import text
+                found |= {"." * node.level + alias.name for alias in node.names}
+        elif isinstance(node, ast.Call):
+            func = node.func
+            name = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else ""
+            if name in ("__import__", "import_module"):
+                found.add(f"{name}()")
     return found
 
 
