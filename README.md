@@ -73,11 +73,15 @@ In `config.yaml` under `plugins.hermes-memory-store`:
 | `embeddings` | `off` | `on`: search by meaning through an embeddings API you name (`embedding_url`, `embedding_model`, `embedding_key_env`, …) — ONLINE: fact texts and messages are sent there. See [Search by meaning](#search-by-meaning-optional-online) |
 | `scope` | `profile` | `user`: a separate database per user (`holographic-users/<platform>-<user id>.db` next to `db_path`); in a shared chat the store follows the author of each turn, and with no user identity nothing is recalled or written. `chat`: a separate database per chat (`holographic-chats/<platform>-<chat id>.db`) — for one bot serving many unrelated groups; `thread`: per forum topic / thread (`…-t<thread id>.db`), the chat's own database outside threads. Without a chat (CLI, cron, subagents) nothing is recalled or written. File names: an id made only of `A-Z a-z 0-9 _ . -` is used as is (Telegram's `-1001234567890`); any other character becomes `_`, the name is cut to 60 characters, and `-<first 10 hex of sha256(the original "platform-id")>` is appended, so distinct ids never share a file |
 
-A number that is not one (`hrr_dim: abc`, `min_trust_threshold: high`) turns memory off for the session: the system
-prompt and every `fact_store` call name the key and what it holds, and no database is opened or written until it is
+A number that is not one (`hrr_dim: abc`, `min_trust_threshold: high`), and a value outside a key's fixed set
+(`scope: users`, `recall_source: full`, `embeddings: maybe`, `auto_extract: sure`; 0.17.8 — before, it was read as the
+default, and a mistyped `scope` put everyone in one store) turn memory off for the session: the system prompt and every
+`fact_store` call name the key and what it must be, never the value, and no database is opened or written until it is
 fixed. The `embedding_*` numbers are replaced by their default, or brought into their range, with a warning in the
-gateway log that names the key. A `config.yaml` the plugin cannot read at all leaves the defaults, also with a warning
-(the error's type only: a YAML error quotes the line it stopped at, which may hold a key).
+gateway log that names the key. A `config.yaml` the core cannot parse: Hermes serves the copy it last read whole, and
+the plugin uses its settings from it with a warning; with no such copy (or a core that raises) nothing tells what
+`scope` was, so memory is off until the file reads (0.17.8; it used to run on the defaults). Warnings give the error's
+type only: a YAML error quotes the line it stopped at, which may hold a key.
 
 ## Tools
 

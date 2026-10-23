@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import gzip
 import io
+import logging
 import math
 import re
 import sys
@@ -38,6 +39,14 @@ from .dictionaries.cjk_fold import SIMPLIFIED, TRADITIONAL
 
 # the bundled language data (tables and their licences: dictionaries/__init__.py, LICENSES/)
 _DICTIONARIES = Path(__file__).with_name("dictionaries")
+logger = logging.getLogger(__name__)
+
+
+def _unreadable(path: Path, exc: BaseException) -> None:
+    """A dictionary that is missing or damaged: its language is matched without it, which is said (0.17.8; it was
+    silent). Each table loads once per process, so this is said once."""
+    logger.warning("holographic: dictionary %s could not be read (%s); its words are matched without it", path.name,
+                   type(exc).__name__)
 
 _STEMMER_NAMES = (("en", "english"), ("ru", "russian"), ("es", "spanish"), ("fr", "french"), ("pt", "portuguese"),
                   ("id", "indonesian"), ("de", "german"), ("hi", "hindi"), ("ar", "arabic"), ("it", "italian"),
@@ -797,7 +806,8 @@ def _related(lang: str, stem_: str) -> frozenset:
                                 a, b = sys.intern(a), sys.intern(b)  # each stem kept once
                                 pairs[a] = pairs.get(a, ()) + (b,)
                                 pairs[b] = pairs.get(b, ()) + (a,)
-                except (OSError, EOFError, ValueError, zlib.error):  # missing or damaged data file: no roots
+                except (OSError, EOFError, ValueError, zlib.error) as exc:  # missing or damaged data file: no roots
+                    _unreadable(_DICTIONARIES / f"{lang}_derivation.tsv.gz", exc)
                     pairs = {}
                 _PAIRS[lang] = pairs
     return frozenset(pairs.get(stem_, ()))
@@ -1109,7 +1119,8 @@ def _de_splitter():
             if not _DE_TABLE:
                 try:
                     _DE_TABLE.append(_DeSplitter.load(_DE_FILE))
-                except (OSError, EOFError, ValueError, zlib.error, StopIteration, IndexError, KeyError):  # damaged
+                except (OSError, EOFError, ValueError, zlib.error, StopIteration, IndexError, KeyError) as exc:
+                    _unreadable(_DE_FILE, exc)  # missing or damaged
                     _DE_TABLE.append(None)
     return _DE_TABLE[0]
 
@@ -1168,7 +1179,8 @@ def _forms(lang: str) -> tuple:
                                 forms[form] = forms.get(form, ()) + (lemma,)
                     # a form under more than three verbs is an error of the source ("tuviese" under twelve)
                     forms = {form: under for form, under in forms.items() if len(under) <= 3}
-                except (OSError, EOFError, ValueError, zlib.error, IndexError, KeyError):  # missing or damaged
+                except (OSError, EOFError, ValueError, zlib.error, IndexError, KeyError) as exc:  # missing or damaged
+                    _unreadable(_FORMS_FILE, exc)
                     forms, lemmas = {}, {}
                 table = _FORMS[lang] = (forms, lemmas)
     return table
@@ -1582,7 +1594,8 @@ def _ja_table() -> tuple:
                             variant, tab, target = line.rstrip("\n").partition("\t")
                             if tab and not line.startswith("#"):
                                 pairs[variant] = target
-                except (OSError, EOFError, ValueError, zlib.error):  # missing or damaged data file: no variants
+                except (OSError, EOFError, ValueError, zlib.error) as exc:  # missing or damaged data file: no variants
+                    _unreadable(_JA_FILE, exc)
                     pairs = {}
                 # what _fold_text does to Japanese text (no Traditional -> Simplified), without its loop
                 base = {s: unicodedata.normalize("NFC", s).lower().translate(_FOLD) for s in {*pairs, *pairs.values()}}
@@ -1711,7 +1724,8 @@ def _zh_table() -> _ZhTable:
                             for rest in rests:
                                 words[first + rest[:-1]] = logp[rest[-1]]
                             longest[first] = max(map(len, rests))
-                except (OSError, EOFError, ValueError, KeyError, IndexError, UnicodeDecodeError, zlib.error):
+                except (OSError, EOFError, ValueError, KeyError, IndexError, UnicodeDecodeError, zlib.error) as exc:
+                    _unreadable(_ZH_FILE, exc)
                     words, longest, total, names = {}, {}, 0.0, frozenset()  # no data, or damaged: no words
                 _ZH_TABLE = _ZhTable(words, longest, -total, total, names)
     return _ZH_TABLE

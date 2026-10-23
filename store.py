@@ -456,7 +456,7 @@ class MemoryStore(EntityMixin, HistoryMixin):
                 return True
         try:
             return not self.forget_fact(fact_id).get("already")
-        except KeyError:
+        except NotFound:  # only that: a KeyError from a fault is not "there was no such fact" (0.17.8)
             return False
 
     # -- rows of the current projection (inside a transaction) ---------------------------------------------------

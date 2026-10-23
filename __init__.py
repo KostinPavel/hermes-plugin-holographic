@@ -30,7 +30,7 @@ from . import embeddings
 from . import holographic as hrr
 from .history import ORIGINS, HistoryTooNew, NotFound, parse_day
 from .store import DuplicateContentError, MemoryStore, unusable_names
-from .retrieval import FactRetriever, error_kind
+from .retrieval import FactRetriever, _warn_once, error_kind
 from hermes_cli.config import cfg_get
 
 try:  # core >= the recall indicator; older cores simply show none
@@ -138,6 +138,9 @@ FACT_FEEDBACK_SCHEMA = {
         "required": ["action", "fact_id"],
     },
 }
+# The arguments each tool takes: a KeyError naming one of them is a missing argument, any other a fault (0.17.8)
+_ARGUMENTS = {schema["name"]: frozenset(schema["parameters"]["properties"])
+              for schema in (FACT_STORE_SCHEMA, FACT_FEEDBACK_SCHEMA)}
 
 # Auto-extraction: (patterns, category) — preferences -> user_pref, decisions -> project. Matched per sentence; the
 # sentence is stored, not the whole message.
@@ -857,14 +860,31 @@ def _sendable(content: str) -> bool:
     return _recall_problem(content) is None and not _secret_in(content)
 
 
+class _UnreadConfig(dict):
+    """config.yaml could not be read and no copy of it says what this plugin's settings are: nothing tells whether
+    scope was user or chat, so memory stays off rather than putting everyone in one store (0.17.8)."""
+
+
 def _load_plugin_config() -> dict:
     try:
         from hermes_cli.config import load_config_readonly  # canonical: managed-scope overlay + ${VAR} expansion
-        return cfg_get(load_config_readonly(), "plugins", "hermes-memory-store", default={}) or {}
+        config = load_config_readonly()
     except Exception as exc:  # the type only: a YAML error quotes the line it stopped at, which may hold a key
-        logger.warning("holographic: could not read plugins.hermes-memory-store from config.yaml (%s); using the "
-                       "defaults (scope: profile, search by meaning off)", type(exc).__name__)
-        return {}
+        logger.warning("holographic: could not read plugins.hermes-memory-store from config.yaml (%s); memory is "
+                       "off until it reads", type(exc).__name__)
+        return _UnreadConfig()
+    section = cfg_get(config, "plugins", "hermes-memory-store", default=None)
+    # Core 0.22 raises nothing for a file it cannot read: it serves FailedConfigRead, its last good copy or, without
+    # one, its defaults, and says so in its own log
+    failed = getattr(config, "read_error", None)
+    if failed is not None:
+        if not isinstance(section, dict):  # the defaults: they say nothing of this plugin, scope included
+            logger.warning("holographic: could not read plugins.hermes-memory-store from config.yaml (%s); memory "
+                           "is off until it reads", type(failed).__name__)
+            return _UnreadConfig()
+        logger.warning("holographic: config.yaml could not be read (%s); using its last good copy of "
+                       "plugins.hermes-memory-store", type(failed).__name__)
+    return section or {}
 
 
 def _results(items: list, key: str = "results") -> str:
@@ -914,6 +934,14 @@ def _join_tags(tags: str | None, keywords: list[str]) -> str:
         return base
     return (base + "\n" if base else "") + _KW_MARK + ", ".join(keywords)
 _SCOPES = frozenset({"profile", "user", "chat", "thread"})
+# How a switch may be written (the core's truthy strings, and their opposites)
+_TRUE_WORDS, _FALSE_WORDS = frozenset({"1", "true", "yes", "on"}), frozenset({"0", "false", "no", "off"})
+# Settings with a fixed set of values (0.17.8): one outside it was read as the default, so "scope: users" put every
+# person in one store; now it is a problem like a number that is none. (key, allowed, what it must be)
+_CHOICES = (("scope", _SCOPES, "one of profile, user, chat, thread"), ("recall_source", {"off", "short"}, "off or short"),
+            ("embeddings", _TRUE_WORDS | _FALSE_WORDS, "on or off"),
+            *((key, _TRUE_WORDS | _FALSE_WORDS, "true or false")
+              for key in ("recall_indicator", "cron_writes", "auto_extract", "mirror_memory_writes")))
 # A separate database per chat (or per forum topic / thread): facts meet in the FTS index, n-gram scan, entities, HRR
 # banks and the write checks, so a chat_id column would need a filter in each of them; a file isolates by construction.
 _CHAT_SCOPES = frozenset({"chat", "thread"})
@@ -1008,8 +1036,12 @@ def _hermes_timezone():
     """Hermes's configured timezone (the local date of the fact history); None = UTC, also on cores without it."""
     try:
         from hermes_time import get_timezone
+    except ImportError:  # a core without it
+        return None
+    try:
         return get_timezone()
-    except Exception:
+    except Exception as exc:  # a setting the core cannot read: dates in UTC, said (0.17.8; it was silent)
+        _warn_once("Hermes's timezone could not be read; fact history dates are in UTC", exc)
         return None
 
 
@@ -1038,6 +1070,12 @@ class HolographicMemoryProvider(MemoryProvider):
         # off for the session with that reason (system prompt, tool errors), rather than a traceback from deep inside
         # a call (hrr_dim was read when a store opened, after the provider had started)
         self._config_problems: list[str] = []
+        if isinstance(self._config, _UnreadConfig):
+            self._config_problems.append("config.yaml could not be read, so these settings (scope above all) are "
+                                         "unknown")
+        empty ={key for key, allowed, said in _CHOICES if self._choice(key, allowed, said)}
+        if empty:  # unset or empty is the default, so the key goes: from a copy, the core's cached section is not ours
+            self._config = {k: v for k, v in self._config.items() if k not in empty}
         self._min_trust = self._number("min_trust_threshold", 0.3)
         self._min_coverage = self._number("prefetch_min_coverage", 0.3)
         self._repeat_turns = self._number("prefetch_repeat_turns", 6, int)
@@ -1089,6 +1127,22 @@ class HolographicMemoryProvider(MemoryProvider):
             self._config_problems.append(f"plugins.hermes-memory-store.{key} must be "
                                          f"{'a whole number' if kind is int else 'a number'}")
             return default
+
+    def _choice(self, key: str, allowed, said: str) -> bool:
+        """A setting with a fixed set of values: none (unset or empty: True, the default applies) or one of *allowed*,
+        in any case and spacing; a bool, or 0 / 1, as YAML writes a switch. Anything else is a line in
+        _config_problems naming the key."""
+        value = self._config.get(key)
+        if value is None or isinstance(value, str) and not value.strip():
+            return True
+        if isinstance(value, int) and value in (0, 1):  # true / false (a bool is an int), or 0 / 1
+            # a switch; or a bare off, which Hermes's YAML 1.1 reads as false ("recall_source: off", Codex review)
+            if "1" in allowed or (value is False and "off" in allowed):
+                return False
+        elif isinstance(value, str) and value.strip().lower() in allowed:
+            return False
+        self._config_problems.append(f"plugins.hermes-memory-store.{key} must be {said}")
+        return False
 
     @property
     def name(self) -> str:
@@ -1273,8 +1327,8 @@ class HolographicMemoryProvider(MemoryProvider):
                 if dropped:
                     logger.info("holographic: search by meaning is off; deleted %d stored vectors from %s", dropped,
                                 db_path)
-            except Exception as exc:  # the next writer open tries again
-                logger.debug("holographic: could not delete stored vectors (%s)", exc)
+            except Exception as exc:  # the next writer open tries again; said, since the person expects them gone
+                _warn_once("could not delete stored vectors", exc)
         self._stores[key] = (store, retriever)
         while len(self._stores) > _MAX_OPEN_STORES:
             old_key = next(k for k in self._stores if k not in (key, self._scope_key))
@@ -1447,8 +1501,8 @@ class HolographicMemoryProvider(MemoryProvider):
                 return None
             vector = self._embedder.query(query)
             return self._retriever.meaning(vector, tag, self._embedding.weight) if vector is not None else None
-        except Exception as exc:  # never takes recall down
-            logger.debug("holographic: search by meaning skipped (%s)", exc)
+        except Exception as exc:  # never takes recall down; the endpoint's own failures are said by the Embedder
+            _warn_once("search by meaning skipped", exc)
             return None
 
     def _catch_up_vectors(self) -> None:
@@ -1504,7 +1558,7 @@ class HolographicMemoryProvider(MemoryProvider):
                 finally:
                     self._op_lock.release()
         except Exception as exc:  # a busy file, a broken connection: the next turn goes on
-            logger.debug("holographic: making fact vectors stopped (%s)", exc)
+            _warn_once("making fact vectors stopped", exc)
 
     def _catch_up_seconds(self) -> float:
         """The after-turn budget for fact vectors: embedding_catch_up_seconds, else _CATCH_UP_SECONDS."""
@@ -1594,12 +1648,29 @@ class HolographicMemoryProvider(MemoryProvider):
         except NotFound as exc:  # a fact or a name that does not exist: an answer, not a missing argument
             return tool_error(f"{exc.args[0] if exc.args else exc}; nothing was changed.")
         except KeyError as exc:
-            return tool_error(f"Missing required argument: {exc}")
+            # args[...] of an argument the schema has and the call left out (a str: a key of any type may come from a
+            # fault; a given one too, review of PR #12)
+            if exc.args and isinstance(exc.args[0], str) and exc.args[0] in _ARGUMENTS.get(tool_name, ()) \
+                    and exc.args[0] not in args:
+                return tool_error(f"Missing required argument: {exc}")
+            return self._failed(tool_name, args, exc)
         except DuplicateContentError as exc:
             return json.dumps({"updated": False, "duplicate_of": exc.fact_id,
                                "reason": "another fact already says exactly this; remove one of them instead"})
-        except Exception as exc:
+        except UnicodeError as exc:  # a ValueError, but its text may hold a piece of a fact
+            return self._failed(tool_name, args, exc)
+        except (ValueError, RuntimeError) as exc:  # the plugin's own refusals, HistoryUnavailable, HistoryTooNew
             return tool_error(str(exc))
+        except Exception as exc:
+            return self._failed(tool_name, args, exc)
+
+    @staticmethod
+    def _failed(tool_name: str, args: dict, exc: Exception) -> str:
+        """A failure no handler meant (0.17.8): named by its kind to the agent and in the log, never by its text —
+        SQLite quotes a column's value in some messages (error_kind). Before, the text went to the agent."""
+        what = f"fact_store {args.get('action')}" if tool_name == "fact_store" else tool_name
+        _warn_once(f"{what} failed", exc)
+        return tool_error(f"{what} failed ({error_kind(exc)}).")
 
     # -- session boundaries --------------------------------------------------------------------------------------
 
@@ -1694,8 +1765,8 @@ class HolographicMemoryProvider(MemoryProvider):
                     self._store.add_fact_status(content, category=category, source=source)
             elif action == "remove" and old:
                 self._store.forget_fact(old[0]["fact_id"])
-        except Exception as e:
-            logger.debug("Holographic memory_write mirror failed: %s", e)
+        except Exception as exc:
+            _warn_once("memory mirror failed", exc)
 
     @_serialized
     def shutdown(self) -> None:
@@ -1830,10 +1901,12 @@ class HolographicMemoryProvider(MemoryProvider):
             a[arg]  # noqa: B018 - a missing argument is reported as one (handle_tool_call)
         try:
             return json.dumps(call())
-        except KeyError as exc:
+        except NotFound as exc:
             return tool_error(f"{exc.args[0] if exc.args else exc}; fact_store entities lists the names. Nothing was "
                               "changed.")
         except ValueError as exc:  # an unusable or taken name: the reason, and that nothing happened (review 0.16.0)
+            if isinstance(exc, UnicodeError):  # a fault whose text may hold a piece of a fact: _run_tool names its kind
+                raise
             return tool_error(f"{exc}. Nothing was changed.")
 
     def _delete_entity(self, a: dict) -> str:
@@ -1886,7 +1959,7 @@ class HolographicMemoryProvider(MemoryProvider):
         fact_id = int(a["fact_id"])
         try:
             return call(fact_id)
-        except KeyError:
+        except NotFound:
             return tool_error(missing or f"fact #{fact_id} does not exist (it may have been forgotten); nothing was changed.")
 
     def _change(self, a: dict, missing: str = "") -> str:
