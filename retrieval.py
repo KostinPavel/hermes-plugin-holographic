@@ -682,7 +682,8 @@ class FactRetriever:
         Coverage = IDF-weighted share of the query's informative terms the fact contains (exact word or same stem).
         Terms no fact contains are left out of the total (they cannot be matched by anything), and a matched
         identifier (pve-01, v0.21.6) is decisive on its own. A query with no informative term ("ok, thanks",
-        "да, это так") recalls nothing. Order is preserved."""
+        "да, это так") recalls nothing, and a fact sharing one word of a longer message, a word other facts hold too
+        and no name inside the sentence ("What day is today?"), is left out. Order is preserved."""
         if is_greeting(query):  # "good morning", "доброе утро", "早上好": a courtesy, not a question about mornings
             return []
         grams, zh = query_grams(query or ""), is_chinese(query or "")
@@ -716,11 +717,11 @@ class FactRetriever:
         scan = self._scan_terms(terms, query=query)
         texts = self._texts() if scan else []
         scan_df = {t: sum(1 for _, _, a in texts if t.found_in(a)) for t in scan}
-        weights, unknown = {}, []
+        weights, unknown, freq = {}, [], {}
         for term in terms:
             df = scan_df[term] if term in scan_df else self._doc_freq(term)
             if df:
-                weights[term] = math.log(1.0 + total_facts / df)
+                weights[term], freq[term] = math.log(1.0 + total_facts / df), df
             else:
                 unknown.append(term)
         if not weights:
@@ -728,6 +729,7 @@ class FactRetriever:
         # A word no fact contains still says what the message is about: it counts against coverage, weighted like the
         # most common known word, so "do submarines deploy on Jupiter?" is not "about" a fact that mentions deploy.
         total = sum(weights.values()) + len(unknown) * min(weights.values())
+        inner_names = {name.lower() for name in _inner_names(query)}
         kept = []
         for fact in candidates:
             analysis = analyze(_fact_text(fact))
@@ -737,8 +739,15 @@ class FactRetriever:
             # A root alone never recalls: suffix rules cannot tell a derivation from a look-alike ("войной" / "вой",
             # "полный" / "пол"), so a fact needs a word of the message itself, and its roots only add to that.
             exact = any(s == 1.0 for s in strength.values())
-            if any(t.identifier and s for t, s in strength.items()) or fact in gram_kept \
-                    or (exact and sum(weights[t] * s for t, s in strength.items()) / total >= min_coverage):
+            # One shared word picks a fact out only when no other fact holds it: "What day is today?" shares "day"
+            # with everything that happens every day and is about none of it. A message of that word alone ("Lena?")
+            # is about it, and so is one that names someone inside the sentence ("What is Dina studying?" of "Dina
+            # takes a pottery course"); a known entity's facts the message mentions come by the entity (prefetch).
+            matched = [t for t, s in strength.items() if s]
+            lone = len(terms) > 1 and len(matched) == 1 and freq[matched[0]] > 1 \
+                and matched[0].word not in inner_names
+            if any(t.identifier and s for t, s in strength.items()) or fact in gram_kept or (
+                    exact and not lone and sum(weights[t] * s for t, s in strength.items()) / total >= min_coverage):
                 kept.append(fact)
         return kept
 

@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Fixed
+
+- **Chit-chat that shared one common word recalled facts.** "What day is today?", "Any plans for this evening?",
+  «Какая погода на этой неделе?», «Объясни, как работает хеш-таблица» brought in every fact that happens "every day",
+  "in the evening", "once a week" or "works": after the function words such a message has one or two words left, and
+  the word the store did not know counted only as much as the commonest known one. A fact that shares one word of a
+  longer message is left out now when other facts hold that word too, unless it is a name inside the sentence ("What
+  is Dina studying?"); a message of that word alone ("Lena?"), an identifier and Chinese n-grams are as before, and
+  the facts of a known entity the message mentions still come by the entity. Search is unchanged. Measured: the
+  eighteen language sets recall what they did (357 / 360) with fewer extra facts before the turn (698 → 679); on the
+  contrast sets of PR #10 (64 facts, English and Russian) chit-chat that recalls something falls 29 → 25 and 28 → 23
+  of 45, with every pair's fact recalled as before. Left: a common word that only one fact holds (README, Languages).
+  `test_holographic_v0140_embeddings.py` pinned prefetch to 0.13.0; four of its thirteen questions now recall fewer
+  facts, the ones that share only "run", "Lena", «Ева» or «Антон» with the question, and the test says which.
+
 ### Internal
 
 - **`store.py` is three files.** The rules of what a name is (`entity_key`, `_valid_entity`, `_name_shaped`, the
