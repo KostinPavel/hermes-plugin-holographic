@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Provenance probe: откуда каждый факт в top-5 перед ходом (лексический / смысл / имена),
-что фильтр coverage вырезал и почему цель не найдена (классы A/D/C).
+что фильтр coverage вырезал, срезало ли окно rerank_window (класс E) и почему цель не найдена
+(классы A/D/C).
 
 Патчит только экземпляр провайдера в тестовом прогоне (продакшн-код не меняется):
   search      -> пул (кандидаты после blend)
@@ -37,12 +38,13 @@ for _p in (str(_AGENT), str(_REPO.parent)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-_spec = importlib.util.spec_from_file_location(
-    "hermes_plugin_holographic", _REPO / "__init__.py", submodule_search_locations=[str(_REPO)])
-assert _spec and _spec.loader
-_mod = importlib.util.module_from_spec(_spec)
-sys.modules["hermes_plugin_holographic"] = _mod
-_spec.loader.exec_module(_mod)
+if "hermes_plugin_holographic" not in sys.modules:  # в тестах пакет уже загружен conftest
+    _spec = importlib.util.spec_from_file_location(
+        "hermes_plugin_holographic", _REPO / "__init__.py", submodule_search_locations=[str(_REPO)])
+    assert _spec and _spec.loader
+    _mod = importlib.util.module_from_spec(_spec)
+    sys.modules["hermes_plugin_holographic"] = _mod
+    _spec.loader.exec_module(_mod)
 
 from hermes_plugin_holographic import HolographicMemoryProvider  # noqa: E402
 from hermes_plugin_holographic import _sendable as _holographic_sendable  # noqa: E402
@@ -126,6 +128,7 @@ class Probe:
         self._wrap(r, "relevant", self._relevant)
         self._wrap(r, "by_meaning", self._by_meaning)
         self._wrap(r, "entity_facts", self._entity_facts)
+        self._wrap(p, "_sendable_docs", self._sendable_docs)
         self._wrap(p, "_not_recent", self._not_recent)
         self._wrap(p, "_recallable", self._recallable)
         if p._rescorer is not None:
@@ -147,15 +150,30 @@ class Probe:
             return out
         return call
 
+    def _sendable_docs(self, orig):
+        def call(facts):
+            out = orig(facts)
+            # ranked индексирует ДОКУМЕНТЫ (send-список), а не пул: при meaning/entity-потоках
+            # union и pool не совпадают, поэтому запоминаем union и send-позиции для перевода
+            # индекса ответа в fact_id (раньше писалось pool[i] — чужие id в JSONL).
+            self.ctx["union"] = [f.get("fact_id") for f in facts]
+            self.ctx["send_idx"] = list(out[0])
+            return out
+        return call
+
     def _scores(self, orig):
         def call(query, docs):
             ranked = orig(query, docs)
-            if ranked is not None:
-                pool = self.ctx.get("pool") or []
-                self.ctx["rerank_top5"] = [pool[i] for i, _ in ranked[:5] if i < len(pool)]
-                self.ctx["ranked"] = ranked is not None
-            else:
+            if ranked is None:
                 self.ctx["ranked"] = False
+                return ranked
+            union = self.ctx.get("union") or []
+            send_idx = self.ctx.get("send_idx") or []
+            order = [union[send_idx[i]] for i, _ in ranked
+                     if 0 <= i < len(send_idx) and send_idx[i] < len(union)]
+            self.ctx["rank_order"] = order  # порядок реранка ДО окна и top-5
+            self.ctx["rerank_top5"] = order[:5]
+            self.ctx["ranked"] = True
             return ranked
         return call
 
@@ -209,7 +227,13 @@ class Probe:
     # -- обёртка запроса --------------------------------------------------
     def prefetch(self, query: str) -> tuple[str, dict]:
         self.ctx = {"tags": {}, "blocked": {}, "gate_called": False,
-                    "pool": [], "rerank_top5": [], "ranked": None}
+                    "pool": [], "rerank_top5": [], "rank_order": [], "ranked": None,
+                    "window": 0.0, "weight": 0.0}
+        rescorer = getattr(self.p, "_rescorer", None)
+        if rescorer is not None and getattr(rescorer, "settings", None) is not None:
+            # окно режет только при weight == 0 (см. _unified_stream) — фиксируем для classify
+            self.ctx["window"] = float(getattr(rescorer.settings, "window", 0.0) or 0.0)
+            self.ctx["weight"] = float(getattr(rescorer.settings, "weight", 0.0) or 0.0)
         block = self.p.prefetch(query)
         ctx = dict(self.ctx)
         ctx["tags"] = {k: sorted(v) for k, v in ctx["tags"].items()}
@@ -254,11 +278,27 @@ def parse_ids(block: str) -> list[int]:
 
 
 def classify(fid: int | None, ctx: dict) -> str:
-    """Почему цель не в recall (для real-запросов)."""
+    """Почему цель не в recall (для real-запросов).
+
+    E («срезан окном»): цель прошла все фильтры и стояла в top-5 ранга ДО среза
+    rerank_window — её убрало окно, а не слова и не top-5. Раньше такой случай
+    лгал «ниже top-5 (пул#N)»: пул — порядок кандидатов, а не ранг реранка
+    (кейс «What does Andrey do on weekends?», ревью 2026-10-23).
+    """
     if fid is None:
         return "-"
     if fid in ctx["tags"] and any(t in ctx["tags"][fid] for t in ("recent", "unsafe")):
         return "dropped:" + ",".join(ctx["tags"][fid])
+    rank = ctx.get("rank_order") or []
+    if fid in rank:
+        pos = rank.index(fid)
+        cut = (ctx.get("window") or 0.0) > 0.0 and (ctx.get("weight") or 0.0) == 0.0
+        if pos < 5:
+            if cut:
+                return f"E: срезан окном (ранг #{pos})"
+            # top-5 ранга без среза должен был попасть в recall — сюда не доходим
+        else:
+            return f"C: ниже top-5 (ранг #{pos})"
     pool = ctx.get("pool") or []
     if fid not in pool:
         return "A: нет в словесном пуле"
@@ -336,7 +376,8 @@ def run_multilingual(langs, modes, emb, endpoint, extra: dict | None = None) -> 
                              "miss_cls": miss_cls, "ms": round(ms, 1),
                              "pool_n": len(ctx.get("pool") or []),
                              "gate_called": ctx.get("gate_called"),
-                             "rerank_top5": ctx.get("rerank_top5") or []})
+                             "rerank_top5": ctx.get("rerank_top5") or [],
+                             "rank_order": ctx.get("rank_order") or []})
             p.shutdown()
     return rows
 
@@ -385,7 +426,8 @@ def run_contrast(set_name, modes, emb, endpoint, extra: dict | None = None) -> l
                              "hit5": own_pos is not None and own_pos <= 5, "out_n": len(keys),
                              "miss_cls": miss_cls, "pool_n": len(ctx.get("pool") or []),
                              "gate_called": ctx.get("gate_called"),
-                             "rerank_top5": ctx.get("rerank_top5") or []})
+                             "rerank_top5": ctx.get("rerank_top5") or [],
+                             "rank_order": ctx.get("rank_order") or []})
         for i, (query, cat) in enumerate(contrast.CHITCHAT):
             p.on_session_switch(f"cq{i}", reset=True)
             block, ctx = probe.prefetch(query)
