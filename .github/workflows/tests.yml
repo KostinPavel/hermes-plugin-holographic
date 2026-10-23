@@ -21,6 +21,8 @@ jobs:
           - os: ubuntu-latest
             core: release
     runs-on: ${{ matrix.os }}
+    # A hung test stops here, not at GitHub's default of 6 hours (Windows, the slowest, took up to 30 minutes).
+    timeout-minutes: 40
     steps:
       - name: Allow long paths (hermes-agent's docs tree exceeds MAX_PATH)
         if: runner.os == 'Windows'
@@ -66,7 +68,7 @@ jobs:
         working-directory: plugin
         env:
           HERMES_AGENT_REPO: ${{ github.workspace }}/hermes-agent
-        run: python -m pytest -q
+        run: python -m pytest -q --durations=25  # the slowest tests, so a slowdown shows in the log
 
   # Lint: the rules in pyproject.toml (pyflakes, pycodestyle, bugbear); a test proves behaviour, this catches an
   # unused import or a mutable default before review does.
