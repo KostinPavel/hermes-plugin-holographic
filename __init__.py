@@ -9,8 +9,7 @@ embedding_model, embedding_key_env, embedding_dimensions, embedding_timeout, emb
 embedding_prefetch_facts, embedding_weight, embedding_space, embedding_catch_up_seconds (embeddings.py, README).
 Rescoring by a cross-encoder (rerank.py, off by default; one mode — the pool is reordered, admission stays
 with coverage): rerank (off | on), rerank_url, rerank_model, rerank_top_k, rerank_weight, rerank_window,
- rerank_window_min, rerank_window_named, rerank_scale,
-rerank_timeout (README).
+rerank_scale, rerank_timeout (README).
 Fact history, provenance and forgetting: docs/history.md."""
 
 from __future__ import annotations
@@ -950,6 +949,10 @@ _TRUE_WORDS, _FALSE_WORDS = frozenset({"1", "true", "yes", "on"}), frozenset({"0
 _CHOICES = (("scope", _SCOPES, "one of profile, user, chat, thread"), ("recall_source", {"off", "short"}, "off or short"),
             ("embeddings", _TRUE_WORDS | _FALSE_WORDS, "on or off"),
             ("rerank", _TRUE_WORDS | _FALSE_WORDS, "on or off"),
+            # Шкала реранкера — настройка пользователя (п.2 ревью 13:06): вне пары —
+            # именованная проблема конфига и memory off, как у остальных 0.17.8-ключей
+            # ("scope: users" молча слил все чаты в один стор), а не тихий fallback.
+            ("rerank_scale", {"unit", "logit"}, "unit or logit"),
             *((key, _TRUE_WORDS | _FALSE_WORDS, "true or false")
               for key in ("recall_indicator", "cron_writes", "auto_extract", "mirror_memory_writes")))
 # A separate database per chat (or per forum topic / thread): facts meet in the FTS index, n-gram scan, entities, HRR
@@ -1093,27 +1096,30 @@ def _bottom_cut(scores: list[float], window: float) -> list[int] | None:
     return [i for i, s in enumerate(scores) if top - s <= window]
 
 
-def _window_keep(keep: list[int] | None, ranked_len: int, union_len: int,
-                 need: int = 0, protected: set[int] | None = None) -> list[int] | None:
-    """Варианты окна поверх _bottom_cut (майнтейнер PR #10, 10:34), выключены по умолчанию:
+# Окно никогда не резает ниже стольких scored-кандидатов — встроено в работу среза (майнтейнер
+# 13:06: вместо ключа rerank_window_min — свойство самого окна, один порог меньше в конфиге).
+_WINDOW_MIN = 2
 
-    (а) *need* — срез не опускается ниже стольких фактов: худшие позиции окна
-        добираются следующими по рангу (из scored — хвост за top_k не воскрешаем);
-    (б) *protected* — позиции фактов, связанных с лицом, названным в вопросе: окно
-        их не режет, даже если скор за δ (и хвост за top_k тоже — такой факт вообще
-        не должен выпадать из-за окна).
 
-    Пустой срез не оживляем: варианты спасают от частичного среза, а не от пустого
-    пула. keep от _bottom_cut — префикс позиций в порядке ранга; результат сортируется,
-    т.е. порядок переупорядоченного пула сохраняется."""
-    if not keep or (need <= len(keep) and not protected):
+def _window_keep(keep: list[int] | None, ranked_len: int, need: int = _WINDOW_MIN) -> list[int] | None:
+    """Добор среза до минимум *need* scored-кандидатов (п.4(1) ревью 13:06): два факта, чтобы
+    покрытие не оставалось с одним «уверенно верным» верхом кросс-энкодера — поведение окна,
+    без отдельной клавиши (п.1).
+
+    Добор идёт по позициям РАНГА, которых не хватает: keep не обязан быть префиксом —
+    `_window_keep([1], 3)` добирает [0, 1], а не [1, 1] (п.4(4): старое заполнение
+    от range(len(out)) считало keep префиксом). Хвост за top_k не воскрешаем: scored ровно
+    ranked_len. keep=None (окно выключено) и пустой срез не оживляются: варианты спасают
+    от частичного среза, а не от пустого пула. Результат сортируется — порядок
+    переупорядоченного пула сохраняется."""
+    if not keep:
         return keep
-    out = list(keep)
-    if len(out) < need:
-        out += [i for i in range(len(out), min(need, ranked_len))]
-    if protected:
-        out += [i for i in sorted(protected) if i < union_len and i not in out]
-    return sorted(set(out))
+    out = set(keep)
+    for i in range(ranked_len):
+        if len(out) >= min(need, ranked_len):
+            break
+        out.add(i)
+    return sorted(out)
 
 
 def blend_union(union: list[dict], ranked: list[tuple[int, float]], weight: float) -> list[dict]:
@@ -1301,19 +1307,14 @@ class HolographicMemoryProvider(MemoryProvider):
              "default": current("rerank", "off"),
              "choices": ["off", "on"]},
             {"key": "rerank_window", "description": "δ: the tail below this distance of the best score is cut "
-             "before the top five (coverage runs first; 0 = keep everything; only with rerank_weight 0)",
+             "before the top five (coverage runs first; 0 = keep everything; only with rerank_weight 0; "
+             "never below two scored candidates — built into the window, review 13:06)",
              "default": current("rerank_window", "0.05")},
-            {"key": "rerank_window_min", "description": "N: the window never cuts below N facts and refills "
-             "from the next ranked scored documents (0 = off; the guard for a cross-encoder that is "
-             "confidently wrong at the top)",
-             "default": current("rerank_window_min", "0")},
-            {"key": "rerank_window_named", "description": "on: the window never cuts a fact linked to a "
-             "person the question names (off = the plain window)",
-             "default": current("rerank_window_named", "off"), "choices": ["off", "on"]},
             {"key": "rerank_scale", "description": "Score scale of the rerank endpoint — a property of the "
-             "endpoint, decided once: auto (latched from the first decisive answer or a one-time probe "
-             "request), unit ([0,1] answers, Cohere-style), logit (raw logits, llama-server --rerank)",
-             "default": current("rerank_scale", "auto"), "choices": ["auto", "unit", "logit"]},
+             "endpoint and a user setting: logit (raw logits, llama-server --rerank; the default) or unit "
+             "([0,1] answers, Cohere-style). A value outside the pair is a config problem naming this key, "
+             "memory off — no silent fallback, no probe",
+             "default": current("rerank_scale", "logit"), "choices": ["unit", "logit"]},
             {"key": "rerank_url", "description": "Cohere-compatible rerank API (https; plain http only to "
              "localhost or a private address, e.g. llama-server --reranking)",
              "default": current("rerank_url", "http://127.0.0.1:8080/v1/rerank")},
@@ -1608,21 +1609,6 @@ class HolographicMemoryProvider(MemoryProvider):
         """Ответ эндпоинта (индексы по send-списку) -> индексы по исходному пулу."""
         return [(send_idx[i], score) for i, score in ranked if 0 <= i < len(send_idx)]
 
-    def _window_spares(self, query: str, union: list[dict]) -> set[int]:
-        """(б) варианта окна: позиции фактов, связанных с сущностью, названной в
-        вопросе (store-линки, те же, что у names_fit) — такой факт окно не режет.
-        Без названных сущностей — пусто: защиты нет и не нужна."""
-        named_ids = self._store.mentioned_entity_ids(query) if self._store is not None else set()
-        if not named_ids:
-            return set()
-        spares = set()
-        for i, fact in enumerate(union):
-            linked = {row[0] for row in self._store.read(  # type: ignore[union-attr]
-                "SELECT entity_id FROM fact_entities WHERE fact_id = ?", (fact["fact_id"],))}
-            if named_ids & linked:
-                spares.add(i)
-        return spares
-
     def _stream_extras(self, query: str, meaning, have: set[int], key: str, turn: int):
         """Потоки 2 (meaning) и 3 (entity) поверх уже занятых `have` — ОДНА функция для
         off-пути и для ОБОИХ исходов _unified_stream (п.4(1) ревью 10:34): фолбэк обязан
@@ -1721,12 +1707,9 @@ class HolographicMemoryProvider(MemoryProvider):
             # rerank_window (δ): срез НИЖНЕГО хвоста после coverage и реранкера, перед top-5 (п.6: вето-по-margin
             # удалено, осталось окно). Сигмоид-нормализация — чтобы δ был одинаков для сырых логитов и [0,1].
             keep = _bottom_cut(rescorer.normalized(ranked), window)
-            # Варианты (майнтейнер 10:34): (а) не резать ниже N, (б) не резать факт,
-            # называющий лицо вопроса. Выключены -> поведение ровно как раньше.
-            keep = _window_keep(keep, len(ranked), len(union),
-                                rescorer.settings.window_min,
-                                self._window_spares(query, union)
-                                if rescorer.settings.window_named else None)
+            # Вариант (а) встроен в окно (майнтейнер 13:06): не резать ниже двух scored —
+            # без клавиши и без вариантов; (б) удалён вместе с rerank_window_named.
+            keep = _window_keep(keep, len(ranked))
             fresh = [union[i] for i in keep] if keep else []
         return fresh[:_PREFETCH_FACTS], by_meaning
 

@@ -123,9 +123,10 @@ def test_config_schema_defaults(tmp_path):
               if str(f["key"]).startswith("rerank")}
     assert schema["rerank"] == "off"
     assert schema["rerank_window"] == "0.05"  # п.6: режим один, окно — клавиша
-    assert schema["rerank_window_min"] == "0"      # п.2(а): dev-свитч, выключен
-    assert schema["rerank_window_named"] == "off"  # п.2(б): dev-свитч, выключен
-    assert schema["rerank_scale"] == "auto"  # п.4(2): шкала эндпоинта, решается один раз
+    # п.1+п.3 (13:06): клавиш window_min/window_named больше — минимум два встроен
+    # в окно; шкала явная, дефолт logit (llama-server), без auto и пробы
+    assert schema["rerank_scale"] == "logit"
+    assert "rerank_window_min" not in schema and "rerank_window_named" not in schema
     assert schema["rerank_weight"] == "0.0"
     p.shutdown()
 
@@ -168,62 +169,31 @@ def test_bottom_cut_default_keeps_the_window(tmp_path, endpoint):
     p.shutdown()
 
 
-def test_window_variants_min_and_named(tmp_path):
-    """Варианты окна (майнтейнер PR #10, 10:34): (а) не резать ниже N фактов,
-    (б) факт, называющий лицо вопроса, не резать; выключены = поведение как раньше."""
-    # (а): добираем следующие по рангу позиции, но не дальше scored
-    assert _window_keep([0], 4, 4, need=2) == [0, 1]
-    assert _window_keep([0, 1], 4, 4, need=2) == [0, 1]   # уже не меньше двух
-    assert _window_keep([0], 1, 3, need=2) == [0]          # единственный scored не воскрешаем
-    assert _window_keep([0], 4, 4) == [0]                  # выключено -> идентично
-    assert _window_keep(None, 4, 4, need=2) is None        # пустой срез не оживляем
-    # (б): protected-позиции добавляются (в том числе за пределами scored)
-    assert _window_keep([0], 2, 5, protected={2, 0}) == [0, 2]
-    assert _window_keep([0], 2, 5, need=2, protected={4}) == [0, 1, 4]
-    # клавиши читаются из конфига, по умолчанию выключены
-    on = rerank.Settings({"rerank": "on", "rerank_window_min": "2", "rerank_window_named": "on"})
-    assert (on.window_min, on.window_named) == (2, True)
-    off = rerank.Settings({"rerank": "on"})
-    assert (off.window_min, off.window_named) == (0, False)
+def test_window_keeps_two_scored_and_refills_missing(tmp_path):
+    """Встроенный минимум окна (п.1+п.4 ревью 13:06, без клавиш): срез не опускается
+    ниже двух scored-кандидатов; добор идёт по позициям РАНГА, которых не хватает —
+    keep не обязан быть префиксом (`_window_keep([1], 3)` -> [0, 1], не [1, 1])."""
+    assert _window_keep([0], 4) == [0, 1]        # добирает следующий по рангу
+    assert _window_keep([1], 3) == [0, 1]        # п.4(4): его пример — keep не префикс
+    assert _window_keep([0, 1], 4) == [0, 1]     # уже не меньше двух
+    assert _window_keep([0], 1) == [0]           # единственный scored не воскрешаем
+    assert _window_keep(None, 4) is None         # выключено -> не оживляем
+    assert _window_keep([], 4) == []             # пустой срез не оживляем
+    # клавиш больше: Settings их не читает, шкала дефолтная logit (п.3)
+    s = rerank.Settings({"rerank": "on"})
+    assert not hasattr(s, "window_min") and not hasattr(s, "window_named")
+    assert s.scale == "logit"
 
 
-def test_window_min_lifts_a_cut_pool(tmp_path, endpoint):
-    """(а) интеграция: окно срезает пул до одного факта, rerank_window_min держит два."""
+def test_window_never_cuts_below_two(tmp_path, endpoint):
+    """Интеграция (п.1+п.4(1) ревью 13:06): окно срезает пул до одного факта —
+    встроенный минимум возвращает второй, без клавиш в конфиге."""
     p = _provider(tmp_path, **{**RANK, "rerank_window": "0.05"})
     _fill(p)
     endpoint.scores = [1.0, 0.0]  # второй факт глубоко за δ
-    base = _block(p, "when does the backup run?")
-    assert base.count("- #") == 1  # контроль: без варианта окно реально режет
+    block = _block(p, "when does the backup run?")
+    assert block.count("- #") == 2  # окно не опускается ниже двух scored
     p.shutdown()
-
-    p = _provider(tmp_path, name="min2.db", **{**RANK, "rerank_window": "0.05",
-                                               "rerank_window_min": "2"})
-    _fill(p)
-    endpoint.scores = [1.0, 0.0]
-    lifted = _block(p, "when does the backup run?")
-    assert lifted.count("- #") == 2  # вариант (а): пул не опускается ниже двух
-    p.shutdown()
-
-
-def test_window_named_spares_the_asked_person(tmp_path, endpoint):
-    """(б) интеграция: вопрос про Лену, в пуле её два факта — окно режет один,
-    но с rerank_window_named оба факта, связанных с Леной, в блоке."""
-    def lena_pool(name, extra):
-        p = _provider(tmp_path, name=name, **{**RANK, "rerank_window": "0.05", **extra})
-        for f in FILLERS:
-            p._store.add_fact(f"{f} number")
-        # линк на сущность задаём явно: add_fact extraction в тестовом харнессе не делает
-        p._store.add_fact_status("Lena's birthday is on June 3.", entities=("Lena",))
-        p._store.add_fact_status("Lena drinks tea with lemon.", entities=("Lena",))
-        endpoint.scores = [1.0, 0.0]  # ровно один факт за δ — какой, зависит от порядка
-        block = _block(p, "what about Lena?")
-        p.shutdown()
-        return block
-
-    base = lena_pool("lena_base.db", {})
-    assert base.count("- #") == 1  # контроль: базовый окно режет Лена-пул
-    spared = lena_pool("lena_named.db", {"rerank_window_named": "on"})
-    assert spared.count("- #") == 2 and "birthday" in spared  # (б): оба факта Лены целы
 
 
 def test_gate_reads_score_falls_back_to_coverage_on_failure(tmp_path, endpoint):
@@ -362,74 +332,33 @@ def test_endpoint_validation():
     assert rerank._endpoint("ftp://x")[0] is None  # wrong scheme
 
 
-# -- п.4 ревью 10:34: фолбэк = off, шкала эндпоинта, blend в одной шкале ------------------------------
+# -- фолбэк = off, шкала эндпоинта (п.3 ревью 13:06), blend в одной шкале ------------------------------
 
-def test_scale_latches_from_the_first_answer_and_never_flips(tmp_path, endpoint):
-    """п.4(2): шкала — свойство ЭНДПОИНТА, а не набора кандидатов этого turn. Первый ответ
-    вне [0,1] латчит "logit"; следующий ответ в [0,1] читается прежней шкалой — без
-    переворота (прежнее правило по ответу давало два разных прочтения в одном turn-наборе)."""
+def test_scale_is_explicit_and_never_probes(tmp_path, endpoint):
+    """П.3 ревью 13:06: шкала явная (дефолт logit), без латча и без пробы — ни одного
+    лишнего запроса: проба могла залатчить неверно, решалась без лока (гонка) и
+    добавляла турну второй запрос до 2 × rerank_timeout. Ответ в [0,1] шкалу не
+    переворачивает — читается той же."""
     p = _provider(tmp_path, **{**RANK, "rerank_window": "0.05"})
     rescorer = p._rescorer
-    assert rescorer._scale is None
-    first = rescorer.normalized([(0, 5.0), (1, -3.0)])  # вне [0,1] — однозначно
-    assert rescorer._scale == "logit"
+    assert rescorer.settings.scale == "logit"
+    first = rescorer.normalized([(0, 5.0), (1, -3.0)])  # логиты -> сигмоида
     assert first == pytest.approx([rerank._sigmoid(5.0), rerank._sigmoid(-3.0)])
-    endpoint.scores = [0.9, 0.7]  # следующий ответ попал в [0,1] — раньше это развернуло бы шкалу
-    second = rescorer.normalized([(0, 0.9), (1, 0.7)])
-    assert second == pytest.approx([rerank._sigmoid(0.9), rerank._sigmoid(0.7)])  # латч держится
-    assert endpoint.requests == []  # проба не понадобилась: первый ответ был однозначен
+    second = rescorer.normalized([(0, 0.9), (1, 0.7)])  # в [0,1] — та же шкала
+    assert second == pytest.approx([rerank._sigmoid(0.9), rerank._sigmoid(0.7)])
+    assert endpoint.requests == []  # пробы не было и не будет
     p.shutdown()
 
 
-def test_scale_probe_resolves_an_in_range_first_answer(tmp_path, endpoint):
-    """п.4(2): спорный первый ответ (всё в [0,1], у логит-сервера возможен) разрешается
-    ОДНИМ пробным запросом с нейтральными документами; латч "unit" держится дальше."""
-    endpoint.scores = [0.9, 0.8]
-    p = _provider(tmp_path, **{**RANK, "rerank_window": "0.05"})
-    rescorer = p._rescorer
-    raw = rescorer.normalized([(0, 0.9), (1, 0.7)])
-    assert rescorer._scale == "unit"
-    assert raw == [0.9, 0.7]  # не сигмоидировано
-    assert endpoint.requests[0]["body"]["documents"] == [
-        "holographic scale probe document alpha.", "holographic scale probe document beta."]
-    endpoint.scores = [-5.0, -3.0]  # шкалу под ним поменяли — уже поздно
-    still = rescorer.normalized([(0, -5.0), (1, -3.0)])
-    assert still == [-5.0, -3.0]  # латч "unit" держится и вне [0,1]
-    assert len(endpoint.requests) == 1  # повторной пробы нет
-    p.shutdown()
-
-
-def test_scale_probe_failure_keeps_the_old_rule_and_retries(tmp_path, endpoint):
-    """п.4(2): проба не удалась — правило прежнего поведения на этот ответ, латча нет,
-    проба повторится, когда эндпоинт оживёт."""
-    endpoint.scores = [0.9, 0.8]
-    p = _provider(tmp_path, **{**RANK, "rerank_window": "0.05"})
-    rescorer = p._rescorer
-    endpoint.fail = ConnectionRefusedError("refused")
-    raw = rescorer.normalized([(0, 0.9), (1, 0.7)])  # правило по ответу: всё в [0,1] -> как есть
-    assert raw == [0.9, 0.7]
-    assert rescorer._scale is None  # латча нет
-    endpoint.fail = None
-    rescorer._paused_until = 0.0  # снимаем паузу, которую поставила упавшая проба
-    rescorer.normalized([(0, 0.9), (1, 0.7)])  # оживили — проба ушла и прошла
-    assert rescorer._scale == "unit"
-    p.shutdown()
-
-
-def test_scale_can_be_set_explicitly(tmp_path):
-    """п.4(2): rerank_scale задаёт шкалу явно, минуя латч и пробу, и уважается буквально;
-    неизвестное значение — auto с предупреждением."""
+def test_scale_unit_is_literal_and_bad_value_names_the_key(tmp_path):
+    """П.2+п.3 (13:06): unit уважается буквально; значение вне {unit, logit} —
+    именованная проблема конфига (memory off), а не тихий fallback на auto."""
     unit = _provider(tmp_path, "unit.db", **{**RANK, "rerank_scale": "unit"})
     assert unit._rescorer.settings.scale == "unit"
     assert unit._rescorer.normalized([(0, -5.0), (1, -3.0)]) == [-5.0, -3.0]  # форс unit: как есть
     unit.shutdown()
-    logit = _provider(tmp_path, "logit.db", **{**RANK, "rerank_scale": "logit"})
-    assert logit._rescorer.settings.scale == "logit"
-    out = logit._rescorer.normalized([(0, 0.9), (1, 0.7)])
-    assert out == pytest.approx([rerank._sigmoid(0.9), rerank._sigmoid(0.7)])  # форс logit
-    logit.shutdown()
     bad = _provider(tmp_path, "bad.db", **{**RANK, "rerank_scale": "banana"})
-    assert bad._rescorer.settings.scale == "auto"  # неизвестное -> auto (с предупреждением в лог)
+    assert any("rerank_scale" in problem for problem in bad._config_problems)
     bad.shutdown()
 
 

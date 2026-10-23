@@ -851,18 +851,17 @@ The cross-encoder reorders the pool; **membership stays with coverage** (the wor
 off), so the reranker never adds a fact the words would not admit. It can still lose one they did admit: with
 ``rerank_window`` > 0 the tail below δ of the best score is cut before the top five is taken by rank — if the
 cross-encoder is confidently wrong at the top, a fact the words admitted disappears instead of slipping places.
-Meaning- and entity-based facts compete in the same rank as the lexical pool. A failed call falls back to the
-pool's blend order.
+The cut never drops below two scored candidates — that minimum is built into the window itself (review of
+2026-10-23), so a confidently wrong top cannot squeeze recall down to a single fact. Meaning- and entity-based
+facts compete in the same rank as the lexical pool. A failed call falls back to the pool's blend order.
 
 Other keys: ``rerank_top_k`` (40: how deep a pool the cross-encoder sees; the first stage's limit is widened to
 match), ``rerank_weight`` (0 = order-only, recommended; >0 = the min-max-normalised cross-encoder score blended into
-the blend score; the window applies to order-only runs), ``rerank_timeout`` (3 s), two dev switches of the window —
-``rerank_window_min`` (0 = off; N: the window never cuts below N facts and refills from the next ranked scored
-documents, the guard for a cross-encoder that is confidently wrong at the top) and ``rerank_window_named``
-(off; on: the window never cuts a fact linked to a person the question names) — and ``rerank_scale``
-(auto = the endpoint's score scale, decided once: latched from the first decisive answer, one probe request
-when that answer is ambiguous; ``unit`` ([0,1], Cohere-style) or ``logit`` (raw llama-server logits) pins it
-explicitly). A query that holds a secret is never sent.
+the blend score; the window applies to order-only runs), ``rerank_timeout`` (3 s) and ``rerank_scale`` —
+the endpoint's score scale, set explicitly: ``logit`` (raw llama-server logits; the default, no probing) or
+``unit`` ([0,1], Cohere-style). A value outside that pair is a config problem that names the key and turns
+memory off for the session, like any other out-of-set value — never a silent fallback.
+A query that holds a secret is never sent.
 With ``rerank_weight: 0`` the cross-encoder judges text only and ignores trust: a fact whose trust
 was lowered (by feedback or by a dreaming plugin) can move back to the top of what is admitted.
 

@@ -55,12 +55,12 @@ def _number(config: dict, key: str, default, low, high, kind=float):
 
 class Settings:
     """The plugin config's rerank_* keys, validated (see README). One mode: the cross-encoder reorders the pool,
-    admission stays with coverage; `rerank_window` (δ) trims the tail below δ of the best score, 0 keeps all.
-    Two dev switches of the window (PR #10, 2026-10-23, off by default): `rerank_window_min` never cuts below
-    N facts, `rerank_window_named` never cuts a fact linked to a person the question names."""
+    admission stays with coverage; `rerank_window` (δ) trims the tail below δ of the best score, 0 keeps all —
+    and never below two scored candidates (built into the window itself, review 13:06: no switch for it).
+    `rerank_scale` is the endpoint's own scale, set explicitly: default `logit`, because llama-server
+    (the documented setup) returns raw logits."""
 
-    __slots__ = ("url", "model", "top_k", "weight", "timeout", "window", "window_min", "window_named",
-                 "scale")
+    __slots__ = ("url", "model", "top_k", "weight", "timeout", "window", "scale")
 
     def __init__(self, config: dict):
         # rerank_mode / rerank_margin удалены (п.6 ревью 2026-10-22): один режим, окно - отдельная клавиша.
@@ -73,19 +73,11 @@ class Settings:
         self.top_k = _number(config, "rerank_top_k", DEFAULT_TOP_K, 1, 1000, int)  # int (kind=int)
         self.weight = _number(config, "rerank_weight", 0.0, 0.0, 1.0)
         self.window = _number(config, "rerank_window", DEFAULT_WINDOW, 0.0, 1.0)
-        # Варианты окна на dev (майнтейнер PR #10, 10:34): (а) не резать ниже
-        # window_min фактов; (б) факт, называющий лицо вопроса, не резать.
-        # Оба выключены (0/off) — продакшн-поведение не меняется.
-        self.window_min = int(_number(config, "rerank_window_min", 0, 0, 100, int))
-        self.window_named = str(config.get("rerank_window_named") or "").strip().lower() \
-            in {"on", "true", "yes", "1"}
-        # шкала скоров — свойство ЭНДПОИНТА, а не набора кандидатов (п.4(2) ревью
-        # 10:34): auto решает один раз (латч с первого однозначного ответа или
-        # пробным запросом), unit/logit задают явно.
-        self.scale = str(config.get("rerank_scale") or "auto").strip().lower()
-        if self.scale not in {"auto", "unit", "logit"}:
-            logger.warning("holographic: rerank_scale must be auto, unit or logit; using auto")
-            self.scale = "auto"
+        # шкала скоров — свойство ЭНДПОИНТА и настройка пользователя (п.3 ревью
+        # 13:06): явная, без пробы и латча; дефолт logit — llama-server отдаёт
+        # сырые логиты. Набор значений держит _CHOICES у провайдера: вне его —
+        # именованная проблема конфига и memory off, а не тихий fallback.
+        self.scale = str(config.get("rerank_scale") or "logit").strip().lower()
         self.timeout = _number(config, "rerank_timeout", DEFAULT_TIMEOUT, 0.5, 10.0)
 
 
@@ -156,7 +148,6 @@ class Rescorer:
         self._epoch = 0
         self.calls = 0  # requests sent (stats, tests)
         self.failures = 0  # counted fallbacks: scores() returned None on a failure (diagnostics)
-        self._scale: str | None = None  # шкала эндпоинта "unit"|"logit" (п.4(2)): решается один раз
 
     def unavailable(self) -> str:
         """Why the endpoint cannot be used at all (\"\" when it can): the address, the key."""
@@ -286,40 +277,16 @@ class Rescorer:
             "holographic: rerank endpoint failed (%s); keeping the current order for %d s", why, int(pause))
 
     def normalized(self, pairs: list[tuple[int, float]]) -> list[float]:
-        """Счётчики для окна в [0,1] — шкала здесь решается как СВОЙСТВО ЭНДПОИНТА
-        (п.4(2) ревью 10:34), один раз на весь эндпоинт, а не заново на наборе
-        кандидатов каждого turn:
-
-        - ``rerank_scale`` задаёт шкалу явно ("unit" / "logit") и минует пробу;
-        - "auto": первый ответ вне [0,1] латчит "logit" сразу (логит-эндпоинт —
-          однозначно); спорный ответ (всё в [0,1]) разрешает ОДИН пробный запрос
-          с нейтральными документами;
-        - проба не удалась — правило прежнего поведения на этот ответ, латч
-          повторится следующим разом (счётчик вызовов и пауза у пробы честные —
-          шлётся обычным ``_request``).
+        """Счётчики для окна в [0,1] — шкала задана явно (`rerank_scale`, дефолт
+        "logit" под llama-server). П.3 ревью 13:06 убрал пробу: она могла залатчить
+        неверно, решалась без лока (гонка с конкурентным запросом) и добавляла турну
+        второй запрос до 2 × rerank_timeout.
 
         Пул из одного кандидата не нормируется: окно сохранит его при любой шкале.
         """
         if len(pairs) < 2:
             return [s for _, s in pairs]
-        if self._scale is None and self.settings.scale == "auto":
-            out = any(s < 0.0 or s > 1.0 for _, s in pairs)
-            self._scale = "logit" if out else self._probe_scale()
-        scale = self.settings.scale if self.settings.scale != "auto" else self._scale
-        return normalized(pairs, scale)
-
-    def _probe_scale(self) -> str | None:
-        """Однократный пробный запрос: два нейтральных документа. Логит-эндпоинт (llama-server
-        с ``--rerank``) отвечает вне [0,1] -> "logit"; ответ в [0,1] (Cohere-стиль) -> "unit".
-        None — не удалась: шкала на этот ответ остаётся нерешённой, проба повторится."""
-        body = {"model": self.settings.model, "query": "holographic scale probe",
-                "documents": ["holographic scale probe document alpha.",
-                              "holographic scale probe document beta."],
-                "top_n": 2}
-        ranked = self._request(body)
-        if ranked is None:
-            return None
-        return "logit" if any(s < 0.0 or s > 1.0 for _, s in ranked) else "unit"
+        return normalized(pairs, self.settings.scale)
 
     def _failed(self, why: str) -> None:
         with self._lock:
@@ -336,20 +303,18 @@ def _sigmoid(x: float) -> float:
     return z / (1.0 + z)
 
 
-def normalized(pairs: list[tuple[int, float]], scale: str | None = None) -> list[float]:
-    """Счётчики в [0,1] для окна: sigmoid, когда шкала "logit" (или она ещё неизвестна и ответ
-    хотя бы одним скором вне [0,1] — прежнее правило по ответу); "unit" — как есть. Шкала —
-    СВОЙСТВО ЭНДПОИНТА, а не набора кандидатов (п.4(2) ревью 10:34): Rescorer.normalized
-    решает её ОДИН раз (латч с первого однозначного ответа или пробным запросом) и передаёт
-    сюда; None — решение ещё не принято (проба не удалась), работает правило по ответу.
+def normalized(pairs: list[tuple[int, float]], scale: str = "logit") -> list[float]:
+    """Счётчики в [0,1] для окна: sigmoid, когда шкала "logit"; "unit" — как есть.
+    Шкала — СВОЙСТВО ЭНДПОИНТА и настройка пользователя (п.3 ревью 13:06): явная,
+    дефолт "logit" (llama-server отдаёт сырые логиты), проба и латч удалены —
+    Rescorer передаёт `settings.scale`, прямые вызовы по умолчанию тоже logit.
 
     Без нормализации отношение best/second при отрицательных логитах лежит в (0,1] и условие
     `best < second * margin` недостижимо — гейт никогда не отказывает, ровно на chit-chat,
     где логиты самые отрицательные. Порядок не меняется (sigmoid монотонен).
     """
     scores = [s for _, s in pairs]
-    out = any(s < 0.0 or s > 1.0 for s in scores)
-    if scale == "logit" or (scale is None and out):
+    if scale == "logit":
         return [_sigmoid(s) for s in scores]
     return scores
 

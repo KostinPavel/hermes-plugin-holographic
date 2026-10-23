@@ -62,11 +62,9 @@ MODES = {
     "win10": ("0.0", "0.10"),
     "win03": ("0.0", "0.03"),
     "win02": ("0.0", "0.02"),
-    # варианты окна (майнтейнер 10:34): (а) не резать ниже двух фактов,
-    # (б) факт, называющий лицо вопроса, — на базе gate_only (δ=0.05),
-    # счёт per-target lost против off в summarize_household:
-    "gate_min2": ("0.0", "0.05", {"rerank_window_min": "2"}),
-    "gate_named": ("0.0", "0.05", {"rerank_window_named": "on"}),
+    # режимов gate_min2/gate_named больше (п.1 ревью 13:06): минимум два —
+    # встроено в окно, защита названного лица удалена; gate_only = готовая
+    # конфигурация для мержа (δ=0.05 + этот встроенный минимум).
 }
 
 
@@ -112,8 +110,6 @@ def make_provider(db: Path, mode: str, emb, extra: dict | None = None) -> Hologr
     if spec:
         config.update({"rerank": "on", "rerank_weight": spec[0], "rerank_window": spec[1],
                        "rerank_url": ENDPOINT, "rerank_model": "probe-reranker"})
-        if len(spec) > 2:  # варианты окна несут свои клавиши конфига (gate_min2/gate_named)
-            config.update(spec[2])
     if emb == "on":
         config.update({"embeddings": "on", "embedding_url": EMB_URL, "embedding_model": EMB_MODEL})
     if extra:
@@ -608,25 +604,39 @@ def summarize_household(rows: list[dict]) -> None:
             print(f"confused paired emb={emb} off→{m2}: "
                   f"снято {cut}, добавлено {add} (строк {len(both)})")
 
-    # per-target lost (майнтейнера 10:34): hit@5 «любая цель» скрывает частичные
-    # потери multi-target запросов — считаем, КАКИЕ именно цели не попали в топ-5
-    # у каждой конфигурации (qid:цель × языки, где потеряна)
+    # per-target lost/gained (п.5 ревью 13:06): hit@5 «любая цель» скрывает частичные
+    # потери multi-target запросов. Считаем top-5 с ОБЕИХ сторон парно против off —
+    # раньше цели брались из всего keys, а у off могло быть больше пяти строк, так что
+    # счёт завышал потери; печатаем и gained, по id (qid:цель) с языком каждой строки.
     for emb in sorted({str(r["emb"]) for r in rows}):
-        for mode in sorted({r["mode"] for r in rows}):
-            lost: dict[str, int] = {}
+        base_top5: dict[tuple, set] = {}
+        for r in rows:
+            if str(r["emb"]) == emb and r["mode"] == "off" \
+                    and r["kind"] == "real" and r["targets"]:
+                base_top5[(r["lang"], r["qid"])] = set(r["targets"]) & set(r["keys"][:5])
+        for mode in sorted({r["mode"] for r in rows} - {"off"}):
+            lost: dict[str, list[str]] = {}
+            gained: dict[str, list[str]] = {}
             for r in rows:
                 if str(r["emb"]) != emb or r["mode"] != mode \
                         or r["kind"] != "real" or not r["targets"]:
                     continue
-                for t in sorted(set(r["targets"]) - set(r["keys"])):
-                    k = f"{r['qid']}:{t}"
-                    lost[k] = lost.get(k, 0) + 1  # сколько языков потеряло цель
-            if lost:
-                detail = ", ".join(f"{k}×{v}" for k, v in sorted(lost.items()))
-                print(f"lost per-target emb={emb} mode={mode}: "
-                      f"{sum(lost.values())} ({detail})")
+                prev = base_top5.get((r["lang"], r["qid"]))
+                if prev is None:
+                    continue
+                cur = set(r["targets"]) & set(r["keys"][:5])
+                for t in sorted(prev - cur):
+                    lost.setdefault(f"{r['qid']}:{t}", []).append(r["lang"])
+                for t in sorted(cur - prev):
+                    gained.setdefault(f"{r['qid']}:{t}", []).append(r["lang"])
+            if lost or gained:
+                def _fmt(d: dict) -> str:
+                    return ", ".join(f"{k}[{','.join(v)}]" for k, v in sorted(d.items()))
+                print(f"per-target top5 emb={emb} {mode} vs off: "
+                      f"lost {sum(map(len, lost.values()))} ({_fmt(lost) or '—'}); "
+                      f"gained {sum(map(len, gained.values()))} ({_fmt(gained) or '—'})")
             else:
-                print(f"lost per-target emb={emb} mode={mode}: 0")
+                print(f"per-target top5 emb={emb} {mode} vs off: lost 0; gained 0")
 
 
 def summarize(rows: list[dict]) -> None:

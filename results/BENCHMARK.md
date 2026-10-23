@@ -78,8 +78,8 @@ bge, names-fit on — `named`/`confused`: real queries whose output contains suc
 | off | 69 / 75 | 38 | 7 | 33 / 40 | 36 / 35 |
 | reorder_only | 69 / 76 | 38 | 7 | 32 / 40 | 36 / 35 |
 | gate_only (δ=0.05) | 69 / 76 | 9 | 3 | 37 / 45 | 36 / 35 |
-| gate_min2 (a: `rerank_window_min: 2`) | 69 / 76 | 34 | 4 | 32 / 40 | 36 / 35 |
-| gate_named (b: `rerank_window_named: on`) | 69 / 76 | 38 | 3 | 37 / 45 | 36 / 35 |
+| gate_min2 (a: min-2 — since folded into the window itself) | 69 / 76 | 34 | 4 | 32 / 40 | 36 / 35 |
+| gate_named (b: named-spares — since removed) | 69 / 76 | 38 | 3 | 37 / 45 | 36 / 35 |
 | win03 (δ=0.03) | 69 / 76 | 8 | 2 | 39 / 47 | 36 / 35 |
 | win10 (δ=0.10) | 69 / 76 | 9 | 3 | 36 / 44 | 36 / 35 |
 
