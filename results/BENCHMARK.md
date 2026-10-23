@@ -48,6 +48,21 @@ upstream words-gate fix — off p50 3 / p95 6 ms, rerank modes p50 94–101 / p9
 docs (max 16). Same model and harness, but the two machines are not comparable; the 4-thread cap on the
 new run is deliberate — it is closer to the small servers people run this on.
 
+**CPU gate (2026-10-23, PR #10 point 3):** both rerankers measured in one run — llama-server
+`--threads 4` on this machine (Ryzen 7 2700), both models **Q4_K_M**, protocol `--warmup 1
+--repeats 5` (warmup passes excluded from every statistic, 620 measured calls per model),
+`git_sha 19d7ced`. Raw rows: `results/bench_cpu_gate{,_calls}.jsonl` (bge),
+`results/bench_cpu_gate_jina{,_calls}.jsonl` (jina):
+
+| model (CPU, t4) | prefetch p50 ms | prefetch p95 ms | p95 < 300 ms |
+|---|---|---|---|
+| bge-reranker-v2-m3 Q4_K_M (`:1240`) | 343 | **448** | нет |
+| jina-reranker-v2-base-multilingual Q4_K_M (`:1239`) | 121 | 152 | да |
+
+Quality held in every mode on both: recall@5 100%, hit5 60/60, wrong-entity 0, noise 0%.
+The 393–413 ms conflict noted above is confirmed at 448 ms p95 on the gate protocol; jina CPU
+closes the 300 ms bar with margin and is the CPU candidate, bge stays the GPU default.
+
 **History.** The per-model table (bge/jina, CPU vs GPU, 360 queries, measured before the fixes) and
 its raw rows (the `*_[...].jsonl` files) live at commit
 [`634cfea`](https://github.com/itpartypattaya/hermes-plugin-holographic/blob/634cfea/results/BENCHMARK.md);
