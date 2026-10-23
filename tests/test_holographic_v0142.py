@@ -12,7 +12,7 @@ import pytest
 
 pytest.importorskip("numpy")
 
-from hermes_plugin_holographic import HolographicMemoryProvider, embeddings, retrieval  # noqa: E402
+from hermes_plugin_holographic import HolographicMemoryProvider, embeddings, retrieval
 
 FACTS = ["The garden shed is painted green and has a red door",
          "The backup of the garden server runs every night at three",

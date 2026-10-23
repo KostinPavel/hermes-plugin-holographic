@@ -4,6 +4,59 @@
 
 ### Internal
 
+- **The suite on Windows CI in minutes, not half an hour.** CI's Python links SQLite 3.50.4, which core holds to the
+  WAL-reset bug, so every test store ran in DELETE journal mode and each commit waited on two fsyncs; on the Windows
+  runner's disk the suite took 14–30 minutes against 2 on Linux. `tests/conftest.py` opens every connection with
+  `PRAGMA synchronous=OFF` (no test checks what survives a power cut; journal mode, locks and writes are as they
+  were; the plugin itself is unchanged). The pytest job stops after 40 minutes instead of GitHub's 6 hours and lists
+  the 25 slowest tests.
+
+## 0.17.8 — 2026-10-23
+
+From a second review against "10 principles of good code for AI agents" (2026-10-23), and the chit-chat that the
+contrast sets of PR #10 showed recalling facts. Recall before a turn changes for everyone: fewer facts that share one
+common word with the message.
+
+### Fixed
+
+- **A mistyped `scope` no longer puts everyone in one store.** A value that is none of profile, user, chat, thread
+  (`scope: users`) was read as `profile`: with per-user memory meant, every person's facts went into one database and
+  were recalled to the others. Now memory is off for the session with the key named, as for a setting that is no
+  number. The same for the other keys with a fixed set of values: `recall_source`, `embeddings` and the switches
+  `recall_indicator`, `cron_writes`, `auto_extract`, `mirror_memory_writes` (true / false, yes / no, on / off, 1 / 0, in
+  any case; unset or empty is the default; a bare `recall_source: off`, which Hermes's YAML reads as false, is off).
+- **A `config.yaml` that cannot be parsed no longer runs memory on the defaults.** Hermes 0.22 raises nothing for it: it
+  serves its last good copy or, without one, its defaults, and the plugin took `scope: profile` without a word. With
+  a copy that holds this plugin's settings they are used and a warning says so; without one (or on a core that
+  raises) memory is off until the file reads.
+- **"Not found" means not found.** A `KeyError` from a fault inside `change`, `forget`, `delete_entity` and the other
+  fact and entity actions was answered as "fact #N does not exist" or "no entity is named …" (`remove` as
+  `{"removed": false}`), and one from any other action as "Missing required argument". Now only a fact or name that does not exist is "not found", only an argument
+  the tool's schema has is "missing", and anything else answers `fact_store <action> failed (<kind>)` with a warning.
+  Such a failure's text no longer reaches the agent either: SQLite quotes a column's value in some messages, so it
+  could carry a fact; the plugin's own refusals (a date that is no date, a name that is taken) keep their words.
+- **Failures logged at debug only are warnings**, named by their kind: stored vectors not deleted after `embeddings`
+  was switched off, search by meaning or fact vectors stopped by something other than the endpoint, the memory mirror,
+  a missing or damaged dictionary of a language, a timezone the core cannot read (history dates were silently UTC).
+- **Chit-chat that shared one common word recalled facts.** "What day is today?", "Any plans for this evening?",
+  «Какая погода на этой неделе?», «Объясни, как работает хеш-таблица» brought in every fact that happens "every day",
+  "in the evening", "once a week" or "works": after the function words such a message has one or two words left, and
+  the word the store did not know counted only as much as the commonest known one. A fact that shares one word of a
+  longer message is left out now when other facts hold that very word too (counted by the word, not by the FTS
+  prefix: "car" is not in "carpet"), unless it may be a name: capitalized inside the sentence ("What is Dina
+  studying?", "José", "Peter's"; in German any capitalized word, so there only words in lower case are held to it),
+  or in a script without capitals (Hebrew, Hindi, Arabic: as before). A message of that word alone ("Lena?"), an
+  identifier and Chinese n-grams are as before, and the facts of a known entity the message mentions still come by
+  the entity. Search is unchanged. Measured: the eighteen language sets recall what they did (357 / 360) with fewer
+  extra facts before the turn (698 → 685); on the contrast sets of PR #10 (64 facts, English and Russian) chit-chat
+  that recalls something falls 29 → 26 and 28 → 25 of 45, with every pair's fact recalled as before. Left: a common
+  word that only one fact holds, and scripts without capitals (README, Languages). Codex review: three findings (the
+  FTS prefix count, names compared by spelling, caseless scripts and German), each fixed with a test.
+  `test_holographic_v0140_embeddings.py` pinned prefetch to 0.13.0; four of its thirteen questions now recall fewer
+  facts, the ones that share only "run", "Lena", «Ева» or «Антон» with the question, and the test says which.
+
+### Internal
+
 - **`store.py` is three files.** The rules of what a name is (`entity_key`, `_valid_entity`, `_name_shaped`, the
   readers that find names in a fact's text) moved to `entity_names.py`, and the entity half of `MemoryStore`
   (resolving names, linking facts, aliases, deleting and renaming a name) to `entities.py` as `EntityMixin`, mixed in
@@ -11,6 +64,17 @@
   exports what the provider and the tests import from it; the entity index rebuild (`rebuild_entity_index`,
   `_ENTITY_RULES`, the `_AUTO_REBUILD_*` limits) stays there. One trace of the move: the log line for a declared name
   that is no name now comes from the logger of `entities`, not `store`.
+- **Checks that do not depend on review.** ruff now runs `BLE` and `RUF100`: each of the 21 places that catch any
+  exception says why it may (`noqa: BLE001 - …`; most reasons were comments already, five places in `__init__.py` had none), and a
+  `noqa` that no longer applies fails the lint. `tests/test_holographic_architecture.py` reads `entity_names.py` and
+  fails on any import beyond `bisect`, `re`, `unicodedata` and `.text`. CI runs the suite on Linux against the latest
+  core release as well as against core's `main`.
+- **Less code, the same behaviour.** The derivation mode `"both"` nobody set is gone, from the code and the README
+  (`"dict"`, the default, and `"rules"`, which a test uses, stay); two parameters no caller passed are folded in (`_drop_orphan_entities`
+  keep_aliased, `_detach_alias` declared). One `EntityMixin._drop_entity_row` deletes an entity with its aliases for
+  both delete and forget; `require_history` is public, since retrieval calls it. The provider no longer writes the
+  SQL of "tags of a fact" and "facts without keywords" twice each: `MemoryStore.fact_tags`,
+  `facts_without_keywords` and `count_without_keywords` do. Tests unchanged.
 
 ## 0.17.8 — 2026-10-21
 

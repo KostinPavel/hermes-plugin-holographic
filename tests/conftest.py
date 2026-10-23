@@ -7,6 +7,7 @@ The plugin imports Hermes core (``agent``, ``tools``, ``hermes_cli``) from a che
 """
 import importlib.util
 import os
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -34,6 +35,27 @@ def _isolated_hermes_home(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     return home
+
+
+# PRAGMA synchronous=OFF on every connection the suite opens: no test checks what survives a power cut. CI's Python
+# links SQLite 3.50.4, which core holds to the WAL-reset bug, so every store runs in DELETE journal mode and each
+# commit waits on two fsyncs; on the Windows runner's disk that made the suite 28 minutes against 2 on Linux. The
+# journal mode, locking and every write stay as they are; only the wait for the disk goes. On macOS core sets
+# synchronous=FULL after WAL turns on, and that stands. Patched at import, not in a fixture, so that stores the module
+# fixtures open get it too.
+_real_connect = sqlite3.connect
+
+
+def _connect_without_fsync(*args, **kwargs):
+    conn = _real_connect(*args, **kwargs)
+    try:
+        conn.execute("PRAGMA synchronous=OFF")
+    except sqlite3.Error:
+        pass  # a file a test made unreadable on purpose fails where that test expects it to, not here
+    return conn
+
+
+sqlite3.connect = _connect_without_fsync
 
 
 def _symlinks_supported(tmp_dir: Path) -> bool:

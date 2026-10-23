@@ -15,7 +15,14 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+        core: [main]  # core's main: its breaking changes show here first, and the catalog checks against it too
+        include:
+          # and the latest core release, what users and Mia run (Linux): main moving on must not hide that
+          - os: ubuntu-latest
+            core: release
     runs-on: ${{ matrix.os }}
+    # A hung test stops here, not at GitHub's default of 6 hours (Windows, the slowest, took up to 30 minutes).
+    timeout-minutes: 40
     steps:
       - name: Allow long paths (hermes-agent's docs tree exceeds MAX_PATH)
         if: runner.os == 'Windows'
@@ -24,11 +31,25 @@ jobs:
         with:
           path: plugin
           fetch-depth: 0  # tags: tests/test_holographic_compat.py runs v0.1.1 from its tag
+      - name: Pick the core ref
+        id: core
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ matrix.core }}" = release ]; then
+            ref=$(gh release view --repo NousResearch/hermes-agent --json tagName --jq .tagName)
+          else
+            ref=main
+          fi
+          echo "core ref: $ref"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
       # The plugin imports Hermes core (agent, tools, hermes_cli) from a checkout, the way an installed plugin does.
       - uses: actions/checkout@v4
         with:
           repository: NousResearch/hermes-agent
           path: hermes-agent
+          ref: ${{ steps.core.outputs.ref }}
       # Hermes core gates every runtime dependency on python_version >= '3.14'; older Pythons install none of them.
       - uses: actions/setup-python@v5
         with:
@@ -47,7 +68,7 @@ jobs:
         working-directory: plugin
         env:
           HERMES_AGENT_REPO: ${{ github.workspace }}/hermes-agent
-        run: python -m pytest -q
+        run: python -m pytest -q --durations=25  # the slowest tests, so a slowdown shows in the log
 
   # Lint: the rules in pyproject.toml (pyflakes, pycodestyle, bugbear); a test proves behaviour, this catches an
   # unused import or a mutable default before review does.

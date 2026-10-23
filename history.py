@@ -204,7 +204,7 @@ class HistoryMixin:
     def history_ready(self) -> bool:
         return self._meta("history_schema") is not None
 
-    def _require_history(self) -> None:
+    def require_history(self) -> None:
         if not self.history_ready():
             raise HistoryUnavailable("fact history is not set up in this database yet: the main agent sets it up "
                                      "the first time it opens the store (subagents and cron jobs only read)")
@@ -358,7 +358,7 @@ class HistoryMixin:
         content = (content or "").strip()
         if not content:
             raise ValueError("content must not be empty")
-        self._require_history()
+        self.require_history()
         today = self._today()
         start = parse_day(valid_from, field="valid_from", today=today)
         with self._tx():
@@ -415,7 +415,7 @@ class HistoryMixin:
     def end_fact(self, fact_id: int, *, valid_to=None) -> dict:
         """The fact stopped holding and nothing replaces it: the current version is closed as `ended` and the fact
         leaves the current store; its history stays."""
-        self._require_history()
+        self.require_history()
         today = self._today()
         end = parse_day(valid_to, field="valid_to", today=today)
         with self._tx():
@@ -445,7 +445,7 @@ class HistoryMixin:
         text = (content or "").strip() if content is not None else None
         if text is not None and not text:
             raise ValueError("content must not be empty")
-        self._require_history()
+        self.require_history()
         with self._tx():
             self._reconcile_history()
             fact = self._one("SELECT * FROM facts WHERE fact_id = ?", (fact_id,))
@@ -477,7 +477,7 @@ class HistoryMixin:
     def revert_fact(self, fact_id: int) -> dict:
         """Undo the last change, correction or end: the last version is closed as `corrected` and the one before it
         is current again (an ended fact is current again)."""
-        self._require_history()
+        self.require_history()
         with self._tx():
             self._reconcile_history()
             fact = self._one("SELECT * FROM facts WHERE fact_id = ?", (fact_id,))
@@ -521,7 +521,7 @@ class HistoryMixin:
         """The user asked to forget it: the fact and every version are deleted for good (see docs/history.md,
         Forget means gone) and a tombstone without text is kept. Forgetting it again retries a file rewrite that
         another process blocked last time."""
-        self._require_history()
+        self.require_history()
         with self._tx():
             self._reconcile_history()
             known = self._one("SELECT 1 FROM facts WHERE fact_id = ?", (fact_id,)) or \
@@ -552,9 +552,7 @@ class HistoryMixin:
         # A name only the forgotten fact gave goes even if it has aliases (_drop_orphan_entities keeps those).
         for entity_id in named:
             if not self._one("SELECT 1 FROM fact_entities WHERE entity_id = ?", (entity_id,)):
-                if self._entry.get("migrated"):
-                    self._write("DELETE FROM entity_aliases WHERE entity_id = ?", (entity_id,))
-                self._write("DELETE FROM entities WHERE entity_id = ?", (entity_id,))
+                self._drop_entity_row(entity_id)
                 self._bump()  # the cached index of known names must not hand out the deleted id (review 0.16.0)
         if said:  # an alias of unknown origin that only this fact said goes with it, as one from its text does
             self._prune_aka_aliases(legacy_keys=said)
@@ -622,7 +620,7 @@ class HistoryMixin:
         return dict(row[0]) if row else None
 
     def history(self, fact_id: int) -> dict:
-        self._require_history()
+        self.require_history()
         rows = self.read("SELECT * FROM fact_versions WHERE fact_id = ? ORDER BY seq", (fact_id,))
         if not rows:
             gone = self.read("SELECT forgotten_at FROM forgotten WHERE fact_id = ?", (fact_id,))
@@ -656,7 +654,7 @@ class HistoryMixin:
 
     def versions_on(self, day: str, category: str | None = None, min_trust: float = 0.0, limit: int = 50) -> dict:
         """What held on *day* (`list as_of`): versions known to hold, and those that may have (undetermined)."""
-        self._require_history()
+        self.require_history()
         rows = self.read(
             "SELECT v.*, COALESCE(f.trust_score, v.trust_score, ?) AS trust FROM fact_versions v "
             "LEFT JOIN facts f ON f.fact_id = v.fact_id AND v.status = 'current' "

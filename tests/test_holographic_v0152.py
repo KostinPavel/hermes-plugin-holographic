@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from hermes_plugin_holographic import _SECRET_ENV_NAMES, _fact_problem, _recall_problem, _secret_in  # noqa: E402
+from hermes_plugin_holographic import _SECRET_ENV_NAMES, _fact_problem, _recall_problem, _secret_in
 
 # A made-up value, put together at run time so that secret scanners do not flag the test file.
 VALUE = "a1B2" + "c3D4" + "e5F6" + "g7H8"

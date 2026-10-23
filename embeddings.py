@@ -593,7 +593,7 @@ class Embedder:
                 try:
                     with _OPENER.open(request, timeout=timeout) as response:
                         raw = _read_until(response, deadline)
-                except BaseException as exc:  # handed to the caller below
+                except BaseException as exc:  # noqa: BLE001 - handed to the caller below, which raises or reports it
                     box["error"] = exc
                     return
                 try:
@@ -652,7 +652,7 @@ class Embedder:
         except (OSError, ValueError, http.client.HTTPException) as exc:  # timeout, reset, a broken answer
             self._failed(f"no answer ({type(exc).__name__})")
             return None
-        except Exception as exc:  # anything else raised while sending: a category, never its text
+        except Exception as exc:  # noqa: BLE001 - anything else raised while sending: a category, never its text
             self._failed(f"no answer ({type(exc).__name__})")
             return None
         if "malformed" in box:

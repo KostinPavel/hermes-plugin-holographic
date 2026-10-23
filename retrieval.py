@@ -55,6 +55,11 @@ def _inner_names(query: str) -> list[str]:
     sentence's first word, and nothing in German, where every noun is capitalized."""
     if not query or analyze(query).german:
         return []
+    return _inner_capitals(query)
+
+
+def _inner_capitals(query: str) -> list[str]:
+    """Capitalized words inside a sentence, German nouns among them: what may be a name."""
     names = []
     for sentence in _RE_SENTENCE_END.split(query):
         for i, m in enumerate(_RE_NAME_WORD.finditer(sentence)):
@@ -70,6 +75,10 @@ def _fact_text(fact: dict) -> str:
 
 
 _WARNED: set[str] = set()  # failures said once each (a damaged index fails on every turn)
+# Each line is a fixed place and an error's kind, so the set stays small by itself; the bound only stops a fault
+# from growing it for ever. 64 was reached by the provider's actions alone and hid the next new failure (Codex
+# review of 0.17.8).
+_WARNED_MAX = 4096
 
 
 def error_kind(exc: BaseException) -> str:
@@ -82,7 +91,7 @@ def error_kind(exc: BaseException) -> str:
 
 def _warn_once(what: str, exc: Exception) -> None:
     text = f"{what} ({error_kind(exc)})"
-    if text not in _WARNED and len(_WARNED) < 64:
+    if text not in _WARNED and len(_WARNED) < _WARNED_MAX:
         _WARNED.add(text)
         logger.warning("holographic: %s", text)
 
@@ -242,7 +251,7 @@ class FactRetriever:
         """What held on *day*: the search runs over the versions that may have held then (candidates, IDF, the
         floor and the limit are all computed over them, so limit=1 is the best version for that date). Versions
         known to hold go to 'results', those whose start or end is not known to the day to 'undetermined'."""
-        self.store._require_history()
+        self.store.require_history()
         held, maybe = [], {}
         # A wide pool: FTS5 picks candidates by its global rank, which knows nothing of the date; the corpus rank
         # (_corpus_rank) then orders them by the versions of that date only.
@@ -306,7 +315,7 @@ class FactRetriever:
         if any(t.fts_ok for t in scan) and not _scan_language(query):
             try:
                 needed = bool(self.store.read(f"SELECT 1 FROM {fts} WHERE {fts} MATCH ? LIMIT 1", (_SCAN_PROBE,)))
-            except Exception:  # a damaged index: the scan does not need it
+            except Exception:  # noqa: BLE001 - a damaged index: the scan does not need it
                 needed = True
             if not needed:
                 scan = [t for t in scan if not t.fts_ok]
@@ -644,7 +653,7 @@ class FactRetriever:
                f"WHERE {fts} MATCH ? {category_clause}AND f.trust_score >= ? ORDER BY {fts}.rank LIMIT ?")
         try:
             results = [_fact_row(row) for row in self.store.read(sql, params)]
-        except Exception as exc:  # a damaged index (expressions are built to be valid)
+        except Exception as exc:  # noqa: BLE001 - a damaged index (expressions are built to be valid)
             # Logged, not raised: recall must not take the turn down; a silent [] hides a broken index.
             logger.warning("holographic: FTS5 search failed (%s)", error_kind(exc))
             return []
@@ -672,7 +681,7 @@ class FactRetriever:
         expression = term.fts(_FTS_OPERATORS) if not extra else f"({term.fts(_FTS_OPERATORS)} OR {extra})"
         try:
             return int(self.store.read("SELECT COUNT(*) FROM facts_fts WHERE facts_fts MATCH ?", (expression,))[0][0])
-        except Exception as exc:  # a damaged index: the term weighs nothing, and that is said (as _fts_query does)
+        except Exception as exc:  # noqa: BLE001 - a damaged index: the term weighs nothing, and that is said (as _fts_query does)
             _warn_once("FTS5 count failed; recall weighs that word as absent", exc)
             return 0
 
@@ -682,7 +691,8 @@ class FactRetriever:
         Coverage = IDF-weighted share of the query's informative terms the fact contains (exact word or same stem).
         Terms no fact contains are left out of the total (they cannot be matched by anything), and a matched
         identifier (pve-01, v0.21.6) is decisive on its own. A query with no informative term ("ok, thanks",
-        "да, это так") recalls nothing. Order is preserved."""
+        "да, это так") recalls nothing, and a fact sharing one word of a longer message, a word other facts hold too
+        and no name inside the sentence ("What day is today?"), is left out. Order is preserved."""
         if is_greeting(query):  # "good morning", "доброе утро", "早上好": a courtesy, not a question about mornings
             return []
         grams, zh = query_grams(query or ""), is_chinese(query or "")
@@ -716,11 +726,11 @@ class FactRetriever:
         scan = self._scan_terms(terms, query=query)
         texts = self._texts() if scan else []
         scan_df = {t: sum(1 for _, _, a in texts if t.found_in(a)) for t in scan}
-        weights, unknown = {}, []
+        weights, unknown, freq = {}, [], {}
         for term in terms:
             df = scan_df[term] if term in scan_df else self._doc_freq(term)
             if df:
-                weights[term] = math.log(1.0 + total_facts / df)
+                weights[term], freq[term] = math.log(1.0 + total_facts / df), df
             else:
                 unknown.append(term)
         if not weights:
@@ -728,6 +738,15 @@ class FactRetriever:
         # A word no fact contains still says what the message is about: it counts against coverage, weighted like the
         # most common known word, so "do submarines deploy on Jupiter?" is not "about" a fact that mentions deploy.
         total = sum(weights.values()) + len(unknown) * min(weights.values())
+        # keys of the words that may be names: compared by keys, as "José" is "jose" and "Peter's" "peter" to a term
+        name_keys = {k for name in _inner_capitals(query or "") for w in analyze(name).words for k in w.keys}
+        held: dict = {}  # term -> facts that hold the word itself (the FTS count also takes "carpet" for "car")
+
+        def held_by_others(term) -> bool:
+            if term not in held:
+                held[term] = sum(1 for _, _, a in self._texts() if term.match(a) == 1.0)
+            return held[term] > 1
+
         kept = []
         for fact in candidates:
             analysis = analyze(_fact_text(fact))
@@ -737,8 +756,17 @@ class FactRetriever:
             # A root alone never recalls: suffix rules cannot tell a derivation from a look-alike ("войной" / "вой",
             # "полный" / "пол"), so a fact needs a word of the message itself, and its roots only add to that.
             exact = any(s == 1.0 for s in strength.values())
-            if any(t.identifier and s for t, s in strength.items()) or fact in gram_kept \
-                    or (exact and sum(weights[t] * s for t, s in strength.items()) / total >= min_coverage):
+            # One shared word picks a fact out only when no other fact holds it: "What day is today?" shares "day"
+            # with everything that happens every day and is about none of it. A message of that word alone ("Lena?")
+            # is about it, and so is one that may name someone inside the sentence ("What is Dina studying?" of
+            # "Dina takes a pottery course"; in German any capitalized word; in a script without capitals, such as
+            # Hebrew or Hindi, any word); a known entity's facts the message mentions come by the entity (prefetch).
+            matched = [t for t, s in strength.items() if s]
+            lone = len(terms) > 1 and len(matched) == 1 and freq[matched[0]] > 1 \
+                and any(c.lower() != c.upper() for c in matched[0].word) and matched[0].keys.isdisjoint(name_keys) \
+                and held_by_others(matched[0])
+            if any(t.identifier and s for t, s in strength.items()) or fact in gram_kept or (
+                    exact and not lone and sum(weights[t] * s for t, s in strength.items()) / total >= min_coverage):
                 kept.append(fact)
         return kept
 
@@ -879,7 +907,7 @@ class FactRetriever:
                 "JOIN fact_versions v ON v.version_id = fact_versions_fts.rowid WHERE fact_versions_fts MATCH ? "
                 f"AND v.status IN ({marks}) AND v.fact_id != ? ORDER BY fact_versions_fts.rank LIMIT 20",
                 (expression, *CLOSED, fact_id))
-        except Exception as exc:  # a damaged index: the hint is advisory
+        except Exception as exc:  # noqa: BLE001 - a damaged index: the hint is advisory
             logger.warning("holographic: history search failed (%s)", error_kind(exc))
             return []
         out: dict[int, dict] = {}

@@ -65,7 +65,7 @@ In `config.yaml` under `plugins.hermes-memory-store`:
 | `temporal_decay_half_life` | `0` | Days; `0` turns recency decay off |
 | `hrr_dim` | `1024` | HRR vector dimensions |
 | `hrr_weight` | `0.3` | Weight of the HRR term in search ranking |
-| `prefetch_min_coverage` | `0.3` | Share of a message's informative words (rarer words weigh more) a fact must match to be recalled before the turn |
+| `prefetch_min_coverage` | `0.3` | Share of a message's informative words (rarer words weigh more) a fact must match to be recalled before the turn; a fact sharing one word of a longer message is recalled only when no other fact holds that word or it may be a name (capitalized inside the sentence, or in a script without capitals) |
 | `prefetch_repeat_turns` | `6` | A fact recalled before a turn is not injected again for this many turns of the session |
 | `recall_source` | `off` | `short`: each fact recalled before a turn also says where it was written (`recorded 2026-10-12 · Anton · this chat`; no ids). Off by default: it costs tokens and tells the room which chat a fact came from. `list`, `history` and `export` always show the source in full |
 | `cron_writes` | `true` | A cron job's explicit `fact_store` / `fact_feedback` calls may write (nightly memory jobs such as hermes-dreaming's extraction and keywords exist to make them). Automatic writes (auto-extraction, mirroring, recall counts) stay off in cron, subagents and flush contexts; with `embeddings` on, a cron job that may write also makes missing fact vectors; `false` makes cron read-only too |
@@ -74,11 +74,15 @@ In `config.yaml` under `plugins.hermes-memory-store`:
 | `rerank` | `off` | `on`: rescore the candidate pool before a turn with a cross-encoder (`rerank_url`, `rerank_model`, `rerank_window`, …) — ONLINE: candidate texts and the message are sent there. See [Rescoring by a cross-encoder](#rescoring-by-a-cross-encoder-optional-online) |
 | `scope` | `profile` | `user`: a separate database per user (`holographic-users/<platform>-<user id>.db` next to `db_path`); in a shared chat the store follows the author of each turn, and with no user identity nothing is recalled or written. `chat`: a separate database per chat (`holographic-chats/<platform>-<chat id>.db`) — for one bot serving many unrelated groups; `thread`: per forum topic / thread (`…-t<thread id>.db`), the chat's own database outside threads. Without a chat (CLI, cron, subagents) nothing is recalled or written. File names: an id made only of `A-Z a-z 0-9 _ . -` is used as is (Telegram's `-1001234567890`); any other character becomes `_`, the name is cut to 60 characters, and `-<first 10 hex of sha256(the original "platform-id")>` is appended, so distinct ids never share a file |
 
-A number that is not one (`hrr_dim: abc`, `min_trust_threshold: high`) turns memory off for the session: the system
-prompt and every `fact_store` call name the key and what it holds, and no database is opened or written until it is
+A number that is not one (`hrr_dim: abc`, `min_trust_threshold: high`), and a value outside a key's fixed set
+(`scope: users`, `recall_source: full`, `embeddings: maybe`, `auto_extract: sure`; 0.17.8 — before, it was read as the
+default, and a mistyped `scope` put everyone in one store) turn memory off for the session: the system prompt and every
+`fact_store` call name the key and what it must be, never the value, and no database is opened or written until it is
 fixed. The `embedding_*` numbers are replaced by their default, or brought into their range, with a warning in the
-gateway log that names the key. A `config.yaml` the plugin cannot read at all leaves the defaults, also with a warning
-(the error's type only: a YAML error quotes the line it stopped at, which may hold a key).
+gateway log that names the key. A `config.yaml` the core cannot parse: Hermes serves the copy it last read whole, and
+the plugin uses its settings from it with a warning; with no such copy (or a core that raises) nothing tells what
+`scope` was, so memory is off until the file reads (0.17.8; it used to run on the defaults). Warnings give the error's
+type only: a YAML error quotes the line it stopped at, which may hold a key.
 
 ## Tools
 
@@ -376,7 +380,7 @@ A word matches another when they share its plain form or its stem in the languag
   ([licence](LICENSES/OEWN-CC-BY-4.0.md), [WordNet notice](LICENSES/OEWN-WNDB-License.txt)), 30 KB, loaded on the
   first English word (0.04 s, 2.4 MB). Missing from it: `dentist` / `dental`, `anxiety` / `anxious`, `runner` /
   `run`, `rental` / `rent`, `medical` / `medicine` (left out by those filters); `pronunciation` / `pronounce` is in
-  it but its spelling change is too large for the shape filter. `_EN_DERIVATION = "rules"` restores 0.9.0's rules, `"both"` joins the two. Russian
+  it but its spelling change is too large for the shape filter. `_EN_DERIVATION = "rules"` (and `_RU_DERIVATION`) restores 0.9.0's rules. Russian
   stems of six letters also match on their first five (`покупа` / `покупк`). Only in text whose language is
   determined (English by its function words; Cyrillic without Ukrainian or Belarusian letters), and only within that
   language. A root counts 0.6 of the word itself and **never recalls a fact on its own**: suffix rules cannot tell a
@@ -640,7 +644,11 @@ keywords are as good as the agent that writes them, and facts stored without the
 What it does not do: find a fact through a synonym or another root that no keyword names ("бэкапы" for "резервные
 копии", Spanish `nada` for `natación`, 十月 for 10月). It can surface a fact that shares a word in another sense:
 "nightly backups" → "night market"; Hindi `बनाना` is both "to cook" and "to make a plan"; Portuguese `dirigir` is "to
-drive" and "to run a company". Stems are search keys, not lemmas: an irregular form can miss (`ponies` / `pony`). A
+drive" and "to run a company". One shared word is not enough when other facts hold it too: "What day is today?" recalls
+none of the facts that happen "every day" (0.17.8), but when one fact alone says "through the week", "How's the
+weather this week?" still recalls it, as "wifi password?" recalls the one fact about a password: one word cannot tell
+the two apart. In a script without capitals (Hebrew, Hindi, Arabic) a name cannot be told from a common word, so
+there one shared word recalls as it did. Stems are search keys, not lemmas: an irregular form can miss (`ponies` / `pony`). A
 negation counts for the whole clause up to a "but" ("likes cats but not dogs" is detail, not a conflict), not for a
 single word. `auto_extract` recognises English, Russian and Chinese phrasing. The refusal of instruction-like text, of a
 credential with its value and of a request to send one covers all eighteen languages (0.15.1; English and Russian
@@ -940,7 +948,7 @@ HERMES_AGENT_REPO=~/.hermes/hermes-agent PYTHONPATH=~/.hermes/hermes-agent pytho
 
 CI runs the suite on Linux, macOS and Windows against hermes-agent `main`, `ruff check .` with the rules in
 `pyproject.toml`, and `hermes plugins validate`, the check the plugin catalog runs at admission. 0.11.0: 612 tests pass without the core (2 skipped; the auto-extraction tests
-need it), 600 with snowballstemmer 2.2.0 (14 skipped: no Polish stemmer). Maintenance notes are in [HANDOFF.md](HANDOFF.md).
+need it), 600 with snowballstemmer 2.2.0 (14 skipped: no Polish stemmer).
 
 Original plugin by dusterbloom (hermes-agent PR #2351); its history is in hermes-agent
 (`git log -- plugins/memory/holographic`). MIT licence. The bundled language data live in `dictionaries/` (the list

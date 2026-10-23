@@ -55,7 +55,7 @@ def test_parallel_searches_never_share_a_query_vector(tmp_path, monkeypatch):
                 for _ in range(3):
                     raw = p.handle_tool_call("fact_store", {"action": "search", "query": q, "limit": 3})
                     got.setdefault(q, []).append(json.loads(raw)["results"])
-            except Exception as exc:  # pragma: no cover - reported below
+            except Exception as exc:  # noqa: BLE001  # pragma: no cover - reported below
                 errors.append(exc)
 
         threads = [threading.Thread(target=run, args=(q,)) for q in QUERIES]

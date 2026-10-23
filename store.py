@@ -456,7 +456,7 @@ class MemoryStore(EntityMixin, HistoryMixin):
                 return True
         try:
             return not self.forget_fact(fact_id).get("already")
-        except KeyError:
+        except NotFound:  # only that: a KeyError from a fault is not "there was no such fact" (0.17.8)
             return False
 
     # -- rows of the current projection (inside a transaction) ---------------------------------------------------
@@ -562,6 +562,24 @@ class MemoryStore(EntityMixin, HistoryMixin):
 
     def count_facts(self) -> int:
         return int(self.read("SELECT COUNT(*) FROM facts")[0][0])
+
+    def fact_tags(self, fact_id: int) -> str | None:
+        """The tags column of a current fact ("" when empty), None when no current fact has that id."""
+        rows = self.read("SELECT tags FROM facts WHERE fact_id = ?", (fact_id,))
+        return (rows[0]["tags"] or "") if rows else None
+
+    # A fact has keywords when its tags start with the provider's marker line, or have it after a line break.
+    _WITHOUT_KEYWORDS = "COALESCE(tags, '') NOT LIKE ? AND COALESCE(tags, '') NOT LIKE ?"
+
+    def facts_without_keywords(self, mark: str, limit: int) -> list[dict]:
+        """Current facts with no *mark* line in their tags, the most recalled first."""
+        return self.read(f"SELECT fact_id, content FROM facts WHERE {self._WITHOUT_KEYWORDS} "
+                         "ORDER BY retrieval_count DESC, fact_id LIMIT ?", (mark + "%", "%\n" + mark + "%", limit))
+
+    def count_without_keywords(self, mark: str) -> int:
+        """How many current facts have no *mark* line in their tags."""
+        return int(self.read(f"SELECT COUNT(*) FROM facts WHERE {self._WITHOUT_KEYWORDS}",
+                             (mark + "%", "%\n" + mark + "%"))[0][0])
 
     def record_retrievals(self, fact_ids) -> int:
         """retrieval_count += 1 for facts handed to the model; returns the number of rows touched.
@@ -738,8 +756,8 @@ class MemoryStore(EntityMixin, HistoryMixin):
                 try:
                     with entry["lock"]:
                         entry["conn"].close()
-                except Exception:
-                    pass  # an already-closed/broken connection must not abort releasing siblings
+                except Exception:  # noqa: BLE001 - an already-closed/broken connection must not abort releasing siblings
+                    pass
         return len(doomed)
 
     def close(self) -> None:
