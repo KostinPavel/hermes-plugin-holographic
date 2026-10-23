@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.17.9 — 2026-10-23
+
+The tool description says what leaving `origin` out does, and CI runs faster on Windows. Nothing that is stored or
+recalled changes.
 
 ### Changed
 
@@ -8,8 +11,9 @@
   24 new facts had an origin, and all 10 without one were plain `add` calls where the agent did not pass it). The
   description named the three values but not the default; it now asks for `origin` whenever the agent knows it and
   says that without one a new fact or a changed version lands as `unknown` at the default trust, and that the same
-  text added again in a later session counts as a confirmation only with `said` or `confirmed`. Behaviour is unchanged. The README also says
-  where the origin lives in the database: `fact_versions.src_origin` of the current version, not a column of `facts`.
+  text added again in a later session counts as a confirmation only with `said` or `confirmed`. Behaviour is
+  unchanged. The README also says where the origin lives in the database: `fact_versions.src_origin` of the current
+  version, not a column of `facts`.
 
 ### Internal
 
