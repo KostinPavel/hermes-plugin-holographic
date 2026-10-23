@@ -1069,7 +1069,8 @@ def _source_line(src: dict | None) -> str:
 
 
 def _bottom_cut(scores: list[float], window: float) -> list[int] | None:
-    """Which ranked positions to KEEP under `rerank_window` (δ); the cut runs before coverage and the top five.
+    """Which ranked positions to KEEP under `rerank_window` (δ); the cut runs before the top five — coverage has
+    already run (`relevant()`), then the reranker, then the window.
 
     A per-document cut judged from the BOTTOM of the score list: everything within δ of the best score survives —
     the top (usually the target fact) always does, a window can't reject the winner — while the low-scoring tail,
@@ -1254,7 +1255,7 @@ class HolographicMemoryProvider(MemoryProvider):
              "default": current("rerank", "off"),
              "choices": ["off", "on"]},
             {"key": "rerank_window", "description": "δ: the tail below this distance of the best score is cut "
-             "before coverage and the top five (0 = keep everything; only with rerank_weight 0)",
+             "before the top five (coverage runs first; 0 = keep everything; only with rerank_weight 0)",
              "default": current("rerank_window", "0.05")},
             {"key": "rerank_url", "description": "Cohere-compatible rerank API (https; plain http only to "
              "localhost or a private address, e.g. llama-server --reranking)",
@@ -1645,8 +1646,8 @@ class HolographicMemoryProvider(MemoryProvider):
         fresh = union
         window = rescorer.settings.window
         if w == 0.0 and window > 0.0:
-            # rerank_window (δ): срез НИЖНЕГО хвоста до coverage и top-5 (п.6: вето-по-margin удалено,
-            # осталось окно). Сигмоид-нормализация — чтобы δ был одинаков для сырых логитов и [0,1].
+            # rerank_window (δ): срез НИЖНЕГО хвоста после coverage и реранкера, перед top-5 (п.6: вето-по-margin
+            # удалено, осталось окно). Сигмоид-нормализация — чтобы δ был одинаков для сырых логитов и [0,1].
             keep = _bottom_cut(rerank.normalized(ranked), window)
             fresh = [union[i] for i in keep] if keep else []
         return fresh[:_PREFETCH_FACTS], by_meaning

@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### Added
+
+- **Second-stage rescoring by a cross-encoder** (RFC itpartypattaya/hermes-plugin-holographic#9). Off by default
+  (`rerank: off`); with it on, a Cohere-compatible `/v1/rerank` endpoint (llama-server `--reranking`, TEI, vLLM,
+  Infinity, Jina, Cohere) reorders the candidate pool before a turn, after the blend. One mode (the two designs
+  were compared in the issue and collapsed after review 2026-10-22): membership always stays with coverage, the
+  reranker advises the order. New keys: `rerank`, `rerank_url`, `rerank_model`, `rerank_top_k` (40),
+  `rerank_weight` (0 = order-only), `rerank_window` (0.05 = the tail below δ of the best score is cut before
+  the top five (coverage runs first, then the reranker, then the window; 0 keeps all)), `rerank_timeout` (3 s). `rerank_mode` and `rerank_margin` existed in
+  the drafts and are gone: a config carrying them is ignored with a warning. A failure or a slow answer keeps the
+  current order and pauses the endpoint (60 s doubling to 900 s); a query holding a secret is never sent. One
+  stdlib client, no new dependency (`rerank.py`); with the feature off, scores and recall are 0.17.8's (tests
+  pin them).
+- **`tools/benchmark_rerank.py`** — the five modes (off, reorder × weight {0, >0}, gate × weight {0, >0}) measured on
+  the multilingual set: recall@5, wrong-entity hits, chit-chat noise, latency p50/p95. Latency against a real
+  llama-server reranker (`--endpoint=…`); with no endpoint a mock ranker shows the mechanics only. Measured on a CPU
+  box with bge-m3-reranker-v2 (Bge-M3-568M-Q4_K_M), en/ru/zh, 60 questions / 15 that must recall nothing: recall@5
+  100% in all five modes, wrong-entity 0, noise 0%, per-turn cost 3-4 ms → 37-40 ms (p50) and 8 ms → ~52 ms (p95) — see
+  the README table. Measured on the earlier design (the five modes before the 2026-10-22 collapse
+  into one mode); the head-commit table is `results/BENCHMARK.md`.
+
 ### Internal
 
 - **The suite on Windows CI in minutes, not half an hour.** CI's Python links SQLite 3.50.4, which core holds to the
@@ -75,28 +96,6 @@ common word with the message.
   both delete and forget; `require_history` is public, since retrieval calls it. The provider no longer writes the
   SQL of "tags of a fact" and "facts without keywords" twice each: `MemoryStore.fact_tags`,
   `facts_without_keywords` and `count_without_keywords` do. Tests unchanged.
-
-## 0.17.8 — 2026-10-21
-
-### Added
-
-- **Second-stage rescoring by a cross-encoder** (RFC itpartypattaya/hermes-plugin-holographic#9). Off by default
-  (`rerank: off`); with it on, a Cohere-compatible `/v1/rerank` endpoint (llama-server `--reranking`, TEI, vLLM,
-  Infinity, Jina, Cohere) reorders the candidate pool before a turn, after the blend. One mode (the two designs
-  were compared in the issue and collapsed after review 2026-10-22): membership always stays with coverage, the
-  reranker advises the order. New keys: `rerank`, `rerank_url`, `rerank_model`, `rerank_top_k` (40),
-  `rerank_weight` (0 = order-only), `rerank_window` (0.05 = the tail below δ of the best score is cut before
-  coverage and the top five; 0 keeps all), `rerank_timeout` (3 s). `rerank_mode` and `rerank_margin` existed in
-  the drafts and are gone: a config carrying them is ignored with a warning. A failure or a slow answer keeps the
-  current order and pauses the endpoint (60 s doubling to 900 s); a query holding a secret is never sent. One
-  stdlib client, no new dependency (`rerank.py`); with the feature off, scores and recall are 0.17.7's (tests
-  pin them).
-- **`tools/benchmark_rerank.py`** — the five modes (off, reorder × weight {0, >0}, gate × weight {0, >0}) measured on
-  the multilingual set: recall@5, wrong-entity hits, chit-chat noise, latency p50/p95. Latency against a real
-  llama-server reranker (`--endpoint=…`); with no endpoint a mock ranker shows the mechanics only. Measured on a CPU
-  box with bge-m3-reranker-v2 (Bge-M3-568M-Q4_K_M), en/ru/zh, 60 questions / 15 that must recall nothing: recall@5
-  100% in all five modes, wrong-entity 0, noise 0%, per-turn cost 3-4 ms → 37-40 ms (p50) and 8 ms → ~52 ms (p95) — see
-  the README table.
 
 ## 0.17.7 — 2026-10-21
 

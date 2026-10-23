@@ -826,7 +826,7 @@ keywords, is a separate benchmark; one store does not show what another will do.
 
 ## Rescoring by a cross-encoder (optional, online)
 
-Off by default (``rerank: off``): words, keywords, HRR and, when on, meaning decide as above, with 0.17.7's scores and
+Off by default (``rerank: off``): words, keywords, HRR and, when on, meaning decide as above, with 0.17.8's scores and
 recall — a test pins them on a store of twenty facts in five languages. Turn it on to add a second stage: a
 cross-encoder reranker (Cohere's ``/v1/rerank`` shape; OpenAI has no rerank API) reorders the candidate pool before a
 turn, after the blend. It lives in its own module (``rerank.py``), needs no new dependency, and makes one synchronous
@@ -845,9 +845,10 @@ plugins:
 ```
 
 The cross-encoder reorders the pool; **membership stays with coverage** (the words' own criterion, exactly as in
-off), so the reranker can only lose a fact the words themselves reject — never add one they would not. With
-``rerank_window`` > 0 the tail below δ of the best score is cut before the top five is taken by rank, and
-meaning- and entity-based facts compete in the same rank as the lexical pool. A failed call falls back to the
+off), so the reranker never adds a fact the words would not admit. It can still lose one they did admit: with
+``rerank_window`` > 0 the tail below δ of the best score is cut before the top five is taken by rank — if the
+cross-encoder is confidently wrong at the top, a fact the words admitted disappears instead of slipping places.
+Meaning- and entity-based facts compete in the same rank as the lexical pool. A failed call falls back to the
 pool's blend order.
 
 Other keys: ``rerank_top_k`` (40: how deep a pool the cross-encoder sees; the first stage's limit is widened to
@@ -870,8 +871,9 @@ four rerank modes and p50 4 ms off — the same order of cost, and recall/wrong/
 | window 0.05, weight 0 | 100% (60/60) | 0 | 0% | 38 | 51 |
 | window 0.05, weight 0.5 | 100% (60/60) | 0 | 0% | 37 | 51 |
 
-The four rows were measured when the two modes still existed: `reorder_before_gate` = window off,
-`gate_reads_score` = window 0.05 (the labels in `results/BENCHMARK.md` keep the historical names).
+All five rows were measured on the **earlier design**, before the 2026-10-22 collapse into one mode
+(`reorder_before_gate` = window off, `gate_reads_score` = window 0.05) — they are not the current result:
+the head-commit table is in `results/BENCHMARK.md`, and the labels in it keep the historical names.
 
 This store's recall was already 100% before the turn (its data are calibrated to ≥95%): the reranker keeps it there.
 The honest number this table adds is the per-turn cost — 3-4 ms to 40 ms median, ~52 ms p95 on the author's box,
