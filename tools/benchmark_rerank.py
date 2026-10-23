@@ -100,6 +100,64 @@ class MockRerank:
         return _Response(json.dumps({"results": results}).encode())
 
 
+class RecordingOpener:
+    """Wraps the REAL endpoint opener and records one row per HTTP call (PR #10 point 9, (1)).
+
+    The mode row used to carry ``calls: null`` against a real endpoint — only per-mode p50/p95 of the whole
+    prefetch wall time, so forward time could not be separated from transport and cold start. Each row now holds
+    the payload the server saw (doc counts, per-doc words/chars, the server's own ``usage.prompt_tokens``),
+    ``call_ms`` (this HTTP call), ``prefetch_ms`` (the prefetch that enclosed it, backfilled when it ends), the
+    pass index and a warm flag — warm-up passes are marked, not silently averaged in."""
+
+    def __init__(self, real):
+        self.real = real
+        self.rows: list[dict] = []
+        self.lang: str | None = None
+        self.pass_no = 0
+        self.warm = False
+        self._prefetch_open = False
+
+    def begin_prefetch(self) -> None:
+        self._prefetch_open = True
+
+    def finish_prefetch(self, ms: float) -> None:
+        """Stamp the prefetch wall time on every call it enclosed (trailing rows still unstamped)."""
+        for row in reversed(self.rows):
+            if row["prefetch_ms"] is None:
+                row["prefetch_ms"] = round(ms, 2)
+            else:
+                break
+        self._prefetch_open = False
+
+    def open(self, request, timeout=None):
+        body = json.loads(request.data)
+        docs = body.get("documents") or []
+        row = {"call": len(self.rows), "lang": self.lang, "pass": self.pass_no, "warm": self.warm,
+               "docs_n": len(docs), "doc_words": [len(d.split()) for d in docs],
+               "doc_chars": [len(d) for d in docs],
+               "query_words": len((body.get("query") or "").split()), "top_n": body.get("top_n"),
+               "prompt_tokens": None, "call_ms": None, "prefetch_ms": None, "ok": False, "err": None}
+        t0 = time.perf_counter()
+        try:
+            resp = self.real.open(request, timeout=timeout)  # kwargs: OpenerDirector.open(data, timeout)
+            raw = resp.read()
+        except BaseException as exc:  # noqa: BLE001 — a failed call is a row too, then re-raised
+            row["call_ms"] = round((time.perf_counter() - t0) * 1000.0, 2)
+            row["err"] = type(exc).__name__
+            self.rows.append(row)
+            raise
+        row["call_ms"] = round((time.perf_counter() - t0) * 1000.0, 2)
+        try:
+            parsed = json.loads(raw)
+            usage = parsed.get("usage") or {}
+            row["prompt_tokens"] = usage.get("prompt_tokens")
+            row["ok"] = "results" in parsed
+        except (ValueError, TypeError, AttributeError):
+            row["err"] = "malformed"
+        self.rows.append(row)
+        return _Response(raw)
+
+
 def _provider(db_path: str, **config) -> HolographicMemoryProvider:
     p = HolographicMemoryProvider(config={"db_path": db_path, "hrr_dim": 1024, **config})
     p.initialize(session_id="bench")
@@ -150,8 +208,14 @@ def _git_sha() -> str:
         return "unknown"
 
 
-def run(langs: list[str], mode: str, endpoint_url: str | None, reverse: bool) -> dict:
-    """One mode over the given languages: recall@5, wrong-entity hits, noise, latency p50/p95."""
+def run(langs: list[str], mode: str, endpoint_url: str | None, reverse: bool,
+        warmup: int = 0, repeats: int = 1) -> dict:
+    """One mode over the given languages: recall@5, wrong-entity hits, noise, latency p50/p95.
+
+    Latency protocol (PR #10 point 9, (4)): `warmup` passes are executed and marked but excluded from every
+    statistic; timing comes from `repeats` warmed passes, so a 90-query set yields 5x more rows and the p95 is
+    not decided by a handful of samples. Quality is counted ONCE — on the first warmed pass — so hit5/asked
+    keeps its meaning and repeats do not inflate it."""
     weight, window = MODES[mode]
     config = {"rerank": "off" if mode == "off" else "on"}
     if mode != "off":
@@ -162,8 +226,11 @@ def run(langs: list[str], mode: str, endpoint_url: str | None, reverse: bool) ->
     # Mock: the order the fake ranker answers with is what the modes see.
     mock = MockRerank(reverse=reverse)
     real_opener = rerank._OPENER
+    recorder = RecordingOpener(real_opener) if endpoint_url else None
     if not endpoint_url:
         rerank._OPENER = mock
+    else:
+        rerank._OPENER = recorder  # per-call rows, даже против живого эндпоинта (п.9 (1))
 
     hit5 = asked = wrong = quiet = negatives = 0
     out_lines = 0  # сколько строк recall реально вернул (matched top-5 считается по первым пяти)
@@ -172,38 +239,58 @@ def run(langs: list[str], mode: str, endpoint_url: str | None, reverse: bool) ->
     failures = 0  # ranked is None: fallbacks to the coverage order (counted in rerank.Rescorer)
     try:
         for li, lang in enumerate(langs):
+            if recorder is not None:
+                recorder.lang = lang
             p = _provider(f"/tmp/bench_{lang}_{mode}.db", **config)
             back = _fill(p, lang)
-            for i, (query, relevant) in enumerate(data.QUERIES[lang]):
-                queries += 1
-                p.on_session_switch(f"bench{li}_{i}", reset=True)
-                t0 = time.perf_counter()
-                injected = _inject(p, query)
-                times.append(time.perf_counter() - t0)
-                out_lines += len(injected)
-                # matched top-5: считаем только первые пять строк — иначе счёт смешивает точность с размером
-                # вывода (off умеет отдавать больше пяти фактов, unified — нет)
-                top5 = injected[:5]
-                found_keys = {back[int(k)] for k in top5 if int(k) in back}
-                if relevant:
-                    asked += 1
-                    hit5 += bool(found_keys & relevant)
-                    # wrong-entity: the query names a person (PROBES); a fact about the OTHER person got into the
-                    # top-5 (e.g. Eva's school recalled for "what scooter does Anton ride?").
-                    persons = dict(data.PROBES[lang])
-                    for name, _own in persons.items():
-                        if name in query:
-                            other = set().union(*(v for n, v in persons.items() if n != name))
-                            wrong += len(found_keys & other)
-                else:
-                    negatives += 1
-                    quiet += not injected
+            for pass_no in range(warmup + repeats):
+                warm = pass_no < warmup
+                quality = pass_no == warmup  # качество считается один раз — на первом прогретом проходе
+                if recorder is not None:
+                    recorder.pass_no, recorder.warm = pass_no, warm
+                for i, (query, relevant) in enumerate(data.QUERIES[lang]):
+                    if quality:
+                        queries += 1
+                    p.on_session_switch(f"bench{li}_{i}", reset=True)
+                    t0 = time.perf_counter()
+                    if recorder is not None:
+                        recorder.begin_prefetch()
+                    injected = _inject(p, query)
+                    dt = time.perf_counter() - t0
+                    if recorder is not None:
+                        recorder.finish_prefetch(dt * 1000.0)
+                    if not warm:
+                        times.append(dt)
+                    if not quality:
+                        continue  # out_lines/hit5 только на прогретом проходе: repeats не размножают качество
+                    out_lines += len(injected)
+                    # matched top-5: считаем только первые пять строк — иначе счёт смешивает точность с размером
+                    # вывода (off умеет отдавать больше пяти фактов, unified — нет)
+                    top5 = injected[:5]
+                    found_keys = {back[int(k)] for k in top5 if int(k) in back}
+                    if relevant:
+                        asked += 1
+                        hit5 += bool(found_keys & relevant)
+                        # wrong-entity: the query names a person (PROBES); a fact about the OTHER person got into the
+                        # top-5 (e.g. Eva's school recalled for "what scooter does Anton ride?").
+                        persons = dict(data.PROBES[lang])
+                        for name, _own in persons.items():
+                            if name in query:
+                                other = set().union(*(v for n, v in persons.items() if n != name))
+                                wrong += len(found_keys & other)
+                    else:
+                        negatives += 1
+                        quiet += not injected
             failures += getattr(getattr(p, "_rescorer", None), "failures", 0)
             p.shutdown()
     finally:
-        if not endpoint_url:
-            rerank._OPENER = real_opener
+        rerank._OPENER = real_opener
 
+    calls = mock.requests if not endpoint_url else None
+    if recorder is not None:
+        for row in recorder.rows:
+            row["mode"] = mode
+        calls = recorder.rows
     return {
         "mode": mode,
         "recall5": (hit5 / asked) if asked else 0.0,
@@ -215,9 +302,12 @@ def run(langs: list[str], mode: str, endpoint_url: str | None, reverse: bool) ->
         "negatives": negatives,
         "p50_ms": _percentile(times, 0.50) * 1000.0,
         "p95_ms": _percentile(times, 0.95) * 1000.0,
+        "timings_n": len(times),
+        "warmup": warmup,
+        "repeats": repeats,
         "out_lines": out_lines,
         "out_avg": round(out_lines / max(1, queries), 2),
-        "calls": mock.requests if not endpoint_url else None,
+        "calls": calls,
         "failures": failures,
         "git_sha": _git_sha(),
         "langs": langs,
@@ -249,11 +339,18 @@ def main(argv: list[str]) -> None:
     ap.add_argument("--json", action="store_true", help="print JSON instead of a markdown table")
     ap.add_argument("--label", default=None, help="run label (model x device) stamped into every row")
     ap.add_argument("--out", default=None, help="append rows as JSON-lines to this file (accumulate runs)")
+    ap.add_argument("--warmup", type=int, default=0,
+                    help="warm-up passes excluded from every statistic (latency protocol, п.9 (4))")
+    ap.add_argument("--repeats", type=int, default=1,
+                    help="warmed passes to time; quality is still counted once (default: 1)")
+    ap.add_argument("--calls-out", default=None,
+                    help="write one JSON line per HTTP call (п.9 (1): tokens, doc lengths, call/prefetch ms)")
     args = ap.parse_args(argv)
 
     langs = [x.strip() for x in args.langs.split(",") if x.strip()]
     modes = [x.strip() for x in args.modes.split(",") if x.strip()]
-    rows = [run(langs, mode, args.endpoint, args.reverse) for mode in modes]
+    rows = [run(langs, mode, args.endpoint, args.reverse, warmup=args.warmup, repeats=args.repeats)
+            for mode in modes]
     if args.label:
         for r in rows:
             r["label"] = args.label
@@ -262,6 +359,12 @@ def main(argv: list[str]) -> None:
         with open(args.out, "w", encoding="utf-8") as fh:
             for r in rows:
                 fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+    if args.calls_out:
+        with open(args.calls_out, "w", encoding="utf-8") as fh:
+            for r in rows:
+                for call in (r.get("calls") or []):
+                    if isinstance(call, dict):  # mock-прогон пишет счётчик, а не per-call строки
+                        fh.write(json.dumps(call, ensure_ascii=False) + "\n")
     if args.json:
         print(json.dumps(rows, indent=2, ensure_ascii=False))
     else:
