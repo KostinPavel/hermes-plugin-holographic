@@ -625,6 +625,8 @@ def main(argv):
     ap.add_argument("--emb", default="off", choices=["off", "on", "both"])
     ap.add_argument("--endpoint", default=ENDPOINT, help="/v1/rerank URL (мок, если не задан)")
     ap.add_argument("--out", default=None, help="каталог JSONL (по умолчанию results/)")
+    ap.add_argument("--label", default=None,
+                    help="метка в имени файла (например jina): не перезаписывает строки другого реранкера")
     args = ap.parse_args(argv)
 
     ENDPOINT = args.endpoint
@@ -650,7 +652,9 @@ def main(argv):
             rows = run_contrast(args.set, modes, emb, args.endpoint)
         suffix = "" if args.set != "household" else (
             f"_{args.split}" + ("_nfoff" if args.names_fit == "off" else ""))
-        path = out_dir / f"provenance_{args.set}{suffix}_{emb}.jsonl"
+        # --label: второй реранкер/модель не должен перезаписать файл первого (п.9: bge vs jina)
+        label = f"_{args.label}" if args.label else ""
+        path = out_dir / f"provenance_{args.set}{suffix}{label}_{emb}.jsonl"
         sha = _git_sha()
         for r in rows:
             r["git_sha"] = sha
