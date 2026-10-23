@@ -106,7 +106,11 @@ FACT_STORE_SCHEMA = {
             "origin": {"type": "string", "enum": ["said", "confirmed", "inferred"],
                        "description": "'add' / 'change' / 'correct': who stands behind it. 'said': the person said it; "
                                       "'confirmed': your conclusion, and the person agreed; 'inferred': your own "
-                                      "conclusion that nobody has confirmed yet."},
+                                      "conclusion that nobody has confirmed yet. Pass it whenever you know: a new fact "
+                                      "or a changed version stored without it has no origin ('unknown' in stats) and "
+                                      "starts at the default trust, and the same text added again in a later session "
+                                      "counts as the person confirming it only with 'said' or 'confirmed'. A "
+                                      "'correct' without it keeps the version's."},
             "keywords": {"type": "array", "items": {"type": "string"},
                          "description": "'add'/'update': 3-8 words or short phrases someone might use to ask for this fact "
                                         "that are NOT in its text: synonyms, words of another root, broader terms, and "
