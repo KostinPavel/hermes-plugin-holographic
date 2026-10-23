@@ -55,6 +55,11 @@ def _inner_names(query: str) -> list[str]:
     sentence's first word, and nothing in German, where every noun is capitalized."""
     if not query or analyze(query).german:
         return []
+    return _inner_capitals(query)
+
+
+def _inner_capitals(query: str) -> list[str]:
+    """Capitalized words inside a sentence, German nouns among them: what may be a name."""
     names = []
     for sentence in _RE_SENTENCE_END.split(query):
         for i, m in enumerate(_RE_NAME_WORD.finditer(sentence)):
@@ -729,7 +734,15 @@ class FactRetriever:
         # A word no fact contains still says what the message is about: it counts against coverage, weighted like the
         # most common known word, so "do submarines deploy on Jupiter?" is not "about" a fact that mentions deploy.
         total = sum(weights.values()) + len(unknown) * min(weights.values())
-        inner_names = {name.lower() for name in _inner_names(query)}
+        # keys of the words that may be names: compared by keys, as "José" is "jose" and "Peter's" "peter" to a term
+        name_keys = {k for name in _inner_capitals(query or "") for w in analyze(name).words for k in w.keys}
+        held: dict = {}  # term -> facts that hold the word itself (the FTS count also takes "carpet" for "car")
+
+        def held_by_others(term) -> bool:
+            if term not in held:
+                held[term] = sum(1 for _, _, a in self._texts() if term.match(a) == 1.0)
+            return held[term] > 1
+
         kept = []
         for fact in candidates:
             analysis = analyze(_fact_text(fact))
@@ -741,11 +754,13 @@ class FactRetriever:
             exact = any(s == 1.0 for s in strength.values())
             # One shared word picks a fact out only when no other fact holds it: "What day is today?" shares "day"
             # with everything that happens every day and is about none of it. A message of that word alone ("Lena?")
-            # is about it, and so is one that names someone inside the sentence ("What is Dina studying?" of "Dina
-            # takes a pottery course"); a known entity's facts the message mentions come by the entity (prefetch).
+            # is about it, and so is one that may name someone inside the sentence ("What is Dina studying?" of
+            # "Dina takes a pottery course"; in German any capitalized word; in a script without capitals, such as
+            # Hebrew or Hindi, any word); a known entity's facts the message mentions come by the entity (prefetch).
             matched = [t for t, s in strength.items() if s]
             lone = len(terms) > 1 and len(matched) == 1 and freq[matched[0]] > 1 \
-                and matched[0].word not in inner_names
+                and any(c.lower() != c.upper() for c in matched[0].word) and matched[0].keys.isdisjoint(name_keys) \
+                and held_by_others(matched[0])
             if any(t.identifier and s for t, s in strength.items()) or fact in gram_kept or (
                     exact and not lone and sum(weights[t] * s for t, s in strength.items()) / total >= min_coverage):
                 kept.append(fact)

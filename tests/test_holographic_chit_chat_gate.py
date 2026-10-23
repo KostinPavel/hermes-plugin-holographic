@@ -126,3 +126,41 @@ def test_questions_that_say_what_they_are_about_still_recall_their_fact(househol
     missed = {query: sorted(recalled) for i, (query, wanted) in enumerate(QUESTIONS[lang])
               if not wanted <= (recalled := _recalled(provider, back, query, i))}
     assert not missed, f"{lang}: questions lost their fact: {missed}"
+
+
+def _small_store(tmp_path, facts):
+    provider = HolographicMemoryProvider(config={"db_path": str(tmp_path / "small.db"), "hrr_dim": 1024})
+    provider.initialize(session_id="small")
+    back = {json.loads(provider.handle_tool_call("fact_store", {"action": "add", "content": text}))["fact_id"]: i
+            for i, text in enumerate(facts)}
+    return provider, back
+
+
+# (question, facts added without entities, index of the fact that answers it); its one shared word is in both facts,
+# or only looks so: "car" begins "carpet", which holds no word "car"
+OTHER_FACTS_SHARE_THE_WORD = [
+    ("car location?", ["The car is in the garage", "The carpet is blue"], 0),
+    ("What is José studying?", ["José takes pottery classes", "José lives in Madrid"], 0),
+    ("What is Peter's occupation?", ["Peter repairs watches", "Peter lives in York"], 0),
+    ("Wo arbeitet Oleg?", ["Oleg ist Arzt im Krankenhaus", "Oleg wohnt in Berlin"], 0),  # German: every noun capitalized
+    ("מה דניאל לומד?", ["דניאל משתתף בקורס ספרדית", "דניאל גר בתל אביב"], 0),  # Hebrew: no capitals to tell a name by
+]
+
+
+@pytest.mark.parametrize("query,facts,answer", OTHER_FACTS_SHARE_THE_WORD)
+def test_a_name_in_any_form_or_script_and_a_word_no_other_fact_holds_still_recall(tmp_path, query, facts, answer):
+    provider, back = _small_store(tmp_path, facts)
+    try:
+        assert answer in _recalled(provider, back, query, 0)
+    finally:
+        provider.shutdown()
+
+
+def test_german_chit_chat_on_a_common_verb_recalls_nothing(tmp_path):
+    # German capitalizes every noun, so a capital proves no name there; a verb in lower case is still a common word
+    provider, back = _small_store(tmp_path, ["Der Drucker funktioniert nur mit dem blauen Kabel",
+                                             "Die Waschmaschine funktioniert nur mit kaltem Wasser"])
+    try:
+        assert _recalled(provider, back, "Wie funktioniert eigentlich eine Blockchain?", 0) == set()
+    finally:
+        provider.shutdown()
