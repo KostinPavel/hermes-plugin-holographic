@@ -56,6 +56,12 @@ From a second review against "10 principles of good code for AI agents" (2026-10
   `noqa` that no longer applies fails the lint. `tests/test_holographic_architecture.py` reads `entity_names.py` and
   fails on any import beyond `bisect`, `re`, `unicodedata` and `.text`. CI runs the suite on Linux against the latest
   core release as well as against core's `main`.
+- **Less code, the same behaviour.** The derivation mode `"both"` nobody set is gone, from the code and the README
+  (`"dict"`, the default, and `"rules"`, which a test uses, stay); two parameters no caller passed are folded in (`_drop_orphan_entities`
+  keep_aliased, `_detach_alias` declared). One `EntityMixin._drop_entity_row` deletes an entity with its aliases for
+  both delete and forget; `require_history` is public, since retrieval calls it. The provider no longer writes the
+  SQL of "tags of a fact" and "facts without keywords" twice each: `MemoryStore.fact_tags`,
+  `facts_without_keywords` and `count_without_keywords` do. Tests unchanged.
 
 ## 0.17.7 — 2026-10-21
 

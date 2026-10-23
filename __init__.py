@@ -1969,11 +1969,11 @@ class HolographicMemoryProvider(MemoryProvider):
         if problem:
             return tool_error(f"Not changed: {problem}.")
         # The old text's keywords do not describe the new one: they go unless given again; user tags stay.
-        row = self._store.read("SELECT tags FROM facts WHERE fact_id = ?", (int(a["fact_id"]),))
-        user_tags = _split_tags(row[0]["tags"] if row else "")[0]
+        stored = self._store.fact_tags(int(a["fact_id"]))
+        user_tags = _split_tags(stored)[0]
         tags = _join_tags(_split_tags(a["tags"])[0] if a.get("tags") is not None else user_tags,
                           _keywords(a.get("keywords")))
-        if not row and a.get("tags") is None and a.get("keywords") is None:
+        if stored is None and a.get("tags") is None and a.get("keywords") is None:
             tags = None  # an ended fact resumes with its last version's tags
         return self._fact_call(a, lambda fact_id: json.dumps(self._store.change_fact(
             fact_id, a["content"], valid_from=a.get("valid_from"), category=a.get("category"), tags=tags,
@@ -2077,8 +2077,7 @@ class HolographicMemoryProvider(MemoryProvider):
             return tool_error(f"Not updated: {problem}.")
         tags = a.get("tags")
         if tags is not None or a.get("keywords") is not None:  # the other half of the tags column is kept
-            row = self._store.read("SELECT tags FROM facts WHERE fact_id = ?", (int(a["fact_id"]),))
-            user_tags, keywords = _split_tags(row[0]["tags"] if row else "")
+            user_tags, keywords = _split_tags(self._store.fact_tags(int(a["fact_id"])))
             tags = _join_tags(_split_tags(tags)[0] if tags is not None else user_tags,
                               _keywords(a["keywords"]) if a.get("keywords") is not None else keywords)
         # Keywords alone are a search aid, not a change of the fact: its age (temporal decay, "recently changed") stays.
@@ -2092,9 +2091,7 @@ class HolographicMemoryProvider(MemoryProvider):
 
     def _enrich(self, a: dict) -> str:
         """Facts without keywords, the most recalled first: what the agent (or a nightly job) should give keywords."""
-        rows = self._store.read(
-            "SELECT fact_id, content FROM facts WHERE COALESCE(tags, '') NOT LIKE ? AND COALESCE(tags, '') NOT LIKE ? "
-            "ORDER BY retrieval_count DESC, fact_id LIMIT ?", (_KW_MARK + "%", "%\n" + _KW_MARK + "%", _limit(a)))
+        rows = self._store.facts_without_keywords(_KW_MARK, _limit(a))
         facts = [{"fact_id": r["fact_id"], "content": r["content"]} for r in rows]
         return json.dumps({"facts": facts, "count": len(facts),
                            "hint": "Give each 3-8 keywords with update {fact_id, keywords}: synonyms, other roots and "
@@ -2121,8 +2118,7 @@ class HolographicMemoryProvider(MemoryProvider):
             "entity_index": self._store.entity_index_state(),
             "by_category": by_category,
             "recalled_at_least_once": read("SELECT COUNT(*) FROM facts WHERE retrieval_count > 0")[0][0],
-            "without_keywords": read("SELECT COUNT(*) FROM facts WHERE COALESCE(tags, '') NOT LIKE ? AND COALESCE(tags, '') "
-                                     "NOT LIKE ?", (_KW_MARK + "%", "%\n" + _KW_MARK + "%"))[0][0],
+            "without_keywords": self._store.count_without_keywords(_KW_MARK),
             "low_trust": read("SELECT COUNT(*) FROM facts WHERE trust_score < ?", (self._min_trust,))[0][0],
             "history": self._store.history_counts() or "not set up yet",
             "origin": self._origin_counts(),

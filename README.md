@@ -379,7 +379,7 @@ A word matches another when they share its plain form or its stem in the languag
   ([licence](LICENSES/OEWN-CC-BY-4.0.md), [WordNet notice](LICENSES/OEWN-WNDB-License.txt)), 30 KB, loaded on the
   first English word (0.04 s, 2.4 MB). Missing from it: `dentist` / `dental`, `anxiety` / `anxious`, `runner` /
   `run`, `rental` / `rent`, `medical` / `medicine` (left out by those filters); `pronunciation` / `pronounce` is in
-  it but its spelling change is too large for the shape filter. `_EN_DERIVATION = "rules"` restores 0.9.0's rules, `"both"` joins the two. Russian
+  it but its spelling change is too large for the shape filter. `_EN_DERIVATION = "rules"` (and `_RU_DERIVATION`) restores 0.9.0's rules. Russian
   stems of six letters also match on their first five (`покупа` / `покупк`). Only in text whose language is
   determined (English by its function words; Cyrillic without Ukrainian or Belarusian letters), and only within that
   language. A root counts 0.6 of the word itself and **never recalls a fact on its own**: suffix rules cannot tell a

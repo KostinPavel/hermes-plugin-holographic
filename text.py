@@ -779,12 +779,12 @@ def word_roots(word: str, stem_: str, lang: str) -> frozenset:
 # Russian words of one root come from a dictionary, not from suffix rules: DerivBase.Ru (UDer 1.1, Apache-2.0), its
 # direct parent-child links as pairs of Snowball stems, kept when their shape is a derivation (tools/
 # build_ru_derivation.py). Suffix rules cannot tell "ночные" / "ночь" from "полный" / "пол"; the dictionary can, and it
-# also has what rules cannot reach ("друг" / "дружеский"). "rules" keeps 0.9.0's first rules, "both" joins the two.
+# also has what rules cannot reach ("друг" / "дружеский"). "rules" keeps 0.9.0's first rules.
 _RU_DERIVATION = "dict"
 # English the same way from Open English Wordnet 2025 (CC BY 4.0, built on Princeton WordNet 3.1): its derivation and
 # pertainym links between single words, as Snowball stem pairs of the shape of a derivation (tools/
 # build_en_derivation.py): "pay" / "payment", "decide" / "decision", "angry" / "anger"; rules gave "Peter" / "pet" and
-# "meters" / "met". "rules" keeps the one-step suffix rules of 0.9.0, "both" joins the two.
+# "meters" / "met". "rules" keeps the one-step suffix rules of 0.9.0.
 _EN_DERIVATION = "dict"
 _PAIRS: dict[str, dict] = {}
 _PAIRS_LOCK = threading.Lock()
@@ -821,8 +821,7 @@ def _ru_related(stem_: str) -> frozenset:
 def _ru_roots(word: str, stem_: str) -> frozenset:
     if _RU_DERIVATION == "dict":
         return _ru_related(stem_)
-    rules = _ru_rule_roots(word, stem_)
-    return rules | _ru_related(stem_) if _RU_DERIVATION == "both" else rules
+    return _ru_rule_roots(word, stem_)
 
 
 def _ru_rule_roots(word: str, stem_: str) -> frozenset:
@@ -860,8 +859,7 @@ def _ru_rule_roots(word: str, stem_: str) -> frozenset:
 def _en_roots(word: str, stem_: str) -> frozenset:
     if _EN_DERIVATION == "dict":
         return _related("en", stem_)
-    rules = _en_rule_roots(word, stem_)
-    return rules | _related("en", stem_) if _EN_DERIVATION == "both" else rules
+    return _en_rule_roots(word, stem_)
 
 
 def _en_rule_roots(word: str, stem_: str) -> frozenset:
