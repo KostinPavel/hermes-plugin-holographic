@@ -9,6 +9,7 @@ embedding_model, embedding_key_env, embedding_dimensions, embedding_timeout, emb
 embedding_prefetch_facts, embedding_weight, embedding_space, embedding_catch_up_seconds (embeddings.py, README).
 Rescoring by a cross-encoder (rerank.py, off by default; one mode — the pool is reordered, admission stays
 with coverage): rerank (off | on), rerank_url, rerank_model, rerank_top_k, rerank_weight, rerank_window,
+ rerank_scale,
 rerank_timeout (README).
 Fact history, provenance and forgetting: docs/history.md."""
 
@@ -1115,6 +1116,23 @@ def _window_keep(keep: list[int] | None, ranked_len: int, union_len: int,
     return sorted(set(out))
 
 
+def blend_union(union: list[dict], ranked: list[tuple[int, float]], weight: float) -> list[dict]:
+    """rerank_weight > 0: min-max-нормированный скор реранкера в смесь с первым скором
+    ВСЕХ членов пула (п.4(4) ревью 10:34): факты, которых эндпоинт не скорировал (за
+    top_k), получают пол min-max-шкалы (0 = худший из оценённых), а не остаются на голом
+    первом скоре — иначе union сортируется по двум шкалам сразу. Порог top_k редко
+    отсекает (пулы малы), но вес-тест покрывал только полностью скорированный пул."""
+    raw = [s for _, s in ranked]
+    lo, hi = min(raw), max(raw)
+    span = (hi - lo) or 1.0
+    norm = {i: (s - lo) / span for i, s in ranked if i < len(union)}
+    for i, fact in enumerate(union):
+        score = fact.get("score") or 0.0
+        fact["score"] = (1.0 - weight) * score + weight * norm.get(i, 0.0)
+    union.sort(key=lambda f: f.get("score") or 0.0, reverse=True)
+    return union
+
+
 class HolographicMemoryProvider(MemoryProvider):
     """Holographic memory with structured facts, entity resolution, and HRR retrieval."""
 
@@ -1285,6 +1303,10 @@ class HolographicMemoryProvider(MemoryProvider):
             {"key": "rerank_window", "description": "δ: the tail below this distance of the best score is cut "
              "before the top five (coverage runs first; 0 = keep everything; only with rerank_weight 0)",
              "default": current("rerank_window", "0.05")},
+            {"key": "rerank_scale", "description": "Score scale of the rerank endpoint — a property of the "
+             "endpoint, decided once: auto (latched from the first decisive answer or a one-time probe "
+             "request), unit ([0,1] answers, Cohere-style), logit (raw logits, llama-server --rerank)",
+             "default": current("rerank_scale", "auto"), "choices": ["auto", "unit", "logit"]},
             {"key": "rerank_url", "description": "Cohere-compatible rerank API (https; plain http only to "
              "localhost or a private address, e.g. llama-server --reranking)",
              "default": current("rerank_url", "http://127.0.0.1:8080/v1/rerank")},
@@ -1541,29 +1563,12 @@ class HolographicMemoryProvider(MemoryProvider):
                 gate = self._retriever.relevant(query, candidates, self._min_coverage)
                 fresh = [f for f in gate
                          if self._not_recent(key, f, turn) and self._recallable(f)][:_PREFETCH_FACTS]
-                have, extra = {f["fact_id"] for f in fresh}, 0
-                # Search by meaning: the relevance gate wants the message's own words, which a paraphrase does not have;
-                # a fact that stands far out in meaning gets in on that alone, after the words' facts, at most
-                # embedding_prefetch_facts of them (1), marked so the model knows the match is looser, and only when it
-                # mentions whoever the message names (names_fit).
-                by_meaning: set[int] = set()
-                if meaning is not None and self._embedding.recall_facts:
-                    for fact in self._retriever.by_meaning(meaning, exclude=have, min_trust=self._min_trust,
-                                                           limit=self._embedding.recall_facts + 3,
-                                                           margin=embeddings.RECALL_MARGIN,
-                                                           min_score=self._embedding.min_score):
-                        if len(by_meaning) < self._embedding.recall_facts and self._not_recent(key, fact, turn) \
-                                and self._recallable(fact) and self._retriever.names_fit(query, fact):
-                            fresh.append(fact)
-                            have.add(fact["fact_id"])
-                            by_meaning.add(fact["fact_id"])
-                for entity_id in sorted(self._store.mentioned_entity_ids(query)):
-                    for fact in self._retriever.entity_facts(entity_id, min_trust=self._min_trust, limit=_ENTITY_FACTS * 3):
-                        if extra < _ENTITY_FACTS and fact["fact_id"] not in have and self._not_recent(key, fact, turn) \
-                                and self._recallable(fact):
-                            fresh.append(fact)
-                            have.add(fact["fact_id"])
-                            extra += 1
+                have = {f["fact_id"] for f in fresh}
+                # Потоки 2 и 3 той же функцией, что и фолбэк _unified_stream (п.4(1)): здесь
+                # have = только пять сохранённых лексических фактов.
+                meaning_facts, entity_facts, by_meaning = self._stream_extras(
+                    query, meaning, have, key, turn)
+                fresh = fresh + meaning_facts + entity_facts
             for fact in fresh:
                 self._remember(key, fact, turn)
             self._last_recall = len(fresh)
@@ -1611,6 +1616,45 @@ class HolographicMemoryProvider(MemoryProvider):
                 spares.add(i)
         return spares
 
+    def _stream_extras(self, query: str, meaning, have: set[int], key: str, turn: int):
+        """Потоки 2 (meaning) и 3 (entity) поверх уже занятых `have` — ОДНА функция для
+        off-пути и для ОБОИХ исходов _unified_stream (п.4(1) ревью 10:34): фолбэк обязан
+        исключать ровно те пять, что исключает off, иначе шестой лексический факт, который
+        entity-поток добавил бы в off, теряется при падении вызова реранкера.
+
+        Возвращает (meaning_facts, entity_facts, by_meaning); `have` пополняется."""
+        if self._retriever is None or self._store is None:
+            # Недостижимо при recall (prefetch проверяет выше): строка нужна типам, чтобы
+            # Optional-поля сузились, как сузились в prefetch. _embedding НЕ проверяем здесь:
+            # embeddings выключены — это норма, а meaning при них None.
+            return [], [], set()
+        by_meaning: set[int] = set()
+        meaning_facts: list[dict] = []
+        # Stream 2: search by meaning — a paraphrase shares no words with the fact, so it enters on the
+        # embedding alone (standout margin, names_fit), at most embedding_prefetch_facts of them, marked
+        # so the model knows the match is looser.
+        if meaning is not None and self._embedding is not None and self._embedding.recall_facts:
+            for fact in self._retriever.by_meaning(meaning, exclude=have, min_trust=self._min_trust,
+                                                   limit=self._embedding.recall_facts + 3,
+                                                   margin=embeddings.RECALL_MARGIN,
+                                                   min_score=self._embedding.min_score):
+                if len(by_meaning) < self._embedding.recall_facts and self._not_recent(key, fact, turn) \
+                        and self._recallable(fact) and self._retriever.names_fit(query, fact):
+                    meaning_facts.append(fact)
+                    have.add(fact["fact_id"])
+                    by_meaning.add(fact["fact_id"])
+        # Stream 3: the top facts of entities the message names — no word overlap needed, but the same
+        # admissibility (safety, de-dup, prefetch_repeat_turns) as everything else, BEFORE the endpoint.
+        entity_facts: list[dict] = []
+        for entity_id in sorted(self._store.mentioned_entity_ids(query)):
+            for fact in self._retriever.entity_facts(entity_id, min_trust=self._min_trust,
+                                                     limit=_ENTITY_FACTS * 3):
+                if len(entity_facts) < _ENTITY_FACTS and fact["fact_id"] not in have \
+                        and self._not_recent(key, fact, turn) and self._recallable(fact):
+                    entity_facts.append(fact)
+                    have.add(fact["fact_id"])
+        return meaning_facts, entity_facts, by_meaning
+
     def _unified_stream(self, query: str, meaning, candidates: list[dict], key: str,
                         turn: int) -> tuple[list[dict], set[int]]:
         """Блок 3: один rerank на union-выборке трёх потоков → top-5 строго по рангу (режимы
@@ -1633,30 +1677,10 @@ class HolographicMemoryProvider(MemoryProvider):
         # Stream 1: membership is decided by the words, before any rank.
         lexical = self._retriever.relevant(query, candidates, self._min_coverage)
         have = {f["fact_id"] for f in lexical}
-        # Stream 2: search by meaning — a paraphrase shares no words with the fact, so it enters on the
-        # embedding alone (standout margin, names_fit), at most embedding_prefetch_facts of them.
-        by_meaning: set[int] = set()
-        meaning_facts: list[dict] = []
-        if meaning is not None and self._embedding.recall_facts:
-            for fact in self._retriever.by_meaning(meaning, exclude=have, min_trust=self._min_trust,
-                                                   limit=self._embedding.recall_facts + 3,
-                                                   margin=embeddings.RECALL_MARGIN,
-                                                   min_score=self._embedding.min_score):
-                if len(by_meaning) < self._embedding.recall_facts and self._not_recent(key, fact, turn) \
-                        and self._recallable(fact) and self._retriever.names_fit(query, fact):
-                    meaning_facts.append(fact)
-                    have.add(fact["fact_id"])
-                    by_meaning.add(fact["fact_id"])
-        # Stream 3: the top facts of entities the message names — no word overlap needed, but the same
-        # admissibility (safety, de-dup, prefetch_repeat_turns) as everything else, BEFORE the endpoint.
-        entity_facts: list[dict] = []
-        for entity_id in sorted(self._store.mentioned_entity_ids(query)):
-            for fact in self._retriever.entity_facts(entity_id, min_trust=self._min_trust,
-                                                     limit=_ENTITY_FACTS * 3):
-                if len(entity_facts) < _ENTITY_FACTS and fact["fact_id"] not in have \
-                        and self._not_recent(key, fact, turn) and self._recallable(fact):
-                    entity_facts.append(fact)
-                    have.add(fact["fact_id"])
+        # Streams 2 и 3 общей функцией: здесь have = ВСЯ лексика (union disjoint по построению);
+        # при падении эндпоинта фолбэк пересчитает их с have = только первые пять — как в off
+        # (п.4(1) ревью 10:34).
+        meaning_facts, entity_facts, by_meaning = self._stream_extras(query, meaning, have, key, turn)
         # Union: disjoint by construction (each stream excluded what the previous one admitted).
         union = meaning_facts + entity_facts + lexical
         send_idx, docs = self._sendable_docs(union)  # секрет-экран (PR #10, п.1)
@@ -1664,23 +1688,21 @@ class HolographicMemoryProvider(MemoryProvider):
         if ranked is not None:
             ranked = self._rescored(ranked, send_idx)
         if ranked is None:
-            # A failed call (or an empty pool): ровно то, что показывает off — до пяти лексических фактов,
-            # потом meaning/entity-дополнения (disjoint по построению), которых top-5 не вытесняет
-            # (PR #10, п.4).
-            return lexical[:_PREFETCH_FACTS] + meaning_facts + entity_facts, by_meaning
+            # A failed call (or an empty pool): ровно off-раскладка (п.4(1) ревью 10:34) — до
+            # пяти лексических фактов, потом meaning/entity-дополнения, исключающие ТОЛЬКО эти
+            # пять: шестой лексический факт, который entity-поток добавил бы в off, не теряется
+            # при сбое. Раньше дополнения считались от ВСЕЙ лексики и в фолбэке не появлялись.
+            keep = lexical[:_PREFETCH_FACTS]
+            meaning_facts, entity_facts, by_meaning = self._stream_extras(
+                query, meaning, {f["fact_id"] for f in keep}, key, turn)
+            return keep + meaning_facts + entity_facts, by_meaning
         order = [i for i, _ in ranked if i < len(union)]
         w = rescorer.settings.weight
         if w > 0.0:
             # rerank_weight > 0: min-max-normalised cross-encoder score blended into the blend score —
-            # the order is decided by both (order-only when weight is 0).
-            raw = [s for _, s in ranked]
-            lo, hi = min(raw), max(raw)
-            span = (hi - lo) or 1.0
-            for i, s in ranked:
-                if i < len(union):
-                    score = union[i].get("score") or 0.0
-                    union[i]["score"] = (1.0 - w) * score + w * ((s - lo) / span)
-            union.sort(key=lambda f: f.get("score") or 0.0, reverse=True)
+            # the order is decided by both (order-only when weight is 0). Вся выборка в одной шкале
+            # (п.4(4) ревью 10:34): смесь строится для ВСЕХ членов пула, см. blend_union.
+            blend_union(union, ranked, w)
         else:
             # Documents beyond top_k were never sent (scores() sends the first top_k only): they keep
             # their blend order behind the ranked ones instead of being dropped.
@@ -1691,7 +1713,7 @@ class HolographicMemoryProvider(MemoryProvider):
         if w == 0.0 and window > 0.0:
             # rerank_window (δ): срез НИЖНЕГО хвоста после coverage и реранкера, перед top-5 (п.6: вето-по-margin
             # удалено, осталось окно). Сигмоид-нормализация — чтобы δ был одинаков для сырых логитов и [0,1].
-            keep = _bottom_cut(rerank.normalized(ranked), window)
+            keep = _bottom_cut(rescorer.normalized(ranked), window)
             # Варианты (майнтейнер 10:34): (а) не резать ниже N, (б) не резать факт,
             # называющий лицо вопроса. Выключены -> поведение ровно как раньше.
             keep = _window_keep(keep, len(ranked), len(union),

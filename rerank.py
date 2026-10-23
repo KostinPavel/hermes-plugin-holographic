@@ -59,7 +59,8 @@ class Settings:
     Two dev switches of the window (PR #10, 2026-10-23, off by default): `rerank_window_min` never cuts below
     N facts, `rerank_window_named` never cuts a fact linked to a person the question names."""
 
-    __slots__ = ("url", "model", "top_k", "weight", "timeout", "window", "window_min", "window_named")
+    __slots__ = ("url", "model", "top_k", "weight", "timeout", "window", "window_min", "window_named",
+                 "scale")
 
     def __init__(self, config: dict):
         # rerank_mode / rerank_margin удалены (п.6 ревью 2026-10-22): один режим, окно - отдельная клавиша.
@@ -78,6 +79,13 @@ class Settings:
         self.window_min = int(_number(config, "rerank_window_min", 0, 0, 100, int))
         self.window_named = str(config.get("rerank_window_named") or "").strip().lower() \
             in {"on", "true", "yes", "1"}
+        # шкала скоров — свойство ЭНДПОИНТА, а не набора кандидатов (п.4(2) ревью
+        # 10:34): auto решает один раз (латч с первого однозначного ответа или
+        # пробным запросом), unit/logit задают явно.
+        self.scale = str(config.get("rerank_scale") or "auto").strip().lower()
+        if self.scale not in {"auto", "unit", "logit"}:
+            logger.warning("holographic: rerank_scale must be auto, unit or logit; using auto")
+            self.scale = "auto"
         self.timeout = _number(config, "rerank_timeout", DEFAULT_TIMEOUT, 0.5, 10.0)
 
 
@@ -148,6 +156,7 @@ class Rescorer:
         self._epoch = 0
         self.calls = 0  # requests sent (stats, tests)
         self.failures = 0  # counted fallbacks: scores() returned None on a failure (diagnostics)
+        self._scale: str | None = None  # шкала эндпоинта "unit"|"logit" (п.4(2)): решается один раз
 
     def unavailable(self) -> str:
         """Why the endpoint cannot be used at all (\"\" when it can): the address, the key."""
@@ -276,6 +285,42 @@ class Rescorer:
         (logger.warning if first else logger.debug)(
             "holographic: rerank endpoint failed (%s); keeping the current order for %d s", why, int(pause))
 
+    def normalized(self, pairs: list[tuple[int, float]]) -> list[float]:
+        """Счётчики для окна в [0,1] — шкала здесь решается как СВОЙСТВО ЭНДПОИНТА
+        (п.4(2) ревью 10:34), один раз на весь эндпоинт, а не заново на наборе
+        кандидатов каждого turn:
+
+        - ``rerank_scale`` задаёт шкалу явно ("unit" / "logit") и минует пробу;
+        - "auto": первый ответ вне [0,1] латчит "logit" сразу (логит-эндпоинт —
+          однозначно); спорный ответ (всё в [0,1]) разрешает ОДИН пробный запрос
+          с нейтральными документами;
+        - проба не удалась — правило прежнего поведения на этот ответ, латч
+          повторится следующим разом (счётчик вызовов и пауза у пробы честные —
+          шлётся обычным ``_request``).
+
+        Пул из одного кандидата не нормируется: окно сохранит его при любой шкале.
+        """
+        if len(pairs) < 2:
+            return [s for _, s in pairs]
+        if self._scale is None and self.settings.scale == "auto":
+            out = any(s < 0.0 or s > 1.0 for _, s in pairs)
+            self._scale = "logit" if out else self._probe_scale()
+        scale = self.settings.scale if self.settings.scale != "auto" else self._scale
+        return normalized(pairs, scale)
+
+    def _probe_scale(self) -> str | None:
+        """Однократный пробный запрос: два нейтральных документа. Логит-эндпоинт (llama-server
+        с ``--rerank``) отвечает вне [0,1] -> "logit"; ответ в [0,1] (Cohere-стиль) -> "unit".
+        None — не удалась: шкала на этот ответ остаётся нерешённой, проба повторится."""
+        body = {"model": self.settings.model, "query": "holographic scale probe",
+                "documents": ["holographic scale probe document alpha.",
+                              "holographic scale probe document beta."],
+                "top_n": 2}
+        ranked = self._request(body)
+        if ranked is None:
+            return None
+        return "logit" if any(s < 0.0 or s > 1.0 for _, s in ranked) else "unit"
+
     def _failed(self, why: str) -> None:
         with self._lock:
             noted = self._fail_locked(why)
@@ -291,18 +336,20 @@ def _sigmoid(x: float) -> float:
     return z / (1.0 + z)
 
 
-def normalized(pairs: list[tuple[int, float]]) -> list[float]:
-    """Счётчики ДЛЯ ГЕЙТА: логиты (хотя бы одно вне [0,1]) приводятся sigmoid к
-    (0,1); уже нормализованные (Cohere-стиль) остаются как есть. Правило по
-    ответу, без probe: работает на любом сервере и самоисправно после смены
-    шкалы. Без нормализации отношение best/second при отрицательных логитах
-    лежит в (0,1] и условие `best < second * margin` недостижимо — гейт никогда
-    не отказывает, ровно на chit-chat, где логиты самые отрицательные.
+def normalized(pairs: list[tuple[int, float]], scale: str | None = None) -> list[float]:
+    """Счётчики в [0,1] для окна: sigmoid, когда шкала "logit" (или она ещё неизвестна и ответ
+    хотя бы одним скором вне [0,1] — прежнее правило по ответу); "unit" — как есть. Шкала —
+    СВОЙСТВО ЭНДПОИНТА, а не набора кандидатов (п.4(2) ревью 10:34): Rescorer.normalized
+    решает её ОДИН раз (латч с первого однозначного ответа или пробным запросом) и передаёт
+    сюда; None — решение ещё не принято (проба не удалась), работает правило по ответу.
 
-    Порядок не меняется (sigmoid монотонен) — на гейт влияет только отношение.
+    Без нормализации отношение best/second при отрицательных логитах лежит в (0,1] и условие
+    `best < second * margin` недостижимо — гейт никогда не отказывает, ровно на chit-chat,
+    где логиты самые отрицательные. Порядок не меняется (sigmoid монотонен).
     """
     scores = [s for _, s in pairs]
-    if any(s < 0.0 or s > 1.0 for s in scores):
+    out = any(s < 0.0 or s > 1.0 for s in scores)
+    if scale == "logit" or (scale is None and out):
         return [_sigmoid(s) for s in scores]
     return scores
 
@@ -326,4 +373,10 @@ def _ranked(payload, count: int) -> list[tuple[int, float]]:
         ranked.append((index, float(score)))
     if len({i for i, _ in ranked}) != len(ranked):
         raise ValueError("the answer has duplicate indexes")
+    # Счёт частичного ответа (п.4(3) ревью 10:34): докстринг уже обещал ошибку на «другое
+    # число индексов» — теперь это и есть проверка. Меньше индексов, чем документов в запросе,
+    # — сервер ответил не на всё: ошибка, а не «пул поменьше» (второе по счёту не пройдёт —
+    # индекс out of range, — но короткий ответ валидными индексами тоже отбрасываем).
+    if len(ranked) != count:
+        raise ValueError(f"the answer covers {len(ranked)} of {count} documents")
     return ranked

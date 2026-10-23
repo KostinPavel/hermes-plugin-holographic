@@ -11,12 +11,13 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 
 import pytest
 
 from hermes_plugin_holographic import HolographicMemoryProvider, rerank
-from hermes_plugin_holographic import _bottom_cut, _window_keep
+from hermes_plugin_holographic import _bottom_cut, _window_keep, blend_union
 
 
 class _Response:
@@ -122,6 +123,7 @@ def test_config_schema_defaults(tmp_path):
               if str(f["key"]).startswith("rerank")}
     assert schema["rerank"] == "off"
     assert schema["rerank_window"] == "0.05"  # п.6: режим один, окно — клавиша
+    assert schema["rerank_scale"] == "auto"  # п.4(2): шкала эндпоинта, решается один раз
     assert schema["rerank_weight"] == "0.0"
     p.shutdown()
 
@@ -334,9 +336,15 @@ def test_removed_keys_are_ignored_with_a_warning(caplog):
 
 
 def test_ranked_shape():
-    payload = {"results": [{"index": 2, "relevance_score": -0.239},
-                           {"index": 0, "relevance_score": -2.877}]}
-    assert rerank._ranked(payload, 5) == [(2, -0.239), (0, -2.877)]
+    full = {"results": [{"index": 2, "relevance_score": -0.239},
+                        {"index": 1, "relevance_score": -1.5},
+                        {"index": 0, "relevance_score": -2.877}]}
+    assert rerank._ranked(full, 3) == [(2, -0.239), (1, -1.5), (0, -2.877)]
+    # п.4(3): частичный ответ (меньше индексов, чем документов) — ошибка, а не «пул поменьше»:
+    # запрос всегда шлётся с top_n >= числом документов, сервер обязан ответить на все.
+    with pytest.raises(ValueError):
+        rerank._ranked({"results": [{"index": 2, "relevance_score": -0.239},
+                                     {"index": 0, "relevance_score": -2.877}]}, 5)  # 2 из 5
     with pytest.raises(ValueError):
         rerank._ranked({"results": [{"index": 9, "relevance_score": 1.0}]}, 5)  # out of range
     with pytest.raises(ValueError):
@@ -350,3 +358,114 @@ def test_endpoint_validation():
     assert local[1] is True  # local
     assert rerank._endpoint("http://example.com/v1/rerank")[0] is None  # public http refused
     assert rerank._endpoint("ftp://x")[0] is None  # wrong scheme
+
+
+# -- п.4 ревью 10:34: фолбэк = off, шкала эндпоинта, blend в одной шкале ------------------------------
+
+def test_scale_latches_from_the_first_answer_and_never_flips(tmp_path, endpoint):
+    """п.4(2): шкала — свойство ЭНДПОИНТА, а не набора кандидатов этого turn. Первый ответ
+    вне [0,1] латчит "logit"; следующий ответ в [0,1] читается прежней шкалой — без
+    переворота (прежнее правило по ответу давало два разных прочтения в одном turn-наборе)."""
+    p = _provider(tmp_path, **{**RANK, "rerank_window": "0.05"})
+    rescorer = p._rescorer
+    assert rescorer._scale is None
+    first = rescorer.normalized([(0, 5.0), (1, -3.0)])  # вне [0,1] — однозначно
+    assert rescorer._scale == "logit"
+    assert first == pytest.approx([rerank._sigmoid(5.0), rerank._sigmoid(-3.0)])
+    endpoint.scores = [0.9, 0.7]  # следующий ответ попал в [0,1] — раньше это развернуло бы шкалу
+    second = rescorer.normalized([(0, 0.9), (1, 0.7)])
+    assert second == pytest.approx([rerank._sigmoid(0.9), rerank._sigmoid(0.7)])  # латч держится
+    assert endpoint.requests == []  # проба не понадобилась: первый ответ был однозначен
+    p.shutdown()
+
+
+def test_scale_probe_resolves_an_in_range_first_answer(tmp_path, endpoint):
+    """п.4(2): спорный первый ответ (всё в [0,1], у логит-сервера возможен) разрешается
+    ОДНИМ пробным запросом с нейтральными документами; латч "unit" держится дальше."""
+    endpoint.scores = [0.9, 0.8]
+    p = _provider(tmp_path, **{**RANK, "rerank_window": "0.05"})
+    rescorer = p._rescorer
+    raw = rescorer.normalized([(0, 0.9), (1, 0.7)])
+    assert rescorer._scale == "unit"
+    assert raw == [0.9, 0.7]  # не сигмоидировано
+    assert endpoint.requests[0]["body"]["documents"] == [
+        "holographic scale probe document alpha.", "holographic scale probe document beta."]
+    endpoint.scores = [-5.0, -3.0]  # шкалу под ним поменяли — уже поздно
+    still = rescorer.normalized([(0, -5.0), (1, -3.0)])
+    assert still == [-5.0, -3.0]  # латч "unit" держится и вне [0,1]
+    assert len(endpoint.requests) == 1  # повторной пробы нет
+    p.shutdown()
+
+
+def test_scale_probe_failure_keeps_the_old_rule_and_retries(tmp_path, endpoint):
+    """п.4(2): проба не удалась — правило прежнего поведения на этот ответ, латча нет,
+    проба повторится, когда эндпоинт оживёт."""
+    endpoint.scores = [0.9, 0.8]
+    p = _provider(tmp_path, **{**RANK, "rerank_window": "0.05"})
+    rescorer = p._rescorer
+    endpoint.fail = ConnectionRefusedError("refused")
+    raw = rescorer.normalized([(0, 0.9), (1, 0.7)])  # правило по ответу: всё в [0,1] -> как есть
+    assert raw == [0.9, 0.7]
+    assert rescorer._scale is None  # латча нет
+    endpoint.fail = None
+    rescorer._paused_until = 0.0  # снимаем паузу, которую поставила упавшая проба
+    rescorer.normalized([(0, 0.9), (1, 0.7)])  # оживили — проба ушла и прошла
+    assert rescorer._scale == "unit"
+    p.shutdown()
+
+
+def test_scale_can_be_set_explicitly(tmp_path):
+    """п.4(2): rerank_scale задаёт шкалу явно, минуя латч и пробу, и уважается буквально;
+    неизвестное значение — auto с предупреждением."""
+    unit = _provider(tmp_path, "unit.db", **{**RANK, "rerank_scale": "unit"})
+    assert unit._rescorer.settings.scale == "unit"
+    assert unit._rescorer.normalized([(0, -5.0), (1, -3.0)]) == [-5.0, -3.0]  # форс unit: как есть
+    unit.shutdown()
+    logit = _provider(tmp_path, "logit.db", **{**RANK, "rerank_scale": "logit"})
+    assert logit._rescorer.settings.scale == "logit"
+    out = logit._rescorer.normalized([(0, 0.9), (1, 0.7)])
+    assert out == pytest.approx([rerank._sigmoid(0.9), rerank._sigmoid(0.7)])  # форс logit
+    logit.shutdown()
+    bad = _provider(tmp_path, "bad.db", **{**RANK, "rerank_scale": "banana"})
+    assert bad._rescorer.settings.scale == "auto"  # неизвестное -> auto (с предупреждением в лог)
+    bad.shutdown()
+
+
+def test_blend_union_scores_every_member_on_one_scale():
+    """п.4(4): при rerank_weight > 0 смесь строится для ВСЕХ членов пула: не скорированные
+    (за top_k) получают пол min-max-шкалы, а не остаются на голом первом скоре — иначе
+    union сортируется по двум шкалам (вес-тест покрывал только полностью скорированный пул)."""
+    union = [{"score": 0.4}, {"score": 0.6}, {"score": 0.9}, {"score": 0.8}, {"score": 0.5}]
+    out = blend_union(union, [(0, 1.0), (1, 0.0)], 0.5)  # эндпоинт скорировал только два
+    # 0: 0.5*0.4+0.5*1.0 = 0.7 (нормированный максимум), 1: 0.5*0.6+0.5*0 = 0.3,
+    # 2-4: 0.5*orig + 0 (пол шкалы) -> 0.45 / 0.4 / 0.25
+    assert [round(f["score"], 3) for f in out] == [0.7, 0.45, 0.4, 0.3, 0.25]
+    # Старое поведение оставляло 2-4 на голых 0.9/0.8/0.5 — они бы встали впереди 0.7.
+
+
+def test_failed_call_shows_exactly_the_off_block(tmp_path, endpoint):
+    """п.4(1): фолбэк упавшего вызова = off-раскладка, включая факт, который entity-поток
+    добавляет в off за пределами пяти сохранённых лексических (раньше он в фолбэке терялся:
+    дополнения считались от всей лексики)."""
+    lena_facts = ["Lena's birthday is on June 3.", "Lena drinks tea with lemon.",
+                  "Lena works at the archive on Mondays.", "Lena's brother is Andrey.",
+                  "Lena dislikes strong coffee.", "Lena runs the book club in the library."]
+
+    def fill(p):
+        for f in FILLERS:
+            p._store.add_fact(f"{f} number")
+        for text in lena_facts:
+            p._store.add_fact_status(text, entities=("Lena",))  # линк задаём явно (харнесс)
+
+    off = _provider(tmp_path, "off.db")
+    fill(off)
+    down = _provider(tmp_path, "down.db", **RANK)
+    fill(down)
+    endpoint.fail = ConnectionRefusedError("refused")
+    off_block = _block(off, "what about Lena?")
+    down_block = _block(down, "what about Lena?")
+    endpoint.fail = None
+    assert off_block == down_block  # блок при сбое ровно тот, что показал бы выключенный rerank
+    assert len(re.findall(r"- #\d+", off_block)) == 6  # пять лексических + шестой из entity-потока
+    off.shutdown()
+    down.shutdown()
