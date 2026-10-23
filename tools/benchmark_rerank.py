@@ -158,6 +158,9 @@ class RecordingOpener:
         return _Response(raw)
 
 
+SCALE = "logit"  # rerank_scale конфига прогона: llama-server отдаёт сырые логиты (фикст-лист 19:07)
+
+
 def _provider(db_path: str, **config) -> HolographicMemoryProvider:
     p = HolographicMemoryProvider(config={"db_path": db_path, "hrr_dim": 1024, **config})
     p.initialize(session_id="bench")
@@ -220,7 +223,7 @@ def run(langs: list[str], mode: str, endpoint_url: str | None, reverse: bool,
     config = {"rerank": "off" if mode == "off" else "on"}
     if mode != "off":
         config.update({"rerank_weight": weight, "rerank_window": window,
-                       "rerank_model": "bench-reranker"})
+                       "rerank_scale": SCALE, "rerank_model": "bench-reranker"})
         config["rerank_url"] = endpoint_url or "https://rerank.example.net/v1/rerank"
 
     # Mock: the order the fake ranker answers with is what the modes see.
@@ -330,11 +333,14 @@ def table(rows: list[dict], endpoint: str | None) -> str:
 
 
 def main(argv: list[str]) -> None:
+    global SCALE
     ap = argparse.ArgumentParser(description="Benchmark the rescoring modes over the multilingual set (RFC #9).")
     ap.add_argument("--langs", default="en,ru,zh", help="comma-separated language keys (default: en,ru,zh)")
     ap.add_argument("--modes", default=",".join(MODES), help="comma-separated modes to run (default: all five)")
     ap.add_argument("--endpoint", default=None,
                     help="a real /v1/rerank URL (llama-server); default: a mock ranker")
+    ap.add_argument("--rerank-scale", default="logit", choices=["logit", "unit"],
+                    help="rerank_scale для конфига (логиты llama-server -> logit; [0,1]-эндпоинт -> unit)")
     ap.add_argument("--reverse", action="store_true", help="the mock ranker inverts the order (worst case)")
     ap.add_argument("--json", action="store_true", help="print JSON instead of a markdown table")
     ap.add_argument("--label", default=None, help="run label (model x device) stamped into every row")
@@ -346,6 +352,7 @@ def main(argv: list[str]) -> None:
     ap.add_argument("--calls-out", default=None,
                     help="write one JSON line per HTTP call (п.9 (1): tokens, doc lengths, call/prefetch ms)")
     args = ap.parse_args(argv)
+    SCALE = args.rerank_scale
 
     langs = [x.strip() for x in args.langs.split(",") if x.strip()]
     modes = [x.strip() for x in args.modes.split(",") if x.strip()]

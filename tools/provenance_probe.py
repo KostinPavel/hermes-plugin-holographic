@@ -170,6 +170,15 @@ class Probe:
     def _scores(self, orig):
         def call(query, docs):
             ranked = orig(query, docs)
+            owner = getattr(orig, "__self__", None)  # тестовые стабы подменяют scores функцией без __self__
+            status = getattr(owner, "last_status", None) or "not_called"
+            if ranked is None and status.startswith("failed"):
+                # Фикс-лист 19:07: упавший вызов не должен выглядеть как «реранкер ничего не изменил» —
+                # прогон останавливается сразу, чтобы итоговые строки гарантированно имели 0 failed calls.
+                raise SystemExit(
+                    f"rerank-вызов не удался ({status}) — прогон остановлен "
+                    "(фикс-лист 19:07: нулевой бюджет failed calls)")
+            self.ctx["rerank_call"] = status
             if ranked is None:
                 self.ctx["ranked"] = False
                 return ranked
@@ -234,8 +243,13 @@ class Probe:
     def prefetch(self, query: str) -> tuple[str, dict]:
         self.ctx = {"tags": {}, "blocked": {}, "gate_called": False,
                     "pool": [], "rerank_top5": [], "rank_order": [], "ranked": None,
+                    "rerank_call": "not_called",
                     "window": 0.0, "weight": 0.0}
         rescorer = getattr(self.p, "_rescorer", None)
+        if rescorer is None:
+            self.ctx["rerank_call"] = "off"  # rerank выключен конфигом — вызова не будет по построению
+        else:
+            rescorer.last_status = "not_called"  # исход известен только после вызова; сброс на каждый запрос
         if rescorer is not None and getattr(rescorer, "settings", None) is not None:
             # окно режет только при weight == 0 (см. _unified_stream) — фиксируем для classify
             self.ctx["window"] = float(getattr(rescorer.settings, "window", 0.0) or 0.0)
@@ -382,6 +396,7 @@ def run_multilingual(langs, modes, emb, endpoint, extra: dict | None = None) -> 
                              "miss_cls": miss_cls, "ms": round(ms, 1),
                              "pool_n": len(ctx.get("pool") or []),
                              "gate_called": ctx.get("gate_called"),
+                         "rerank_call": ctx.get("rerank_call"),
                              "rerank_top5": ctx.get("rerank_top5") or [],
                              "rank_order": ctx.get("rank_order") or []})
             p.shutdown()
@@ -432,6 +447,7 @@ def run_contrast(set_name, modes, emb, endpoint, extra: dict | None = None) -> l
                              "hit5": own_pos is not None and own_pos <= 5, "out_n": len(keys),
                              "miss_cls": miss_cls, "pool_n": len(ctx.get("pool") or []),
                              "gate_called": ctx.get("gate_called"),
+                         "rerank_call": ctx.get("rerank_call"),
                              "rerank_top5": ctx.get("rerank_top5") or [],
                              "rank_order": ctx.get("rank_order") or []})
         for i, (query, cat) in enumerate(contrast.CHITCHAT):
@@ -445,6 +461,7 @@ def run_contrast(set_name, modes, emb, endpoint, extra: dict | None = None) -> l
                          "hit": None, "wrong": [], "hit5": None, "out_n": len(keys), "miss_cls": "-",
                          "pool_n": len(ctx.get("pool") or []),
                          "gate_called": ctx.get("gate_called"),
+                         "rerank_call": ctx.get("rerank_call"),
                          "rerank_top5": ctx.get("rerank_top5") or []})
         p.shutdown()
     return rows
@@ -524,6 +541,7 @@ def run_household(modes, emb, endpoint, split="all", names_fit="on",
                              "sources": {str(f): ctx["tags"].get(f, ["pool-only"]) for f in found},
                              "pool_n": len(ctx.get("pool") or []),
                              "gate_called": ctx.get("gate_called"),
+                         "rerank_call": ctx.get("rerank_call"),
                              "rerank_top5": ctx.get("rerank_top5") or [],
                              "rank_order": ctx.get("rank_order") or []})
             for hid in hids:
@@ -541,6 +559,7 @@ def run_household(modes, emb, endpoint, split="all", names_fit="on",
                              "sources": {str(f): ctx["tags"].get(f, ["pool-only"]) for f in found},
                              "pool_n": len(ctx.get("pool") or []),
                              "gate_called": ctx.get("gate_called"),
+                         "rerank_call": ctx.get("rerank_call"),
                              "rerank_top5": ctx.get("rerank_top5") or [],
                              "rank_order": ctx.get("rank_order") or []})
             p.shutdown()

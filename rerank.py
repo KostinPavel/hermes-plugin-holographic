@@ -148,6 +148,9 @@ class Rescorer:
         self._epoch = 0
         self.calls = 0  # requests sent (stats, tests)
         self.failures = 0  # counted fallbacks: scores() returned None on a failure (diagnostics)
+        # Исход последнего scores(): answered / failed: ... / skipped_single / skipped_secret / not_called.
+        # Стампится в строки раннеров; прогон падает на failed (PR #10, фикс-лист 19:07).
+        self.last_status = "not_called"
 
     def unavailable(self) -> str:
         """Why the endpoint cannot be used at all (\"\" when it can): the address, the key."""
@@ -178,21 +181,31 @@ class Rescorer:
         """``(index, relevance_score)`` pairs of *documents* in descending relevance, top_k at most; None when the
         call must not be made (a secret in *query*), or failed (logged; paused). The caller keeps the current order
         on None; the score is the cross-encoder's own logit (not in [0, 1]) — order-only unless the caller blends."""
-        if not documents or not self.usable():
+        if not documents:
+            self.last_status = "not_called"
+            return None
+        if not self.usable():
+            # paused/unavailable: this call did not happen and will not be retried until the pause ends —
+            # a failure for the run's zero-failed-calls budget, not a neutral skip.
+            self.last_status = f"failed: {self.status()}"
             return None
         if self._secret and self._secret((query or "")[:2000]):
+            self.last_status = "skipped_secret"
             return None  # no call at all: what recall must not inject is never sent
         if len(documents) == 1:
             # One sendable document: nothing to reorder, the window cannot drop the only candidate
             # (a cut judged from the top always keeps the top) and the blend of a single score is
             # the same either way — so no call is made and the trivial rank comes back (PR #10, point 9).
+            self.last_status = "skipped_single"
             return [(0, 1.0)]
         limit = int(self.settings.top_k)
         docs = [documents[i] for i in range(min(limit, len(documents)))]
         body = {"model": self.settings.model, "query": (query or "")[:2000],
                 "documents": [str(d)[:2000] for d in docs],
                 "top_n": limit}
-        return self._request(body)
+        ranked = self._request(body)
+        self.last_status = "answered" if ranked is not None else f"failed: {self._last_error or 'unknown'}"
+        return ranked
 
     def _request(self, body: dict) -> list[tuple[int, float]] | None:
         """One request. Runs on a daemon thread; the caller waits ``rerank_timeout`` seconds and no longer."""
