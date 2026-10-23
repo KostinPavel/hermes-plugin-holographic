@@ -1,8 +1,8 @@
 # Benchmark on the PR head
 
-Every row of the raw files carries `git_sha` and `endpoint`; the runs below were made on head
-commit `b6cbec5` with that commit's default config (`RECALL_MARGIN = 1.0` — the 0.6 proposal lives
-in PR #17). Harness: `tools/provenance_probe.py`; raw rows:
+Every row of the raw files carries `git_sha`, `endpoint` and `scale`; each section names the head it
+ran on (the table above: `b6cbec5`, default config `RECALL_MARGIN = 1.0` — the 0.6 proposal lives in
+PR #17; the final merge run: `649276e`). Harness: `tools/provenance_probe.py`; raw rows:
 `results/provenance_{multi,contrast_ru,contrast_en,contrast_zh}_{off,on}.jsonl`.
 
 **Sets.** One multilingual set (18 languages — 360 real queries + 90 negatives) and the contrast sets
@@ -51,8 +51,8 @@ new run is deliberate — it is closer to the small servers people run this on.
 **CPU gate (2026-10-23, PR #10 point 3):** both rerankers measured in one run — llama-server
 `--threads 4` on this machine (Ryzen 7 2700), both models **Q4_K_M**, protocol `--warmup 1
 --repeats 5` (warmup passes excluded from every statistic, 620 measured calls per model),
-`git_sha 19d7ced`. Raw rows: `results/bench_cpu_gate{,_calls}.jsonl` (bge),
-`results/bench_cpu_gate_jina{,_calls}.jsonl` (jina):
+`git_sha 19d7ced`. Raw rows: `results/bench_cpu_gate.jsonl` (bge),
+`results/bench_cpu_gate_jina.jsonl` (jina) — каждый саммари уже содержит свои per-call строки:
 
 | model (CPU, t4) | prefetch p50 ms | prefetch p95 ms | p95 < 300 ms |
 |---|---|---|---|
@@ -63,39 +63,58 @@ Quality held in every mode on both: recall@5 100%, hit5 60/60, wrong-entity 0, n
 The 393–413 ms conflict noted above is confirmed at 448 ms p95 on the gate protocol; jina CPU
 closes the 300 ms bar with margin and is the CPU candidate, bge stays the GPU default.
 
-**Household dev sweep (2026-10-23, PR #10 point 5):** the fixed-label household set re-run on **dev only**
-(test untouched — frozen until the maintainer's verdict on dev): `tools/provenance_probe.py --set household
---split dev`, seven modes, `--emb both`, GPU endpoints — bge Q4_K_M `:1235` (names-fit on, the default,
-and `--names-fit off`) and jina Q4_K_M `:1236`. Per cell: 120 real queries + 90 negatives. Raw rows:
-`results/provenance_household_dev{,_nfoff,_jina}_{off,on}.jsonl` (`git_sha ec3f941` for `dev_off`,
-`0090424` for the rest).
+**Household sweep (PR #10 points 5/9):** the fixed-label set on heads `a065f9d` (dev + test) and
+`649276e` (final test run below), harness `tools/provenance_probe.py`, three modes — `off`,
+`reorder_only`, `gate_only` (min-two is built into the window since `a6dcc29`; `gate_named`, `win03`,
+`win10` were swept in the older seven-mode run, kept in git history). Cells: bge Q4_K_M `:1235`, jina
+Q4_K_M `:1236`, `--emb both`, names-fit on (the default) and `--names-fit off`; per cell 120 real + 90
+negatives (dev) / 90 + 45 (test). Raw rows:
+`results/provenance_household_{dev,test}{,_nfoff,_jina,_nfoff_jina}_{off,on}.jsonl` — every row stamped
+`git_sha a065f9d` and `rerank_call`, 0 failed calls; the earlier `dev_nfoff_jina` pair (`79ddd37`,
+swapped in by `9de6099` — port 1236 was down in that run) was re-run and replaced.
 
-bge, names-fit on — `named`/`confused`: real queries whose output contains such a fact; `lost`: per-target
-(hit@5 hides partial multi-target losses); `neg`: negatives showing anything (90 per mode):
+| cell | hit5 off → gate_only | confused rows off → gate | l5 | lines/turn off → gate |
+|---|---|---|---|---|
+| dev bge, emb off / on | 69 → 69 / 74 → 75 | 7 → 5 | 0 | 2.08 → 1.27 / 2.15 → 1.35 |
+| dev bge names-fit off, off / on | 69 → 69 / 77 → 79 | 7 → 5 | 0 | 2.08 → 1.27 / 2.17 → 1.38 |
+| dev jina, off / on | 69 → 69 / 74 → 75 | 7 → 2 | 0 | 2.08 → 1.23 / 2.15 → 1.31 |
+| dev jina names-fit off, off / on | 69 → 69 / 77 → 78 | 7 → 2 | 0 | 2.08 → 1.23 / 2.17 → 1.33 |
+| test bge, emb off / on | 43 → 43 / 47 → 47 | 6 → 5 | 1 | 1.98 → 1.30 / 2.07 → 1.36 |
 
-| mode | hit5 (emb off / on) | named | confused | lost (on / off) | neg (on / off) |
-|---|---|---|---|---|---|
-| off | 69 / 75 | 38 | 7 | 33 / 40 | 36 / 35 |
-| reorder_only | 69 / 76 | 38 | 7 | 32 / 40 | 36 / 35 |
-| gate_only (δ=0.05) | 69 / 76 | 9 | 3 | 37 / 45 | 36 / 35 |
-| gate_min2 (a: min-2 — since folded into the window itself) | 69 / 76 | 34 | 4 | 32 / 40 | 36 / 35 |
-| gate_named (b: named-spares — since removed) | 69 / 76 | 38 | 3 | 37 / 45 | 36 / 35 |
-| win03 (δ=0.03) | 69 / 76 | 8 | 2 | 39 / 47 | 36 / 35 |
-| win10 (δ=0.10) | 69 / 76 | 9 | 3 | 36 / 44 | 36 / 35 |
+Branches per `tools/mcnemar_gate.py` (the guards sit on **both**: paired real+chit rows, confused ≤ off,
+noise ≤ off): on **dev, `gate_only` holds branch B in all eight cells** (l5 = 0, unpaired 0, negatives
+unchanged); on **test, B is blocked by one target in every configuration** (bge `q057:irina_market[zh]`,
+jina `q055:cat_vet[zh]` — class E, cut by the window at rerank rank #2). Branch A is out of reach
+everywhere (+0.0…+1.7 points, p ≥ 0.5).
 
-- names-fit off, emb=on: off hit5 78 → 79 in every mode (the 10:34 numbers reproduce), confused 7 → 3–4.
-- jina, the same cells: hit5 identical (69 / 75 → 76); confused cleans harder — `gate_only` 7 → 1,
-  `win03` 7 → 0 (gate_named 7 → 4), nothing added in any mode; `lost` emb=on: 33 → 32 (`gate_min2`),
-  40 (`gate_only`), 41 (`win03`).
-- Exact two-sided McNemar on the hit5 pairs vs `off` (`tools/mcnemar_gate.py`): the best case anywhere is
-  1 rescued / 0 lost, p = 1.0 — the ≥ +5 points at p < 0.05 branch of the gate is out of reach on dev.
-  Branch B counts **per-target losses against `off` in the top five** (a multi-target question that keeps one
-  target and drops the other is a loss, not a hold — the earlier "0 right facts lost in any mode" counted whole
-  questions): **only `gate_min2` holds it** — l5 = 0 in all eight dev cells; gate_only/gate_named lose 4–8,
-  win03 7–9, win10 4–5 targets against off; reorder_only loses none but does not reduce confused (7 → 7).
-  confused 7 → 2–4 (bge) / 7 → 0–4 (jina; `gate_only` 1, `win03` 0), negatives constant, unpaired rows none.
-- The window cut is what removes the confused facts (`reorder_only` changes nothing); `gate_min2` —
-  variant (a) — is the only mode holding per-target losses at the `off` level (32–40 vs 33–40).
+**Final run (2026-10-23, merge candidate — the run the hold-out is compared against).** Head `649276e`,
+one file, one value per field, **0 failed calls** (`rerank_call` per row: answered / skipped_single /
+not_called / off — the probe stops a run at the first failure). Model: jina-reranker-v2-base-multilingual
+Q4_K_M, sha256 `b2dc8d66b3db2cdfb1818d17e29aba37195bfc75540611b4af5a803e603c6eb7` (gpustack GGUF, the
+file confirmed in-thread); server: `C:/msys64/mingw64/bin/llama-server.exe --pooling rank --reranking
+--device none --threads 4 --port 1236` (msys2 llama.cpp build); box: Ryzen 7 5800H, Windows, balanced
+power scheme. Settings: window 0.05, weight 0, names-fit on, `emb off`, `scale=logit`,
+`endpoint http://127.0.0.1:1236/v1/rerank`. Harness: `provenance_probe.py --set household --split test
+--modes off,gate_only --emb off --rerank-scale logit --label jina`. Raw rows:
+`results/provenance_household_test_jina_off.jsonl` — both modes in one file, 90 real + 45 chit rows
+each, no duplicates (checked against the frozen set), same `git_sha` in every row.
+
+| mode | hit@5 / 90 | confused rows | non-target in top 5 | lines/turn | negatives / 45 | l5 vs off |
+|---|---|---|---|---|---|---|
+| off | 43 | 6 | 91 | 1.98 | 8 | — |
+| gate_only | 43 | 4 | 36 | 1.27 | 8 | **1** |
+
+McNemar on the hit5 pairs: b = 0, c = 0, p = 1.0 — A fails on gain; **B is blocked by exactly one lost
+target: `q055:cat_vet, zh`** (class E, cut at rerank rank #2; en/ru keep both), gained none, unpaired 0.
+Per the agreed gate the result is *inconclusive — the feature can stay experimental*; the trade on the
+table is −60% non-target facts in the top five and 1.98 → 1.27 lines per turn for that one target.
+
+**CPU timing, `gate_only` alone (the final configuration):** `tools/benchmark_rerank.py --modes
+gate_only --rerank-scale logit --warmup 1 --repeats 5` against the same server; raw rows
+`results/bench_final_jina_gate{,_calls}.jsonl`, summary stamped `git_sha 649276e`: turn-level
+p50 4 / **p95 118 ms**; over 155 warmed calls (31 warm-up excluded, 0 errors) p50 100 / p95 120 /
+max 138 ms, pools 2–4 docs, p50 58 / max 83 prompt tokens — the forward pass is the cost, transport
+≈ 5 ms. **p95 < 300 ms holds with margin on a laptop CPU at 4 threads.**
 
 **History.** The per-model table (bge/jina, CPU vs GPU, 360 queries, measured before the fixes) and
 its raw rows (the `*_[...].jsonl` files) live at commit
