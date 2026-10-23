@@ -315,7 +315,7 @@ class FactRetriever:
         if any(t.fts_ok for t in scan) and not _scan_language(query):
             try:
                 needed = bool(self.store.read(f"SELECT 1 FROM {fts} WHERE {fts} MATCH ? LIMIT 1", (_SCAN_PROBE,)))
-            except Exception:  # a damaged index: the scan does not need it
+            except Exception:  # noqa: BLE001 - a damaged index: the scan does not need it
                 needed = True
             if not needed:
                 scan = [t for t in scan if not t.fts_ok]
@@ -653,7 +653,7 @@ class FactRetriever:
                f"WHERE {fts} MATCH ? {category_clause}AND f.trust_score >= ? ORDER BY {fts}.rank LIMIT ?")
         try:
             results = [_fact_row(row) for row in self.store.read(sql, params)]
-        except Exception as exc:  # a damaged index (expressions are built to be valid)
+        except Exception as exc:  # noqa: BLE001 - a damaged index (expressions are built to be valid)
             # Logged, not raised: recall must not take the turn down; a silent [] hides a broken index.
             logger.warning("holographic: FTS5 search failed (%s)", error_kind(exc))
             return []
@@ -681,7 +681,7 @@ class FactRetriever:
         expression = term.fts(_FTS_OPERATORS) if not extra else f"({term.fts(_FTS_OPERATORS)} OR {extra})"
         try:
             return int(self.store.read("SELECT COUNT(*) FROM facts_fts WHERE facts_fts MATCH ?", (expression,))[0][0])
-        except Exception as exc:  # a damaged index: the term weighs nothing, and that is said (as _fts_query does)
+        except Exception as exc:  # noqa: BLE001 - a damaged index: the term weighs nothing, and that is said (as _fts_query does)
             _warn_once("FTS5 count failed; recall weighs that word as absent", exc)
             return 0
 
@@ -907,7 +907,7 @@ class FactRetriever:
                 "JOIN fact_versions v ON v.version_id = fact_versions_fts.rowid WHERE fact_versions_fts MATCH ? "
                 f"AND v.status IN ({marks}) AND v.fact_id != ? ORDER BY fact_versions_fts.rank LIMIT 20",
                 (expression, *CLOSED, fact_id))
-        except Exception as exc:  # a damaged index: the hint is advisory
+        except Exception as exc:  # noqa: BLE001 - a damaged index: the hint is advisory
             logger.warning("holographic: history search failed (%s)", error_kind(exc))
             return []
         out: dict[int, dict] = {}

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from hermes_plugin_holographic import _fact_problem, _recall_problem, _secret_in  # noqa: E402
+from hermes_plugin_holographic import _fact_problem, _recall_problem, _secret_in
 
 # Made-up tokens, put together at run time so that secret scanners do not flag the test file.
 SK = "sk-" + "a1B2c3D4" + "e5F6g7H8i9"
