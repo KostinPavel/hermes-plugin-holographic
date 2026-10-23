@@ -71,6 +71,7 @@ MODES = {
 EMB_URL = os.environ.get("EMB_URL", "http://127.0.0.1:1237/v1")
 EMB_MODEL = os.environ.get("EMB_MODEL", "bge-m3")
 ENDPOINT = os.environ.get("RERANK_URL", "http://127.0.0.1:1235/v1/rerank")
+SCALE = os.environ.get("RERANK_SCALE", "logit")  # шкала эндпоинта (п.4 фикс-листа 14:01)
 
 
 def _git_sha() -> str:
@@ -109,7 +110,7 @@ def make_provider(db: Path, mode: str, emb, extra: dict | None = None) -> Hologr
     config = {"db_path": str(db), "hrr_dim": 1024}
     if spec:
         config.update({"rerank": "on", "rerank_weight": spec[0], "rerank_window": spec[1],
-                       "rerank_url": ENDPOINT, "rerank_model": "probe-reranker"})
+                       "rerank_scale": SCALE, "rerank_url": ENDPOINT, "rerank_model": "probe-reranker"})
     if emb == "on":
         config.update({"embeddings": "on", "embedding_url": EMB_URL, "embedding_model": EMB_MODEL})
     if extra:
@@ -671,7 +672,7 @@ def summarize(rows: list[dict]) -> None:
 
 
 def main(argv):
-    global ENDPOINT
+    global ENDPOINT, SCALE
     ap = argparse.ArgumentParser(description="Provenance probe: источники фактов в prefetch")
     ap.add_argument("--set", default="multi",
                     help="multi | contrast_ru | contrast_en | contrast_zh | household")
@@ -684,12 +685,15 @@ def main(argv):
     ap.add_argument("--modes", default="off,reorder_only,gate_only")
     ap.add_argument("--emb", default="off", choices=["off", "on", "both"])
     ap.add_argument("--endpoint", default=ENDPOINT, help="/v1/rerank URL (мок, если не задан)")
+    ap.add_argument("--rerank-scale", default="logit", choices=["logit", "unit"],
+                    help="rerank_scale: шкала эндпоинта; значение пишется в каждую строку (п.4, 14:01)")
     ap.add_argument("--out", default=None, help="каталог JSONL (по умолчанию results/)")
     ap.add_argument("--label", default=None,
                     help="метка в имени файла (например jina): не перезаписывает строки другого реранкера")
     args = ap.parse_args(argv)
 
     ENDPOINT = args.endpoint
+    SCALE = args.rerank_scale
 
     out_dir = Path(args.out) if args.out else (_REPO / "results")
     out_dir.mkdir(exist_ok=True)
@@ -719,6 +723,7 @@ def main(argv):
         for r in rows:
             r["git_sha"] = sha
             r["endpoint"] = args.endpoint or "mock"
+            r["scale"] = SCALE  # какая шкала была выставлена при прогоне
         with open(path, "w", encoding="utf-8") as fh:
             for r in rows:
                 fh.write(json.dumps(r, ensure_ascii=False) + "\n")

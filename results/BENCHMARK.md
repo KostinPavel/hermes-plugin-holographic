@@ -89,8 +89,11 @@ bge, names-fit on — `named`/`confused`: real queries whose output contains suc
   40 (`gate_only`), 41 (`win03`).
 - Exact two-sided McNemar on the hit5 pairs vs `off` (`tools/mcnemar_gate.py`): the best case anywhere is
   1 rescued / 0 lost, p = 1.0 — the ≥ +5 points at p < 0.05 branch of the gate is out of reach on dev.
-  The other branch holds for every gate/window mode: **0 right facts lost in any mode**, confused
-  7 → 2–4 (bge) / 7 → 0–4 (jina; `gate_only` 1, `win03` 0), negatives constant across modes.
+  Branch B counts **per-target losses against `off` in the top five** (a multi-target question that keeps one
+  target and drops the other is a loss, not a hold — the earlier "0 right facts lost in any mode" counted whole
+  questions): **only `gate_min2` holds it** — l5 = 0 in all eight dev cells; gate_only/gate_named lose 4–8,
+  win03 7–9, win10 4–5 targets against off; reorder_only loses none but does not reduce confused (7 → 7).
+  confused 7 → 2–4 (bge) / 7 → 0–4 (jina; `gate_only` 1, `win03` 0), negatives constant, unpaired rows none.
 - The window cut is what removes the confused facts (`reorder_only` changes nothing); `gate_min2` —
   variant (a) — is the only mode holding per-target losses at the `off` level (32–40 vs 33–40).
 

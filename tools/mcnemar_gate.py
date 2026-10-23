@@ -39,15 +39,19 @@ def report(path: str) -> None:
         print(f"{path}: no off mode, skipped")
         return
     hits: dict[str, dict[tuple, bool]] = collections.defaultdict(dict)
+    top5: dict[str, dict[tuple, set]] = collections.defaultdict(dict)
+    targets: dict[tuple, set] = {}
     confused = collections.Counter()
     lost = collections.Counter()
     neg = collections.Counter()
     for r in real:
         key = (r["lang"], r["qid"])
         hits[r["mode"]][key] = bool(r["hit5"])
+        top5[r["mode"]][key] = set((r.get("keys") or [])[:5])  # matched top-5 (п.8)
+        targets[key] = set(r.get("targets") or [])
         if r.get("confused"):
             confused[r["mode"]] += 1
-        lost[r["mode"]] += len(set(r.get("targets") or []) - set(r.get("keys") or []))
+        lost[r["mode"]] += len(targets[key] - set(r.get("keys") or []))
     for r in chit:
         if (r.get("out_n") or 0) > 0:
             neg[r["mode"]] += 1
@@ -55,10 +59,23 @@ def report(path: str) -> None:
     base = hits["off"]
     n = len(base)
     base_hits = sum(base.values())
+    # Branch B (фикс-лист 14:01): per-target losses against off IN THE TOP FIVE — a multi-target question
+    # that keeps one target and drops the other counts as a loss, even though its hit5 stays true. Rows not
+    # paired with off make the comparison unsound: counted, printed, and branch B refuses to pass on them.
+    lost5: collections.Counter = collections.Counter()
+    unpaired: dict[str, int] = {}
+    for m in modes:
+        if m == "off":
+            continue
+        keys_m, keys_o = set(hits[m]), set(base)
+        unpaired[m] = len(keys_m ^ keys_o)
+        for k in keys_m & keys_o:
+            off_targets_in_top5 = targets[k] & top5["off"][k]
+            lost5[m] += len(off_targets_in_top5 - top5[m][k])
     print(f"\n== {os.path.basename(path)} | real={n} negatives={len(chit)} "
           f"| off hit5 {base_hits}/{n} confused={confused['off']} lost={lost['off']}")
     print(f"{'mode':15s} {'hit5':>8} {'pts':>6} {'b':>3} {'c':>3} {'p':>6} "
-          f"{'conf':>5} {'lost':>5} {'neg':>4}  gate branches")
+          f"{'conf':>5} {'lost':>5} {'l5':>3} {'unp':>4} {'neg':>4}  gate branches")
     for m in modes:
         cur = hits[m]
         b = sum(1 for k in base if not base[k] and cur.get(k))
@@ -70,11 +87,15 @@ def report(path: str) -> None:
         if m != "off":
             if pts >= 5.0 and p < 0.05:
                 branches += "A"
-            if c == 0 and confused[m] < confused["off"] and neg[m] <= neg["off"]:
+            if (lost5[m] == 0 and unpaired.get(m, 0) == 0
+                    and confused[m] < confused["off"] and neg[m] <= neg["off"]):
                 branches += "B"
             branches = branches or "-"
         print(f"{m:15s} {h:4d}/{n} {pts:+5.1f} {b:3d} {c:3d} {p:6.3f} "
-              f"{confused[m]:5d} {lost[m]:5d} {neg[m]:4d}  {branches}")
+              f"{confused[m]:5d} {lost[m]:5d} {lost5[m]:3d} {unpaired.get(m, 0):4d} {neg[m]:4d}  {branches}")
+    bad = {m: v for m, v in unpaired.items() if v}
+    if bad:
+        print(f"  UNPAIRED rows vs off (branch B refuses to pass): {bad}")
 
 
 def main() -> None:

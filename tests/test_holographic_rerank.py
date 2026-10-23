@@ -4,7 +4,8 @@ A fake endpoint stands in for the /v1/rerank server: it answers with a fixed or 
 sent, or fails as told.
 
 One mode since the 2026-10-22 review (п.6): the cross-encoder reorders the pool, admission stays with coverage.
-`rerank_window` (δ) optionally cuts the tail below δ of the best score before coverage and the top five;
+`rerank_window` (δ) optionally cuts the tail below δ of the best score before the top five (coverage ran
+earlier, on the lexical stream);
 `rerank_weight` > 0 blends the score into the blend. rerank_mode / rerank_margin are gone — a test covers that
 they are ignored with a warning. Any failure keeps the current order and pauses the endpoint."""
 from __future__ import annotations
@@ -186,13 +187,18 @@ def test_window_keeps_two_scored_and_refills_missing(tmp_path):
 
 
 def test_window_never_cuts_below_two(tmp_path, endpoint):
-    """Интеграция (п.1+п.4(1) ревью 13:06): окно срезает пул до одного факта —
-    встроенный минимум возвращает второй, без клавиш в конфиге."""
+    """Интеграция (п.1+п.4(1) ревью 13:06; поправка 14:01): 3+ кандидатов и явный assert
+    оставшихся — на двух кандидатах тест прошёл бы, даже если окно не срезало ничего."""
     p = _provider(tmp_path, **{**RANK, "rerank_window": "0.05"})
     _fill(p)
-    endpoint.scores = [1.0, 0.0]  # второй факт глубоко за δ
-    block = _block(p, "when does the backup run?")
-    assert block.count("- #") == 2  # окно не опускается ниже двух scored
+    endpoint.scores = [1.0, 0.0, 0.0, 0.0, 0.0]  # 5 заметок: внутри δ только топ
+    block = _block(p, "what about the note?")
+    req = endpoint.requests[0]["body"]["documents"]
+    assert len(req) >= 3  # иначе окно физически нечего срезать
+    lines = [ln for ln in block.splitlines() if ln.startswith("- #")]
+    assert len(lines) == 2  # окно срезало 5 -> 1, встроенный минимум вернул второй
+    kept = [ln.split("] ", 1)[1] for ln in lines]
+    assert kept == req[:2]  # остаются ровно первые два по рангу (id видны в строках)
     p.shutdown()
 
 

@@ -859,7 +859,9 @@ Other keys: ``rerank_top_k`` (40: how deep a pool the cross-encoder sees; the fi
 match), ``rerank_weight`` (0 = order-only, recommended; >0 = the min-max-normalised cross-encoder score blended into
 the blend score; the window applies to order-only runs), ``rerank_timeout`` (3 s) and ``rerank_scale`` —
 the endpoint's score scale, set explicitly: ``logit`` (raw llama-server logits; the default, no probing) or
-``unit`` ([0,1], Cohere-style). A value outside that pair is a config problem that names the key and turns
+``unit`` ([0,1], Cohere-style). Set ``unit`` for an endpoint that already returns [0, 1] (Cohere, TEI): on the
+default ``logit`` the sigmoid runs on scores that were normalised once already, the gaps shrink and the window
+keeps more than it should. A value outside that pair is a config problem that names the key and turns
 memory off for the session, like any other out-of-set value — never a silent fallback.
 A query that holds a secret is never sent.
 With ``rerank_weight: 0`` the cross-encoder judges text only and ignores trust: a fact whose trust
@@ -891,6 +893,13 @@ CPU numbers (94–101 ms median / 212–229 ms p95) were measured on a **differe
 Ryzen 7 5800H laptop, `7f1efd6`, before the words-gate fix (`results/bench_p8_cpu.jsonl`): same model
 and harness, not comparable across machines — see docs/contrast-benchmark.md. A second reranker of
 different quality and a larger public set are run before merging (issue #9).
+
+Choosing a reranker model: ``jina-reranker-v2-base-multilingual`` Q4_K_M is the CPU recommendation — p50 121 /
+p95 152 ms at 4 threads (620 calls per model, ``results/bench_cpu_gate_jina.jsonl``) — and it is
+**CC-BY-NC-4.0: non-commercial use only** (both upstream ``jinaai`` and the ``gpustack`` GGUF). For work that
+must stay commercial, use ``bge-reranker-v2-m3`` (Q4_K_M, **Apache-2.0**): the same CPU run gives p50 343 /
+p95 448 ms at 4 threads — it misses the 300 ms bar on CPU and stays the GPU default, but its licence is safe
+for commercial use. The plugin ships neither model.
 
 ## Data and privacy
 
