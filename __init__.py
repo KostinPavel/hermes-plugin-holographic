@@ -9,7 +9,7 @@ embedding_model, embedding_key_env, embedding_dimensions, embedding_timeout, emb
 embedding_prefetch_facts, embedding_weight, embedding_space, embedding_catch_up_seconds (embeddings.py, README).
 Rescoring by a cross-encoder (rerank.py, off by default; one mode — the pool is reordered, admission stays
 with coverage): rerank (off | on), rerank_url, rerank_model, rerank_top_k, rerank_weight, rerank_window,
- rerank_scale,
+ rerank_window_min, rerank_window_named, rerank_scale,
 rerank_timeout (README).
 Fact history, provenance and forgetting: docs/history.md."""
 
@@ -1303,6 +1303,13 @@ class HolographicMemoryProvider(MemoryProvider):
             {"key": "rerank_window", "description": "δ: the tail below this distance of the best score is cut "
              "before the top five (coverage runs first; 0 = keep everything; only with rerank_weight 0)",
              "default": current("rerank_window", "0.05")},
+            {"key": "rerank_window_min", "description": "N: the window never cuts below N facts and refills "
+             "from the next ranked scored documents (0 = off; the guard for a cross-encoder that is "
+             "confidently wrong at the top)",
+             "default": current("rerank_window_min", "0")},
+            {"key": "rerank_window_named", "description": "on: the window never cuts a fact linked to a "
+             "person the question names (off = the plain window)",
+             "default": current("rerank_window_named", "off"), "choices": ["off", "on"]},
             {"key": "rerank_scale", "description": "Score scale of the rerank endpoint — a property of the "
              "endpoint, decided once: auto (latched from the first decisive answer or a one-time probe "
              "request), unit ([0,1] answers, Cohere-style), logit (raw logits, llama-server --rerank)",

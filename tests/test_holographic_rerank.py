@@ -123,6 +123,8 @@ def test_config_schema_defaults(tmp_path):
               if str(f["key"]).startswith("rerank")}
     assert schema["rerank"] == "off"
     assert schema["rerank_window"] == "0.05"  # п.6: режим один, окно — клавиша
+    assert schema["rerank_window_min"] == "0"      # п.2(а): dev-свитч, выключен
+    assert schema["rerank_window_named"] == "off"  # п.2(б): dev-свитч, выключен
     assert schema["rerank_scale"] == "auto"  # п.4(2): шкала эндпоинта, решается один раз
     assert schema["rerank_weight"] == "0.0"
     p.shutdown()
