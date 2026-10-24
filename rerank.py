@@ -400,6 +400,10 @@ def _ranked(payload, count: int) -> list[tuple[int, float]]:
         if (isinstance(score, int) and abs(score) > 1e308) or not math.isfinite(score):
             raise ValueError("a relevance_score in the answer is not a finite number")
         ranked.append((index, float(score)))
+    # Порядок ответа НЕ доверяем: llama-server, TEI и Cohere отдают отсортированное, но ничего
+    # не мешает отдать перепутанное — сортировка по счёту (стабильная, равные — серверный
+    # порядок) закрывает кейс (майнтейнер 24:10, smaller).
+    ranked.sort(key=lambda pair: -pair[1])
     if len({i for i, _ in ranked}) != len(ranked):
         raise ValueError("the answer has duplicate indexes")
     # Счёт частичного ответа (п.4(3) ревью 10:34): докстринг уже обещал ошибку на «другое

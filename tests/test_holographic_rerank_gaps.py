@@ -283,8 +283,11 @@ def test_unified_stream_sends_the_union_and_ranks_it_strictly(tmp_path, endpoint
     assert endpoint.documents == [MEANING, ENTITY, FACTS[0], FACTS[4]]
     assert endpoint.documents.count(MEANING) == 1
     assert by_meaning == {meaning_fact["fact_id"]}
-    # The answer was reversed, so the top of the result is the endpoint's LAST rank: five strictly by rank.
-    assert [f["content"] for f in fresh] == [FACTS[4], FACTS[0], ENTITY, MEANING]
+    # Семантика счёта с 24:10 (smaller, майнтейнер: «a sort would close the case»): _ranked
+    # сортирует по relevance_score, позиция списка больше не авторитет. Обратный ответ fake
+    # (счёт по возрастанию) после сортировки даёт MEANING(4.0) -> ENTITY(3.0) -> ... ; окно
+    # δ=0.05 режет ниже best-δ (0.982, 0.953 проходят, 0.881 — нет) и держит два верхних.
+    assert [f["content"] for f in fresh] == [MEANING, ENTITY]
     p.shutdown()
 
 

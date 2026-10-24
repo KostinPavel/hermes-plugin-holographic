@@ -370,14 +370,23 @@ def test_secret_in_query_no_call(tmp_path, endpoint):
 
 
 def test_timeout_keeps_order(tmp_path, endpoint, monkeypatch):
+    """Майнтейнер 24:10: старая версия не ловила таймаут — rerank_timeout 0.2 клампится до 0.5, а
+    delay был ровно 0.5, и в его трёх прогонах статус был answered. Теперь delay задолго выше
+    клампа, и тест ловит сам таймаут: пауза + failures == 1, а не только живость блока."""
     p = _provider(tmp_path, **{**RANK, "rerank_timeout": "0.2"})
     _fill(p)
-    endpoint.delay = 0.5  # longer than rerank_timeout
+    endpoint.delay = 2.0  # well above the 0.5 clamp (0.2 -> 0.5)
     start = time.perf_counter()
     block = _block(p, "when does the backup run?")
     elapsed = time.perf_counter() - start
     assert block  # recall did not hang
-    assert elapsed < 1.0  # the caller waited rerank_timeout, not the delay
+    assert elapsed < 1.0  # the caller waited rerank_timeout (clamped to 0.5), not the delay
+    r = p._rescorer
+    assert r.failures == 1, "таймаут обязан считаться отказом"
+    assert r.status().startswith("paused"), "эндпоинт должен уйти на паузу"
+    assert r.last_status.startswith("failed")
+    if r._worker is not None:
+        r._worker.join(3)  # воркер доспивает свой delay — тест не оставляет нить
     p.shutdown()
 
 
@@ -429,6 +438,11 @@ def test_ranked_shape():
                         {"index": 1, "relevance_score": -1.5},
                         {"index": 0, "relevance_score": -2.877}]}
     assert rerank._ranked(full, 3) == [(2, -0.239), (1, -1.5), (0, -2.877)]
+    # порядок ответа не доверяется: перепутанный список сервера сортируется по счёту
+    shuffled = {"results": [{"index": 1, "relevance_score": -1.5},
+                            {"index": 2, "relevance_score": -0.239},
+                            {"index": 0, "relevance_score": -2.877}]}
+    assert rerank._ranked(shuffled, 3) == [(2, -0.239), (1, -1.5), (0, -2.877)]
     # п.4(3): частичный ответ (меньше индексов, чем документов) — ошибка, а не «пул поменьше»:
     # запрос всегда шлётся с top_n >= числом документов, сервер обязан ответить на все.
     with pytest.raises(ValueError):

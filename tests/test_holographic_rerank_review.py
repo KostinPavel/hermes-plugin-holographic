@@ -211,7 +211,10 @@ def test_search_keeps_the_unscored_tail(tmp_path, endpoint):
         p.sync_turn("x", "y")
         return p
 
-    p = build("tail.db", **RANK)
+    # window 0: тест изолирует ИНВАРИАНТ хвоста (45 из 45, хвост в исходном порядке), не окно —
+    # с sort (24:10) ответ fake по счёту восстанавливает off-порядок, а δ-срез сверху здесь
+    # добавил бы хрупкую зависимость от сигмоидных порогов.
+    p = build("tail.db", **{**RANK, "rerank_window": "0"})
     res = json.loads(p.handle_tool_call("fact_store", {"action": "search", "query": "backup", "limit": 45}))
     contents = [r.get("content", "") for r in res.get("results", [])]
     p.shutdown()
@@ -222,9 +225,10 @@ def test_search_keeps_the_unscored_tail(tmp_path, endpoint):
                                                       {"action": "search", "query": "backup",
                                                        "limit": 45})).get("results", [])]
     off.shutdown()
-    # 40 отранжированных (reversed по top_k) + 5 неоценённых хвостом в исходном порядке
+    # sort (24:10) даёт по счёту: отранжированные 40 возвращаются в off-порядок fake'а,
+    # а 5 неоценённых хвостом переживают всё в исходном порядке
     assert len(contents) == 45, f"tail dropped: {len(contents)} of 45"
-    assert contents == list(reversed(base[:40])) + base[40:]
+    assert contents == base  # 40 отранжированных + хвост без потерь
 
 
 # -- 5. дефолт режима = UI ---------------------------------------------------------------------------------------

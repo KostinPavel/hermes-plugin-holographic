@@ -1084,7 +1084,7 @@ def _bottom_cut(scores: list[float], window: float) -> list[int] | None:
     A per-document cut judged from the BOTTOM of the score list: everything within δ of the best score survives —
     the top (usually the target fact) always does, a window can't reject the winner — while the low-scoring tail,
     where partner distractors sit, is trimmed. Measured on the provenance sweep (4 sets, 450 real queries):
-    wrong-entity top-5 30→8 at hit 433→430, noise unchanged. An absolute FLOOR (τ on the score) was rejected
+    wrong-entity top-5 28→6 (emb=on) / 25→6 (emb=off) at hit 433→432 / 430→429, noise unchanged. An absolute FLOOR (τ on the score) was rejected
     instead: sigmoid scores are model/language dependent, τ=0.5 alone lost 54 hits on multi.
     Returns indices into the reordered pool; [] means every candidate is cut.
     Only read when rerank_weight == 0: a blend reorders the pool away from the ranked order the scores belong to.
@@ -1552,20 +1552,23 @@ class HolographicMemoryProvider(MemoryProvider):
             else:
                 width = _PREFETCH_CANDIDATES
             candidates = self._retriever.search(query, min_trust=self._min_trust, limit=width, meaning=meaning)
-            # Safety and de-dup BEFORE the endpoint can see them: a fact recall would refuse (_recall_problem: a
-            # credential, an instruction, hidden markup) or a fact injected within prefetch_repeat_turns is never
-            # sent out for scoring — rerank.py refuses a query holding a secret, the documents must be refused here
-            # for the same reason. Both checks are order-independent, so filtering here gives the same top-5 as
-            # filtering after the gate (the `fresh` re-check below stays as a backstop), only the doomed documents
-            # cost no request and the margin below compares admissible candidates only.
-            candidates = [f for f in candidates
-                          if self._recallable(f) and self._not_recent(key, f, turn)]
             # Развилка: rerank включён -> единый поток (блок 3); выключен (rescorer None) -> старый путь.
             # Блок 3: coverage адмиит лексику, meaning/entity идут той же safety/dedup до эндпоинта, ОДИН
             # rerank ранжирует union, top-5 строго по рангу; окно (rerank_window) и вес —
             # единственные переключатели (п.6: override и режимы удалены; rescorer существует
             # только для одного режима, и он идёт через _unified_stream.
             if self._rescorer is not None:
+                # Safety and de-dup BEFORE the endpoint can see them: a fact recall would refuse
+                # (_recall_problem: a credential, an instruction, hidden markup) or a fact injected within
+                # prefetch_repeat_turns is never sent out for scoring — rerank.py refuses a query holding a
+                # secret, the documents must be refused here for the same reason. Both checks are
+                # order-independent, so filtering here gives the same top-5 as filtering after the gate (the
+                # `fresh` re-check in _unified_stream stays as a backstop). ТОЛЬКО на rerank-ветке: на off-пути
+                # эндпоинта нет, а _recallable на ВСЕХ кандидатах писал бы warning «fact #N is not recalled»
+                # о фактах, которые coverage и так отбросил бы — на main проверялись только выжившие
+                # (майнтейнер 24:10, smaller; вывод не меняется, чинится только лог).
+                candidates = [f for f in candidates
+                              if self._recallable(f) and self._not_recent(key, f, turn)]
                 fresh, by_meaning = self._unified_stream(query, meaning, candidates, key, turn)
             else:
                 gate = self._retriever.relevant(query, candidates, self._min_coverage)
