@@ -435,7 +435,10 @@ _CREDENTIAL_LATIN = (
     # environment variables, in the text of any language
     r"|" + _ENV_SECRET_NAME)
 _CREDENTIAL_NAMES = {
-    "ru": r"парол[ьяюеи]|пин[\s-]?код\w*|токен\w*|ключ\w*\s+api|api[\s-]?ключ\w*|секретн\w*\s+ключ\w*"
+    # «пин» alone too, as a word: it only counts with a value after it («ПИН: 4821»), so a badge or a map pin stays
+    # a word («Значок-пин…», «Покажи пин на карте»); «шпинат», «пинг», «пинцет» never match (RFC #20, 2026-10-24)
+    "ru": r"парол[ьяюеи]|пин[\s-]?код\w*|(?<!\w)пин(?:а|у|ом|е|ы)?(?!\w)|токен\w*|ключ\w*\s+api|api[\s-]?ключ\w*"
+          r"|секретн\w*\s+ключ\w*"
           r"|код\w*\s+(?:подтверждения|доступа)",
     "zh": r"密码|密碼|口令|密钥|密鑰|金钥|金鑰|私钥|私鑰|令牌|验证码|驗證碼",
     "ja": r"パスワード|暗証番号|APIキー|ＡＰＩキー|秘密鍵|トークン|認証コード|確認コード|PINコード",
@@ -487,9 +490,11 @@ _RE_EXFILTRATION = re.compile("|".join((
     r"(?<![$%{])" + _alternatives(r"[şs]ifre\w*|parola\w*|anahtar\w*|tokens?|" + _ENV_SECRET_NAME, r"(?!)")
     + r".{0,40}"
     + _alternatives(r"g[öo]nder(?:in|iniz)?|payla[şs](?:[ıi]n)?|ilet(?:in)?|yay[ıi]nla(?:y[ıi]n)?", r"(?!)"),
-    # the whole verb, then the rest: "\w*(?!\w)" gives nothing back to ".{0,40}", as "\w*+" would; possessive
-    # quantifiers need Python 3.11, and the dream (hermes-dreaming) runs a copy of this screen on 3.9 (0.17.3)
-    r"(?:отправ|перешл|покаж|раскрой|выложи|скин)\w*(?!\w).{0,40}(?<!\w)(?:" + _RU_CREDENTIAL + r")",
+    # a request, not a report: the imperative or the infinitive of a request («Можешь отправить…?»), never the past
+    # tense or a noun — «Соня скинула ключи от квартиры соседке», «Отправка ключей от дачи — в субботу» are facts
+    # (RFC #20, 2026-10-24; the stems before matched every form)
+    r"(?<!\w)(?:отправь|отправьте|отправить|перешли|перешлите|переслать|покажи|покажите|раскрой|раскройте|раскрыть"
+    r"|выложи|выложите|выложить|скинь|скиньте|скинуть)(?!\w).{0,40}(?<!\w)(?:" + _RU_CREDENTIAL + r")",
     r"(?:отправь|отправьте|перешли|перешлите|покажи|покажите|раскрой|раскройте|выложи|выложите|скинь|скиньте)"
     r"(?!\w).{0,40}" + _ENV_OBJ,
     _ZH_SEND + r".{0,40}(?:" + _CREDENTIAL_NAMES["zh"] + r"|助记词|助記詞|" + _ENV_OBJ + r")",

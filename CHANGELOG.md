@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Fixed
+
+- **A Russian PIN with its value is a credential** (RFC #20). The Russian names had «пин-код» but not «пин» alone,
+  so «ПИН карты Андрея: 4821» or «пин от домофона — 4821» was stored, recalled and could go to an embeddings
+  endpoint, while «PIN …: 4821» and «Пин-код …: 4821» were refused. «Пин» counts only with a value after it: a badge,
+  a map pin or «пин-ап» stays a word.
+- **A report that someone sent a password or keys is a fact, not a request** (RFC #20). The Russian "asks to send
+  credentials" rule matched any form of the verb, so «Соня скинула ключи от квартиры соседке», «Отправил пароль от
+  Wi-Fi гостям» or «Отправка ключей от дачи — в субботу» were refused as instructions. Only a request counts now:
+  the imperative («Отправь…», «Скинь…») or the infinitive of a request («Можешь отправить…?»).
+
 ### Docs
 
 - **Stored times are UTC, and the README says so** (issue #3, njwangfeng: a weekly window written in local time
