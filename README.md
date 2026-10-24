@@ -834,19 +834,23 @@ keywords, is a separate benchmark; one store does not show what another will do.
 **Experimental — it does not raise hits.** The gate agreed on in
 [#9](https://github.com/itpartypattaya/hermes-plugin-holographic/issues/9) did not pass on either set
 (branch A needs +5 points and there are none; branch B allows no lost target and each run loses one),
-so the option ships **off by default** and states its trade plainly. Two independent runs, both with
-``jina-reranker-v2-base-multilingual`` Q4_K_M, ``rerank_scale: logit``, window 0.05, weight 0:
+so the option ships **off by default** and states its trade plainly. Three independent runs, all with
+``jina-reranker-v2-base-multilingual`` Q4_K_M, ``rerank_scale: logit``, window 0.05, weight 0 — the
+maintainer's held-out set twice, with embeddings off and on (bge-m3 Q4_K_M vectors from
+``gpustack/bge-m3-GGUF``, sha256 ``6d39681b…a82fc06``, llama.cpp b11836, CPU — all 199 facts
+vectorized per language):
 
 | run | hit@5 off → on | non-target in top 5 | lines/turn | targets lost / gained | confused rows |
 |---|---|---|---|---|---|
 | this PR's test split (90 queries) | 43 → 43 | 108 → 66 (−39 %) | 1.98 → 1.27 | 1 / 0 | 6 → 4 |
 | the maintainer's hold-out (126 queries) | 64 → 64 | 249 → 154 (−38 %) | 1.84 → 1.21 | 1 / 1 | 24 → 18 |
+| the maintainer's hold-out, embeddings on (126 queries) | 81 → 81 | 251 → 150 (−40 %) | 1.97 → 1.30 | 2 / 1 | 24 → 18 |
 
 With it **on**, a third fewer lines reach the model and ~40 % fewer non-target facts, with fewer
-confusions in both sets and noise (chit-chat, no-answer) unchanged; the cost is no gain in hits and
-about one target per hundred questions, lost on questions holding several facts of one kind
-(``q055``, ``h42``). With it **off**, nothing changes — the off rows match ``main`` (195 of 195 on
-the hold-out set), and failed rerank calls were 0 in both runs.
+confusions in all runs and noise (chit-chat, no-answer) unchanged; the cost is no gain in hits and
+about one target per hundred questions — one in the 126-question emb-off run, two in the emb-on rerun —
+lost on questions holding several facts of one kind (``q055``, ``h42``, ``h34``). With it **off**, nothing changes — the off rows match ``main`` (195 of 195 on
+the hold-out set), and failed rerank calls were 0 in all three runs.
 
 Off by default (``rerank: off``): words, keywords, HRR and, when on, meaning decide as above, with 0.17.8's scores and
 recall — a test pins them on a store of twenty facts in five languages. Turn it on to add a second stage: a
