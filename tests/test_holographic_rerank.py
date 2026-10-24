@@ -256,6 +256,21 @@ def test_malformed_answer_keeps_order(tmp_path, endpoint):
     p.shutdown()
 
 
+def test_huge_score_overflow_counts_as_failed(tmp_path, endpoint):
+    """10**400 — валидный JSON: math.isfinite(int) бросает OverflowError, который минуя
+    except ValueError в _request убивал вызов в not_called вместо failed — fail-fast прогона
+    такой ответ не видел. Теперь это malformed answer, как и любой другой негодный счёт.
+    (п.1 pre-merge-чек-листа мейнтейнера, PR #10)."""
+    p = _provider(tmp_path, **RANK)
+    _fill(p)
+    endpoint.fail = ('{"results": [{"index": 0, "relevance_score": %d}]}' % (10 ** 400)).encode()
+    block = _block(p, "when does the backup run?")
+    assert block  # порядок не потерян
+    assert p._rescorer.last_status.startswith("failed: malformed answer")
+    assert p._rescorer.status().startswith("paused")  # ошибка посчитана
+    p.shutdown()
+
+
 def test_secret_in_query_no_call(tmp_path, endpoint):
     p = _provider(tmp_path, **RANK)
     _fill(p)
@@ -327,6 +342,10 @@ def test_ranked_shape():
         rerank._ranked({"results": [{"index": 9, "relevance_score": 1.0}]}, 5)  # out of range
     with pytest.raises(ValueError):
         rerank._ranked({"results": [{"index": 0, "relevance_score": "x"}]}, 5)  # not a number
+    with pytest.raises(ValueError):
+        # 10**400 — валидный JSON; math.isfinite(int) бросает OverflowError, минуя except
+        # ValueError в _request — до фикса такой ответ не считался failed (п.1 чек-листа).
+        rerank._ranked({"results": [{"index": 0, "relevance_score": 10 ** 400}]}, 5)  # переполнение isfinite
     with pytest.raises(ValueError):
         rerank._ranked({"results": []}, 5)  # empty
 

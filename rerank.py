@@ -347,7 +347,12 @@ def _ranked(payload, count: int) -> list[tuple[int, float]]:
         if not isinstance(index, int) or isinstance(index, bool) or not (0 <= index < count):
             raise ValueError("an index in the answer is out of range")
         score = item.get("relevance_score") if isinstance(item, dict) else None
-        if isinstance(score, bool) or not isinstance(score, (int, float)) or not math.isfinite(score):
+        if isinstance(score, bool) or not isinstance(score, (int, float)):
+            raise ValueError("a relevance_score in the answer is not a finite number")
+        # math.isfinite(10**400) бросает OverflowError (валидный JSON, гигантский int) — такой
+        # ответ миновал бы except ValueError в _request и не стал бы failed (pre-merge-чек-лист
+        # мейнтейнера, п.1): ловим как неравный конечному числу до вызова isfinite.
+        if (isinstance(score, int) and abs(score) > 1e308) or not math.isfinite(score):
             raise ValueError("a relevance_score in the answer is not a finite number")
         ranked.append((index, float(score)))
     if len({i for i, _ in ranked}) != len(ranked):
