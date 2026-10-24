@@ -880,7 +880,9 @@ facts compete in the same rank as the lexical pool. A failed call falls back to 
 
 Other keys: ``rerank_top_k`` (40: how deep a pool the cross-encoder sees; the first stage's limit is widened to
 match), ``rerank_weight`` (0 = order-only, recommended; >0 = the min-max-normalised cross-encoder score blended into
-the blend score; the window applies to order-only runs), ``rerank_timeout`` (3 s) and ``rerank_scale`` —
+the blend score; the window applies to order-only runs), ``rerank_timeout`` (3 s — additionally capped so that ``embedding_timeout + rerank_timeout`` stays under
+the 8 s the core gives a provider's prefetch: with ``embedding_timeout`` at its maximum 6 s the rerank
+timeout clamps to 1.5 s) and ``rerank_scale`` —
 the endpoint's score scale, set explicitly: ``logit`` (raw llama-server logits; the default, no probing) or
 ``unit`` ([0,1], Cohere-style). Set ``unit`` for an endpoint that already returns [0, 1] (Cohere, TEI): on the
 default ``logit`` the sigmoid runs on scores that were normalised once already, the gaps shrink and the window

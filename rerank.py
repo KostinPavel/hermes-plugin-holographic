@@ -32,7 +32,12 @@ logger = logging.getLogger(__name__)
 PAUSE_FIRST, PAUSE_MAX = 60.0, 900.0  # seconds the endpoint is left alone after a failure, doubling
 MAX_RESPONSE = 64 << 20
 DEFAULT_TOP_K = 40  # depth of the pool the cross-encoder sees; the first stage's limit is widened to match
-DEFAULT_TIMEOUT = 3.0  # seconds; 3.0, not 2.0: a slow local endpoint is the normal case (issue #5)
+DEFAULT_TIMEOUT = 3.0  # seconds; 3.0, not 2.0: a slow local endpoint is the normal case (issue #5)
+
+#: Бюджет ядра на prefetch провайдера: _EXTERNAL_PREFETCH_TIMEOUT_S в agent/memory_manager.py.
+#: Embedding-вызов и реранк идут подряд, поэтому сумма их клампов обязана укладывается меньше
+#: него с запасом (майнтейнер 24:10, п.4: дефолты 3 + 3 влезают, emb 6 + rerank 10 — нет).
+_PREFETCH_BUDGET_S = 7.5
 DEFAULT_WINDOW = 0.05  # rerank_window: доля хвоста ниже которой пул отсекается (0 = ничего не отсекать)
 
 
@@ -78,7 +83,9 @@ class Settings:
         # сырые логиты. Набор значений держит _CHOICES у провайдера: вне его —
         # именованная проблема конфига и memory off, а не тихий fallback.
         self.scale = str(config.get("rerank_scale") or "logit").strip().lower()
-        self.timeout = _number(config, "rerank_timeout", DEFAULT_TIMEOUT, 0.5, 10.0)
+        emb = _number(config, "embedding_timeout", 3.0, 0.5, 6.0)  # кламп как в embeddings.py
+        self.timeout = _number(config, "rerank_timeout", DEFAULT_TIMEOUT, 0.5,
+                               min(10.0, _PREFETCH_BUDGET_S - emb))
 
 
 def settings_from(config: dict) -> Settings | None:

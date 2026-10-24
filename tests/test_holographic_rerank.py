@@ -381,6 +381,13 @@ def test_settings_validation():
     assert (s.top_k, s.window) == (15, 0.1)
     assert rerank.Settings({"rerank": "on"}).window == rerank.DEFAULT_WINDOW  # дефолт окна
 
+    # п.4 (майнтейнер 24:10): бюджет ядра — prefetch провайдера 8 с, embedding_timeout + 
+    # rerank_timeout обязаны укладываться меньше него при любых допустимых значениях
+    # (emb клампится 0.5..6, rerank раньше зажимался 0.5..10 независимо).
+    assert rerank.Settings({"rerank": "on", "embedding_timeout": "6", "rerank_timeout": "10"}).timeout == 1.5
+    assert rerank.Settings({"rerank": "on", "embedding_timeout": "0.5", "rerank_timeout": "10"}).timeout == 7.0
+    assert rerank.Settings({"rerank": "on"}).timeout == 3.0  # дефолт 3 + дефолт emb 3 = 6 влезает
+
 
 def test_removed_keys_are_ignored_with_a_warning(caplog):
     """rerank_mode / rerank_margin удалены (п.6): старая конфигурация не ломает ничего, ключ игнорируется."""
