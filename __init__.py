@@ -1710,7 +1710,12 @@ class HolographicMemoryProvider(MemoryProvider):
             # Вариант (а) встроен в окно (майнтейнер 13:06): не резать ниже двух scored —
             # без клавиши и без вариантов; (б) удалён вместе с rerank_window_named.
             keep = _window_keep(keep, len(ranked))
-            fresh = [union[i] for i in keep] if keep else []
+            # keep — позиции в RANKED, а хвост union (не-sendable-факты, которые recall показывает,
+            # и позиции за top_k) в ranked не входит. Он обязан пережить окно: состав пула для
+            # recall не меняется (докстринг _sendable_docs). Без этого каждый успешный вызов при
+            # rerank_window > 0 тихо терял хвост, даже когда окно не резало ничего
+            # (майнтейнер 24:10, п.1: три прокси-факта — off отдаёт 3 строки, on отдавал 2).
+            fresh = ([union[i] for i in keep] if keep else []) + union[len(ranked):]
         return fresh[:_PREFETCH_FACTS], by_meaning
 
     def _recall_failed(self, exc: Exception) -> None:

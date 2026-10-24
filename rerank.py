@@ -189,7 +189,11 @@ class Rescorer:
             # a failure for the run's zero-failed-calls budget, not a neutral skip.
             self.last_status = f"failed: {self.status()}"
             return None
-        if self._secret and self._secret((query or "")[:2000]):
+        # Экран гоняет ВЕСЬ запрос, не срез: ключ, начинающийся перед 2000-м символом, в [:2000]
+        # попадал обрывком («pas»), проходил экран, а первые буквы уходили на эндпоинт — отправка
+        # остаётся срезанной, а проверка больше нет (майнтейнер 24:10, п.2; тот же баг в main —
+        # их PR #21).
+        if self._secret and self._secret(query or ""):
             self.last_status = "skipped_secret"
             return None  # no call at all: what recall must not inject is never sent
         if len(documents) == 1:

@@ -271,6 +271,47 @@ def test_huge_score_overflow_counts_as_failed(tmp_path, endpoint):
     p.shutdown()
 
 
+def test_window_keeps_unscored_tail_in_block(tmp_path, endpoint):
+    """Окно не теряет факты, которые реранкер не видел: хвост union (не-sendable-факты и позиции за
+    top_k) входит в fresh после keep — докстринг _sendable_docs обещает «состав пула для recall не
+    меняется». Майнтейнер 24:10, п.1: rerank_top_k=2 при пуле из трёх — третий факт не отправляется
+    и обязан пережить окно в БЛОКЕ (проверяется блок, не payload)."""
+    p = _provider(tmp_path, **{**RANK, "rerank_top_k": "2"})
+    facts = ["The nightly backup runs from the OES box at 2 am.",
+             "The weekly backup runs from the NAS box at 4 am.",
+             "The weekly backup runs from the tapes in the garage."]
+    for f in facts:
+        p._store.add_fact(f)
+    p.sync_turn("x", "y")
+    block = _block(p, "when does the backup run?")
+    assert endpoint.requests, "реранк-вызов должен состояться (пул из трёх)"
+    sent = endpoint.requests[-1]["body"]["documents"]
+    assert len(sent) == 2, "top_k=2: на эндпоинт уходят только два"
+    for f in facts:
+        assert f in block, f"факт вне ranked обязан пережить окно в блоке: {f[:30]}"
+    p.shutdown()
+
+
+def test_secret_straddling_the_2000_cut_is_screened(tmp_path, endpoint):
+    """Секрет-экран гоняет ВЕСЬ запрос: ключ, начинающийся перед 2000-м символом, в срез [:2000]
+    попадал обрывком («pas») и проходил экран, а первые буквы уходили на эндпоинт. Майнтейнер 24:10,
+    п.2 (тот же баг в main — их PR #21). Прямой вызов scores(): через prefetch straddle-запрос
+    дополнительно роняет coverage («TopSecret123» как идентификатор), и баг живёт именно в
+    последней линии обороны rerank.py."""
+    p = _provider(tmp_path, **RANK)
+    _fill(p)
+    base = "when does the backup run? "
+    query = (base + " backup" * 300)[:1996] + " password: TopSecret123"
+    assert len(query) > 2000 and query.index("password") < 2000 < query.index("TopSecret")
+    docs = ["The nightly backup runs from the OES box at 2 am.",
+            "The weekly backup runs from the NAS box at 4 am."]
+    ranked = p._rescorer.scores(query, docs)
+    assert ranked is None, "обрезанный ключ не должен проходить экран"
+    assert p._rescorer.last_status == "skipped_secret"
+    assert endpoint.requests == [], "запрос с обрывком ключа не должен уходить"
+    p.shutdown()
+
+
 def test_secret_in_query_no_call(tmp_path, endpoint):
     p = _provider(tmp_path, **RANK)
     _fill(p)
