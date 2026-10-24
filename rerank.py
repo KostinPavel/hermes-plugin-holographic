@@ -158,6 +158,10 @@ class Rescorer:
         # Исход последнего scores(): answered / failed: ... / skipped_single / skipped_secret / not_called.
         # Стампится в строки раннеров; прогон падает на failed (PR #10, фикс-лист 19:07).
         self.last_status = "not_called"
+        # Живой воркер прошлого запроса (п.5 чек-листа 24:10): после join(timeout) нить живёт,
+        # пока сервер шлёт ответ; при истёкшей паузе следующий вызов раньше стартовал ВТОРОЙ
+        # запрос. Страховка наравне с embeddings._abandoned/_reap_locked.
+        self._worker: threading.Thread | None = None
 
     def unavailable(self) -> str:
         """Why the endpoint cannot be used at all (\"\" when it can): the address, the key."""
@@ -231,8 +235,18 @@ class Rescorer:
         with self._lock:
             if self._paused_until > time.monotonic():
                 return None
-            epoch = self._epoch
-            self.calls += 1
+            if self._worker is not None and self._worker.is_alive():
+                # п.5: прежний воркер ещё не закончил — новый запрос НЕ стартует, и это
+                # отказ (пауза растёт, как от таймаута), пока нить не дочитает ответ.
+                noted = self._fail_locked("no answer (an earlier request is still running)")
+            else:
+                self._worker = None  # старый дожил или его не было
+                noted = None
+                epoch = self._epoch
+                self.calls += 1
+        if noted is not None:
+            self._log_failure(*noted)
+            return None
         headers = {"Content-Type": "application/json", "Accept": "application/json",
                    "User-Agent": "hermes-plugin-holographic"}
         request = urllib.request.Request(self._url or "", data=json.dumps(body).encode("utf-8"), headers=headers,
@@ -242,6 +256,7 @@ class Rescorer:
         def send():
             try:
                 with _OPENER.open(request, timeout=timeout) as response:
+                    box["response"] = response  # main закроет его по таймауту (п.5)
                     raw = response.read(MAX_RESPONSE)
                 box["payload"] = json.loads(raw)
             except BaseException as exc:  # noqa: BLE001 - the worker must record every failure; a silent death would burn the whole join() timeout
@@ -250,6 +265,8 @@ class Rescorer:
                 box["ended"] = time.perf_counter()
 
         worker = threading.Thread(target=send, name="holographic-rerank", daemon=True)
+        with self._lock:
+            self._worker = worker  # отслеживается, пока жив (п.5)
         worker.start()
         worker.join(timeout)
         alive = worker.is_alive()
@@ -257,6 +274,16 @@ class Rescorer:
         timed_out = alive or isinstance(error, TimeoutError) or (
             isinstance(error, urllib.error.URLError) and isinstance(error.reason, TimeoutError))
         if timed_out:
+            # п.5: рвём соединение — воркер-читатель просыпается с ошибкой и умирает вместо
+            # того, чтобы дочитывать байты до MAX_RESPONSE. Best effort: закрытие из другого
+            # потока не гарантирует пробуждение recv (platform-dependent), поэтому ниже остаётся
+            # guard — пока воркер жив, второй запрос не стартует.
+            closer = getattr(box.get("response"), "close", None)
+            if callable(closer):
+                try:
+                    closer()
+                except Exception:  # noqa: BLE001 - best effort, платформозависимо
+                    pass
             with self._lock:
                 # Both cases pause the endpoint: join() вышел по таймауту (alive) ИЛИ сам воркер закончился
                 # TimeoutError — сокетный таймаут должен ставить паузу и расти failures, иначе медленный

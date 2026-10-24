@@ -313,6 +313,33 @@ def test_stage_exception_keeps_order_and_counts(tmp_path, endpoint, monkeypatch)
     p.shutdown()
 
 
+def test_no_second_worker_while_one_is_alive(tmp_path, endpoint):
+    """п.5: после join(timeout) воркер продолжает жить (сервер шлёт по байту в 100 мс — до
+    MAX_RESPONSE), а после паузы следующий вызов стартовал ВТОРОЙ. Теперь прежний воркер
+    отслеживается: пока он жив, новый запрос не стартует и это считается отказом — минимальный
+    вариант, который санкционировал майнтейнер 24:10 (полный аналог embeddings._abandoned/
+    _reap_locked при необходимости можно дотянуть отдельно)."""
+    p = _provider(tmp_path, **{**RANK, "rerank_timeout": "0.5"})
+    _fill(p)
+    endpoint.delay = 1.0  # больше клампа 0.5: воркер завис внутри open()
+    block = _block(p, "when does the backup run?")
+    assert block  # турн не пострадал
+    r = p._rescorer
+    assert r.failures == 1, "таймаут посчитан"
+    assert r._worker is not None and r._worker.is_alive(), "живой воркер должен быть отслежен"
+    with r._lock:  # снимаем паузу, чтобы дойти до нового вызова, как после её истечения
+        r._pause = r._paused_until = 0.0
+    sent = len(endpoint.requests)
+    ranked = r.scores("when does the backup run?",
+                      ["The nightly backup runs from the OES box at 2 am.",
+                       "The weekly backup runs from the NAS box at 4 am."])
+    assert ranked is None, "нового ответа быть не должно"
+    assert len(endpoint.requests) == sent, "второй запрос не должен стартовать при живом воркере"
+    assert r.failures == 2, "отказ при живом воркере обязан считаться"
+    r._worker.join(3)  # тест не оставляет нить
+    p.shutdown()
+
+
 def test_secret_straddling_the_2000_cut_is_screened(tmp_path, endpoint):
     """Секрет-экран гоняет ВЕСЬ запрос: ключ, начинающийся перед 2000-м символом, в срез [:2000]
     попадал обрывком («pas») и проходил экран, а первые буквы уходили на эндпоинт. Майнтейнер 24:10,
