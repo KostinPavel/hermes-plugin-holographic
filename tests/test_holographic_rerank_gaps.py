@@ -22,7 +22,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_plugin_holographic import HolographicMemoryProvider, rerank
+from hermes_plugin_holographic import HolographicMemoryProvider, embeddings, rerank
 
 # -- a fake endpoint --------------------------------------------------------------------------------------------
 
@@ -268,7 +268,7 @@ def _stream_arguments(p):
     key, turn = f"s1|{p._scope_key or ''}", 1
     candidates = [f for f in p._retriever.search(QUERY, min_trust=p._min_trust, limit=60)
                   if p._recallable(f) and p._not_recent(key, f, turn)]
-    return QUERY, object(), candidates, key, turn
+    return QUERY, embeddings.Meaning([], [], weight=0.0), candidates, key, turn
 
 
 def test_unified_stream_sends_the_union_and_ranks_it_strictly(tmp_path, endpoint, monkeypatch):
@@ -336,3 +336,45 @@ def test_a_file_that_is_not_a_database_takes_recall_off(tmp_path):
     assert "file is not a database" in prompt
     assert "recover it with: sqlite3" in prompt  # the way out is named, not just the failure
     p.shutdown()
+
+
+
+# -- the fallback IS the off layout (ревью 19:39, п.3) -------------------------------------------------------
+
+def test_fallback_block_equals_off_block_when_the_target_sits_past_candidate_15(tmp_path, endpoint):
+    """Фолбэк брал top-5 из РАСШИРЕННОГО пула (max(15×4, top_k)) и без фильтра «показано недавно»,
+    а off ищет 15: кандидаты 1–15 показаны, цель на 17-м месте — off возвращает пусто, старый фолбэк
+    возвращал бы пятёрку из широкого пула. Теперь фолбэк зовёт _off_layout БЕЗ кандидатов (повторный
+    поиск с off-лимитом) — блоки обязаны совпасть ЦЕЛИКОМ. Механизм «shown recently» из сценария
+    мейнтейнера: три прогона показывают топ-15 филлеров, четвёртый — пусто."""
+    query = "nightly backup schedule"
+
+    def store_provider(name, **cfg):
+        p = _provider(tmp_path, name=name, **cfg)
+        # филлеры делят все три слова запроса с высоким TF — BM25 держит их над короткой целью,
+        # которая уходит на 17-е место, за предел off-поиска limit=15
+        for k in range(20):
+            p._store.add_fact(f"nightly nightly backup backup backup schedule schedule schedule of subsystem {k}"
+                              f" pending in the apple tree of configuration layer {k}")
+        target_id = p._store.add_fact("The nightly backup schedule runs at 2 am.")
+        p.sync_turn("x", "y")
+        pool = p._retriever.search(query, min_trust=p._min_trust, limit=60, meaning=None)
+        position = next(i for i, fact in enumerate(pool) if fact["fact_id"] == target_id)
+        assert position >= 15, f"конструкция сломалась: цель на {position}-м месте, нужен >= 15"
+        return p
+
+    off = store_provider("off.db")
+    for _ in range(3):  # топ-15 филлеров показаны недавними
+        off.prefetch(query)
+    block_off = off.prefetch(query)
+    assert block_off == "", f"off обязан вернуть пусто (все 15 показаны): {block_off!r}"
+    off.shutdown()
+
+    on = store_provider("on.db", **RANK)
+    endpoint.fail = RuntimeError("endpoint down")  # каждый вызов уходит в фолбэк
+    for _ in range(3):  # фолбэк обязан продвигаться ровно как off (фильтр недавнего + лимит 15)
+        on.prefetch(query)
+    block_fallback = on.prefetch(query)
+    on.shutdown()
+    assert block_fallback == block_off, ("фолбэк обязан быть off-раскладкой: "
+                                         f"off={block_off!r}, fallback={block_fallback!r}")

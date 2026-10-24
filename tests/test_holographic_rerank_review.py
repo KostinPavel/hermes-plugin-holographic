@@ -18,7 +18,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_plugin_holographic import HolographicMemoryProvider, rerank, _sendable
+from hermes_plugin_holographic import HolographicMemoryProvider, embeddings, rerank, _sendable
 
 
 # -- fake endpoint -----------------------------------------------------------------------------------------------
@@ -190,7 +190,8 @@ def test_failed_rerank_appends_extras_like_off(tmp_path, endpoint, monkeypatch):
     monkeypatch.setattr(p._store, "mentioned_entity_ids", lambda q: {1})  # известные сущности — set
     monkeypatch.setattr(p._retriever, "names_fit", lambda *a, **k: True)
     monkeypatch.setattr(p._retriever, "entity_facts", lambda *a, **k: [e_fact])
-    fresh, by_meaning = p._unified_stream(QUERY, object(), list(p._retriever.search(QUERY, limit=10)), "s", 1)
+    fresh, by_meaning = p._unified_stream(QUERY, embeddings.Meaning([], [], weight=0.0),
+                                          list(p._retriever.search(QUERY, limit=10)), "s", 1)
     # раскладка off: lexical[:5], потом extras — extras НЕ вытесняются top-5 (п.4)
     assert [f["fact_id"] for f in fresh[-2:]] == [m_id, e_id]
     lexical_part = [f for f in fresh if f["fact_id"] not in (m_id, e_id)]

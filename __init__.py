@@ -1571,15 +1571,7 @@ class HolographicMemoryProvider(MemoryProvider):
                               if self._recallable(f) and self._not_recent(key, f, turn)]
                 fresh, by_meaning = self._unified_stream(query, meaning, candidates, key, turn)
             else:
-                gate = self._retriever.relevant(query, candidates, self._min_coverage)
-                fresh = [f for f in gate
-                         if self._not_recent(key, f, turn) and self._recallable(f)][:_PREFETCH_FACTS]
-                have = {f["fact_id"] for f in fresh}
-                # Потоки 2 и 3 той же функцией, что и фолбэк _unified_stream (п.4(1)): здесь
-                # have = только пять сохранённых лексических фактов.
-                meaning_facts, entity_facts, by_meaning = self._stream_extras(
-                    query, meaning, have, key, turn)
-                fresh = fresh + meaning_facts + entity_facts
+                fresh, by_meaning = self._off_layout(query, meaning, key, turn, candidates)
             for fact in fresh:
                 self._remember(key, fact, turn)
             self._last_recall = len(fresh)
@@ -1721,12 +1713,29 @@ class HolographicMemoryProvider(MemoryProvider):
             # (майнтейнер 24:10, п.3; «с провалом — только прежний порядок» и обещает README).
             rescorer.note_failure(f"rerank stage: {type(exc).__name__}: {exc}")
         # A failed call, an empty pool OR an exception in the stage: ровно off-раскладка (п.4(1) ревью
-        # 10:34) — до пяти лексических фактов, потом meaning/entity-дополнения, исключающие ТОЛЬКО эти
-        # пять: шестой лексический факт, который entity-поток добавил бы в off, не теряется при сбое.
-        keep = lexical[:_PREFETCH_FACTS]
+        # 10:34), но БЕЗ кандидатов (п.3 ревью 19:39): фолбэк ищет заново с off-лимитом 15 — иначе
+        # расширенный пул (max(15×4, top_k)) и отсутствие фильтра «недавнего» дают другой состав, чем
+        # off (кандидаты 1–15 показаны, цель на 17-м: off пуст, старый фолбэк возвращал пятёрку).
+        return self._off_layout(query, meaning, key, turn)
+
+    def _off_layout(self, query, meaning, key, turn, candidates: list[dict] | None = None) -> tuple[list[dict], set[int]]:
+        """Раскладка recall с выключенным rerank — и та же самая для фолбэка упавшей реранк-стадии
+        (п.3 ревью 19:39): первые 15 кандидатов через coverage-гейт, потом meaning/entity-дополнения.
+
+        Фолбэк зовёт её БЕЗ candidates: повторный поиск с off-лимитом, чтобы расширенный пул
+        (max(15×4, top_k)) никогда не попадал в блок — off и фолбэк обязаны отдавать один и тот же
+        блок (мейнтейнер: «move the off branch of prefetch into one method and call it from both»)."""
+        if candidates is None:
+            candidates = self._retriever.search(query, min_trust=self._min_trust,
+                                                limit=_PREFETCH_CANDIDATES, meaning=meaning)
+        gate = self._retriever.relevant(query, candidates, self._min_coverage)
+        fresh = [f for f in gate
+                 if self._not_recent(key, f, turn) and self._recallable(f)][:_PREFETCH_FACTS]
+        # Потоки 2 и 3 той же функцией, что и фолбэк _unified_stream (п.4(1)): здесь
+        # have = только пять сохранённых лексических фактов.
         meaning_facts, entity_facts, by_meaning = self._stream_extras(
-            query, meaning, {f["fact_id"] for f in keep}, key, turn)
-        return keep + meaning_facts + entity_facts, by_meaning
+            query, meaning, {f["fact_id"] for f in fresh}, key, turn)
+        return fresh + meaning_facts + entity_facts, by_meaning
 
     def _recall_failed(self, exc: Exception) -> None:
         """Recall before a turn failed and the turn goes on without facts: a warning once per kind of failure (a
