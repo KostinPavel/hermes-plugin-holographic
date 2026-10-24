@@ -239,21 +239,6 @@ class Rescorer:
     def _request(self, body: dict) -> list[tuple[int, float]] | None:
         """One request. Runs on a daemon thread; the caller waits ``rerank_timeout`` seconds and no longer."""
         timeout = self.settings.timeout
-        with self._lock:
-            if self._paused_until > time.monotonic():
-                return None
-            if self._worker is not None and self._worker.is_alive():
-                # п.5: прежний воркер ещё не закончил — новый запрос НЕ стартует, и это
-                # отказ (пауза растёт, как от таймаута), пока нить не дочитает ответ.
-                noted = self._fail_locked("no answer (an earlier request is still running)")
-            else:
-                self._worker = None  # старый дожил или его не было
-                noted = None
-                epoch = self._epoch
-                self.calls += 1
-        if noted is not None:
-            self._log_failure(*noted)
-            return None
         headers = {"Content-Type": "application/json", "Accept": "application/json",
                    "User-Agent": "hermes-plugin-holographic"}
         request = urllib.request.Request(self._url or "", data=json.dumps(body).encode("utf-8"), headers=headers,
@@ -290,8 +275,25 @@ class Rescorer:
 
         worker = threading.Thread(target=send, name="holographic-rerank", daemon=True)
         with self._lock:
-            self._worker = worker  # отслеживается, пока жив (п.5)
-        worker.start()
+            if self._paused_until > time.monotonic():
+                return None
+            if self._worker is not None and self._worker.is_alive():
+                # п.5: прежний воркер ещё не закончил — новый запрос НЕ стартует, и это
+                # отказ (пауза растёт, как от таймаута), пока нить не дочитает ответ.
+                noted = self._fail_locked("no answer (an earlier request is still running)")
+            else:
+                # smaller (ревью 19:39): проверка «жив ли прежний», присвоение и старт нового —
+                # ОДНА критическая секция (раньше были две, а assign без start читался бы как
+                # мёртвый воркер): Rescorer должен быть безопасен при конкурентных вызовах сам
+                # по себе, а не только потому, что входы провайдера сегодня сериализованы.
+                self._worker = worker  # отслеживается, пока жив (п.5)
+                noted = None
+                epoch = self._epoch
+                self.calls += 1
+                worker.start()
+        if noted is not None:
+            self._log_failure(*noted)
+            return None
         worker.join(timeout)
         alive = worker.is_alive()
         error = box.get("error")

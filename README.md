@@ -847,8 +847,9 @@ vectorized per language):
 | the maintainer's hold-out (126 queries) | 64 → 64 | 249 → 154 (−38 %) | 2.24 → 1.44 | 1 / 1 | 24 → 18 |
 | the maintainer's hold-out, embeddings on (126 queries) | 81 → 81 | 251 → 150 (−40 %) | 2.38 → 1.53 | 2 / 1 | 24 → 18 |
 
-*lines/turn во всех трёх строках — на реальный вопрос. Ранее приводившиеся для hold-out 1.84 → 1.21*
-*и 1.97 → 1.30 были средним по всем 195 строкам, включая чит-чат (знаменатель указал мейнтейнер** 2026-10-24); per-question: 2.24 → 1.44 и 2.38 → 1.53.*
+*lines/turn in all three rows is per real question. The hold-out figures 1.84 → 1.21 and 1.97 → 1.30*
+*quoted earlier were an average over all 195 rows, chit-chat included (denominator pointed out by the*
+*maintainer, 2026-10-24); per question: 2.24 → 1.44 and 2.38 → 1.53.*
 
 With it **on**, a third fewer lines reach the model and ~40 % fewer non-target facts, with fewer
 confusions in all runs and noise (chit-chat, no-answer) unchanged; the cost is no gain in hits and

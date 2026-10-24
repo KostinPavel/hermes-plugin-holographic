@@ -70,6 +70,11 @@ class FakeRerank:
         top_n = min(body.get("top_n", n), n)
         if self.scores is not None:
             chosen = [{"index": i, "relevance_score": self.scores[i % len(self.scores)]} for i in order[:top_n]]
+        elif self.reverse:
+            # smaller (ревью 19:39): после сортировки по счёту (24:10) ответ обязан быть реально
+            # перевёрнут — счёт по позиции (лучший у последнего индекса), иначе sort сводит reverse
+            # к identity и тест перестаёт проверять переворот
+            chosen = [{"index": i, "relevance_score": float(i + 1)} for i in order[:top_n]]
         else:
             chosen = [{"index": i, "relevance_score": float(n - i)} for i in order[:top_n]]
         return _Response(json.dumps({"results": chosen, "model": body["model"]}).encode())

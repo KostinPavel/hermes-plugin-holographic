@@ -62,7 +62,12 @@ class FakeRerank:
         n = len(body["documents"])
         order = list(reversed(range(n))) if self.reverse else list(range(n))
         top_n = min(body.get("top_n", n), n)
-        chosen = [{"index": i, "relevance_score": float(n - i)} for i in order[:top_n]]
+        if self.reverse:
+            # smaller (ревью 19:39): после сортировки по счёту (24:10) счёт по позиции —
+            # иначе sort сводит reverse к identity
+            chosen = [{"index": i, "relevance_score": float(i + 1)} for i in order[:top_n]]
+        else:
+            chosen = [{"index": i, "relevance_score": float(n - i)} for i in order[:top_n]]
         return _Response(json.dumps({"results": chosen}).encode())
 
 
@@ -240,10 +245,7 @@ def test_search_keeps_the_unscored_tail(tmp_path, endpoint):
         p.sync_turn("x", "y")
         return p
 
-    # window 0: тест изолирует ИНВАРИАНТ хвоста (45 из 45, хвост в исходном порядке), не окно —
-    # с sort (24:10) ответ fake по счёту восстанавливает off-порядок, а δ-срез сверху здесь
-    # добавил бы хрупкую зависимость от сигмоидных порогов.
-    p = build("tail.db", **{**RANK, "rerank_window": "0"})
+    p = build("tail.db", **RANK)  # _search окно вообще не применяет (правка мейнтейнера 19:39)
     res = json.loads(p.handle_tool_call("fact_store", {"action": "search", "query": "backup", "limit": 45}))
     contents = [r.get("content", "") for r in res.get("results", [])]
     p.shutdown()
@@ -254,10 +256,10 @@ def test_search_keeps_the_unscored_tail(tmp_path, endpoint):
                                                       {"action": "search", "query": "backup",
                                                        "limit": 45})).get("results", [])]
     off.shutdown()
-    # sort (24:10) даёт по счёту: отранжированные 40 возвращаются в off-порядок fake'а,
-    # а 5 неоценённых хвостом переживают всё в исходном порядке
+    # reverse-фейк ставит лучший счёт последнему индексу (smaller 19:39) — после sort (24:10)
+    # отранжированные 40 идут задом наперёд, а 5 неоценённых хвостом — в исходном порядке
     assert len(contents) == 45, f"tail dropped: {len(contents)} of 45"
-    assert contents == base  # 40 отранжированных + хвост без потерь
+    assert contents == list(reversed(base[:40])) + base[40:]
 
 
 # -- 5. дефолт режима = UI ---------------------------------------------------------------------------------------

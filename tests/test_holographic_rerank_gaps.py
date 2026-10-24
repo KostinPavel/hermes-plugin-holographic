@@ -72,6 +72,11 @@ class FakeRerank:
         top_n = min(body.get("top_n", n), n)
         if self.scores is not None:
             chosen = [{"index": i, "relevance_score": self.scores[i % len(self.scores)]} for i in order[:top_n]]
+        elif self.reverse:
+            # smaller (ревью 19:39): после сортировки по счёту (24:10) ответ обязан быть реально
+            # перевёрнут — счёт по позиции (лучший у последнего индекса), иначе sort сводит reverse
+            # к identity и тест перестаёт проверять переворот
+            chosen = [{"index": i, "relevance_score": float(i + 1)} for i in order[:top_n]]
         else:
             chosen = [{"index": i, "relevance_score": float(n - i)} for i in order[:top_n]]
         return _Response(json.dumps({"results": chosen, "model": body["model"]}).encode())
@@ -286,10 +291,11 @@ def test_unified_stream_sends_the_union_and_ranks_it_strictly(tmp_path, endpoint
     assert endpoint.documents.count(MEANING) == 1
     assert by_meaning == {meaning_fact["fact_id"]}
     # Семантика счёта с 24:10 (smaller, майнтейнер: «a sort would close the case»): _ranked
-    # сортирует по relevance_score, позиция списка больше не авторитет. Обратный ответ fake
-    # (счёт по возрастанию) после сортировки даёт MEANING(4.0) -> ENTITY(3.0) -> ... ; окно
-    # δ=0.05 режет ниже best-δ (0.982, 0.953 проходят, 0.881 — нет) и держит два верхних.
-    assert [f["content"] for f in fresh] == [MEANING, ENTITY]
+    # сортирует по relevance_score, позиция списка больше не авторитет. Reverse-фейк теперь
+    # ставит лучший счёт последнему индексу (smaller 19:39) — перевёрнутый ответ реально
+    # переворачивается и после sort: F4(4.0) -> F0(3.0) -> ENTITY(2.0) -> MEANING(1.0);
+    # окно δ=0.05 режет ниже best-δ (0.982, 0.953 проходят, 0.881 — нет): верхние два.
+    assert [f["content"] for f in fresh] == [FACTS[4], FACTS[0]]
     p.shutdown()
 
 

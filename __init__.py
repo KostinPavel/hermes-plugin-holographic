@@ -1327,7 +1327,8 @@ class HolographicMemoryProvider(MemoryProvider):
              "cross-encoder's score with the blend score",
              "default": current("rerank_weight", "0.0")},
                         {"key": "rerank_timeout", "description": "Seconds a rerank call may take (recall's only protection; "
-             "a slow local endpoint is the normal case)",
+             "a slow local endpoint is the normal case). Capped so embedding_timeout (counted only when "
+             "embeddings are on) + rerank_timeout fit the prefetch budget, like README and CHANGELOG say",
              "default": current("rerank_timeout", "3.0")},
         ]
 
