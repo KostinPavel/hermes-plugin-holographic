@@ -156,6 +156,32 @@ def test_search_screens_documents_but_still_shows_the_fact(tmp_path, endpoint):
     p.shutdown()
 
 
+def test_search_order_exception_keeps_the_unranked_results_and_counts(tmp_path, endpoint, monkeypatch):
+    """п.4 (ревью 19:39): order() и маппинг жили вне try — исключение становилось ошибкой тула
+    вместо неотранжированных результатов, и ни одна неудача не считалась. Теперь вся стадия в try,
+    новый порядок присваивается только после сборки, с провалом — прежний порядок + note_failure
+    (как в _unified_stream, п.3)."""
+    p = _provider(tmp_path, **RANK)
+    _fill(p, extra=[SECRET, KEY_FACT, VIOLET])
+    off_p = _provider(tmp_path, name="off.db")
+    _fill(off_p, extra=[SECRET, KEY_FACT, VIOLET])
+    off_ids = [r.get("fact_id") for r in
+               json.loads(off_p.handle_tool_call("fact_store",
+                                                 {"action": "search", "query": "backup"})).get("results", [])]
+    off_p.shutdown()
+
+    def boom(*a, **k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(p._rescorer, "order", boom)
+    res = json.loads(p.handle_tool_call("fact_store", {"action": "search", "query": "backup"}))
+    # с провалом реранка search отдаёт НЕОТРАНЖИРОВАННЫЕ результаты, а не ошибку
+    assert [r.get("fact_id") for r in res.get("results", [])] == off_ids
+    assert p._rescorer.failures >= 1, "провал стадии обязан считаться отказом"
+    assert p._rescorer.status().startswith("paused")
+    p.shutdown()
+
+
 # -- 2. сокет-таймаут ставит паузу -------------------------------------------------------------------------------
 
 

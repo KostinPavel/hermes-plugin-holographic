@@ -2293,15 +2293,19 @@ class HolographicMemoryProvider(MemoryProvider):
         if self._rescorer and results:
             # Секрет-экран: search намеренно показывает факты, которые recall не инжектит (включая
             # учётные данные) — на эндпоинт они не уходят (PR #10, п.1).
-            send_idx, docs = self._sendable_docs(results)
-            indexes = self._rescorer.order(a["query"], docs) if docs else None
-            if indexes is not None:
-                mapped = [send_idx[i] for i in indexes if i < len(send_idx)]
-                # Что реранк не оценил (хвост limit > top_k) сохраняет место ПОСЛЕ ранжированных
-                # (PR #10, п.4): раньше пересборка из ≤top_k индексов молча резала хвост.
-                seen = set(mapped)
-                results = [results[i] for i in mapped + [j for j in range(len(results)) if j not in seen]]
-                words = list(results)
+            try:
+                send_idx, docs = self._sendable_docs(results)
+                indexes = self._rescorer.order(a["query"], docs) if docs else None
+                if indexes is not None:
+                    mapped = [send_idx[i] for i in indexes if 0 <= i < len(send_idx)]
+                    # Что реранк не оценил (хвост limit > top_k) сохраняет место ПОСЛЕ ранжированных
+                    # (PR #10, п.4): раньше пересборка из ≤top_k индексов молча резала хвост.
+                    seen = set(mapped)
+                    reordered = [results[i] for i in mapped + [j for j in range(len(results)) if j not in seen]]
+                    # Новый порядок присваивается ТОЛЬКО после сборки (п.4 ревью 19:39).
+                    results, words = reordered, list(reordered)
+            except Exception as exc:  # noqa: BLE001 - как в _unified_stream: результаты остаются, отказ считается
+                self._rescorer.note_failure(f"search: {type(exc).__name__}: {exc}")
         min_score = self._embedding.min_score if self._embedding is not None else None
         if meaning is not None and len(results) < limit:  # by meaning: after every fact that holds the words
             for fact in self._retriever.by_meaning(meaning, exclude={f["fact_id"] for f in results},
