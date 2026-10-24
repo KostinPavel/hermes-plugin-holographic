@@ -15,7 +15,7 @@
   («Можешь отправить…?») or an imperfective one after a request word («Прошу отправлять…»).
 - **A version or a commit after "pin" is not a PIN** (RFC #20, KostinPavel). "Our install and the catalog pin are
   0.17.4" or "pin 827c639e" were refused as credentials. After a PIN's name only digits count as its value
-  ("PIN: 4821", "pin: 4821-7730"); a password or a token keeps its own rules.
+  ("PIN: 4821", "pin: 4821-7730", "PIN: (4821)"); a password or a token keeps its own rules.
 
 ### Changed
 

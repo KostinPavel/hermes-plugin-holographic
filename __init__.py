@@ -651,9 +651,10 @@ def _holds_a_secret(match: re.Match) -> bool:
         if _is_reference(_value(value), assigned):
             return False
         return _looks_like_a_secret(value, links=not _RE_SECRET_LINK_NAME.search(word), assigned=assigned)
-    if _RE_PIN_NAME.search(word) and not _RE_PIN_VALUE.fullmatch(_value(value)):
+    if _RE_PIN_NAME.search(word) and not _RE_PIN_VALUE.fullmatch(_value(value).strip("()[]{}")):
         # a PIN is digits: after "pin" a version or a commit is what a catalog pins ("the catalog pin is 0.17.4",
-        # "pin 827c639e"), not a secret (RFC #20, 2026-10-24)
+        # "pin 827c639e"), not a secret (RFC #20, 2026-10-24); brackets around it are not part of it ("PIN: (4821)",
+        # Codex review of PR #22)
         return False
     return _looks_like_a_secret(value, assigned=assigned)
 

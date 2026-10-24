@@ -102,11 +102,13 @@ def test_an_imperfective_report_is_a_fact(text):
 # 4. What a catalog pins is a version or a commit, not a PIN
 VERSION_PINS = [
     CATALOG_PIN, CATALOG_PINS, "the catalog pin are 9.31.9", "the catalog pin is 0.17.4", "catalog pin: 0.17.4", "the pin is v0.17.4",
-    "pin 827c639e in the catalog", "Stable pin: 5.41.5", "ПИН каталога: 0.17.4",
+    "pin 827c639e in the catalog", "Stable pin: 5.41.5", "ПИН каталога: 0.17.4", "the catalog pin (0.17.4)",
 ]
 # A PIN is still one, with or without a hyphen in it
 REAL_PINS = ["The PIN is 4821", "card pin: 4821", "PIN-Code 4821", "pin: 4821-7730", "the PINs = 4821, 9932",
-             "PIN карты Андрея: 4821"]
+             "PIN карты Андрея: 4821",
+             # in brackets, as people write it: still the digits (Codex review of PR #22)
+             "PIN: (4821)", "PIN: [4821]", "pin {4821}", "ПИН карты: (4821)"]
 
 
 @pytest.mark.parametrize("text", VERSION_PINS)
