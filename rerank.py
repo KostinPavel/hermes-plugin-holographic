@@ -255,10 +255,27 @@ class Rescorer:
 
         def send():
             try:
+                # Воркер режет САМ: тело, которое капает, обрывается здесь, на СВОЁМ потоке,
+                # по своему дедлайну; `with` закрывает соединение на этом же потоке. Caller-side
+                # close() ждал воркер в read() — реальный медленный сервер отдавал 21 байт за
+                # 2.0 с и 101 байт за 10.1 с при rerank_timeout 0.5, лок держался весь ход
+                # (ревью 19:39, п.1) — поэтому close у caller убран, остаётся только join(timeout).
+                deadline = time.monotonic() + timeout
                 with _OPENER.open(request, timeout=timeout) as response:
-                    box["response"] = response  # main закроет его по таймауту (п.5)
-                    raw = response.read(MAX_RESPONSE)
-                box["payload"] = json.loads(raw)
+                    chunks, size = [], 0
+                    while time.monotonic() < deadline:
+                        chunk = response.read1(65536)
+                        if time.monotonic() >= deadline:
+                            raise TimeoutError("the answer came too slowly")
+                        if not chunk:
+                            break
+                        size += len(chunk)
+                        if size > MAX_RESPONSE:
+                            raise ValueError("answer too large")
+                        chunks.append(chunk)
+                    else:
+                        raise TimeoutError("the answer came too slowly")
+                box["payload"] = json.loads(b"".join(chunks))
             except BaseException as exc:  # noqa: BLE001 - the worker must record every failure; a silent death would burn the whole join() timeout
                 box["error"] = exc
             finally:
@@ -274,21 +291,15 @@ class Rescorer:
         timed_out = alive or isinstance(error, TimeoutError) or (
             isinstance(error, urllib.error.URLError) and isinstance(error.reason, TimeoutError))
         if timed_out:
-            # п.5: рвём соединение — воркер-читатель просыпается с ошибкой и умирает вместо
-            # того, чтобы дочитывать байты до MAX_RESPONSE. Best effort: закрытие из другого
-            # потока не гарантирует пробуждение recv (platform-dependent), поэтому ниже остаётся
-            # guard — пока воркер жив, второй запрос не стартует.
-            closer = getattr(box.get("response"), "close", None)
-            if callable(closer):
-                try:
-                    closer()
-                except Exception:  # noqa: BLE001 - best effort, платформозависимо
-                    pass
+            # Close() снаружи НЕ делаем (ревью 19:39, п.1): он ждёт воркер в read() и сам
+            # растягивает ход до тела сервера. Воркер закрывает соединение сам (read1 + with
+            # на своём потоке), а здесь остаётся только guard — пока воркер жив, второй
+            # запрос не стартует (п.5).
             with self._lock:
                 # Both cases pause the endpoint: join() вышел по таймауту (alive) ИЛИ сам воркер закончился
                 # TimeoutError — сокетный таймаут должен ставить паузу и расти failures, иначе медленный
                 # сервер опрашивается каждый turn (PR #10, п.2).
-                noted = self._fail_locked("no answer (timeout)" if alive else "no answer (socket timeout)")
+                noted = self._fail_locked("no answer (timeout)")  # и живой join, и свой дедлайн воркера
             self._log_failure(*noted)
             return None
         try:

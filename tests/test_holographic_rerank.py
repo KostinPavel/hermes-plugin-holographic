@@ -10,7 +10,9 @@ earlier, on the lexical stream);
 they are ignored with a warning. Any failure keeps the current order and pauses the endpoint."""
 from __future__ import annotations
 
+import http.server
 import json
+import threading
 import logging
 import re
 import time
@@ -29,6 +31,8 @@ class _Response:
         piece = self.body[self.at:] if n is None or n < 0 else self.body[self.at:self.at + n]
         self.at += len(piece)
         return piece
+
+    read1 = read  # what urllib's HTTPResponse offers: a chunk, then b""
 
     def __enter__(self):
         return self
@@ -388,6 +392,66 @@ def test_timeout_keeps_order(tmp_path, endpoint, monkeypatch):
     if r._worker is not None:
         r._worker.join(3)  # воркер доспивает свой delay — тест не оставляет нить
     p.shutdown()
+
+
+# -- a real slow server ------------------------------------------------------------------------------------------
+
+class _TrickleHandler(http.server.BaseHTTPRequestHandler):
+    """Отдаёт тело ПО БАЙТУ с паузой — «медленное тело» из ревью 19:39 (п.1)."""
+
+    payload = b""
+    delay = 0.1
+
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(self.payload)))
+        self.end_headers()
+        for byte in self.payload:
+            self.wfile.write(bytes([byte]))
+            self.wfile.flush()
+            time.sleep(self.delay)
+
+    def log_message(self, *a):
+        pass
+
+
+def test_slow_body_returns_at_rerank_timeout_not_at_the_body(tmp_path):
+    """Медленный тело-сервер (майнтейнер 19:39, п.1): 21 байт по 100 мс = 2.1 с при rerank_timeout 0.5.
+
+    Caller-side close() ждал воркер, застрявший в read(): scores() возвращалась 2.0 с (21 байт) и
+    10.1 с (101 байт), лок провайдера держался весь ход, ядро (>8 с) отбрасывало recall. Фейки close
+    не ждут и возвращаются сразу — только реальный сервер ловит это. Воркер обязан резаться САМ по
+    своему дедлайну (read1 + with на своём потоке); caller ждёт только join(timeout)."""
+    handler = type("H", (_TrickleHandler,), {"payload": b'{"results":[{"i":0}]}', "delay": 0.1})
+    class _Quiet(http.server.ThreadingHTTPServer):
+        # воркер обрывает соединение по своему дедлайну — обрыв в обработчике ожидаем,
+        # traceback сюда не нужен
+        def handle_error(self, *a):
+            pass
+
+    server = _Quiet(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        p = _provider(tmp_path, **{**RANK,
+                                   "rerank_url": f"http://127.0.0.1:{server.server_address[1]}/v1/rerank",
+                                   "rerank_timeout": "0.5"})
+        _fill(p)
+        start = time.perf_counter()
+        _block(p, "when does the backup run?")
+        elapsed = time.perf_counter() - start
+        assert elapsed < 1.5, f"caller ждал тело сервера: {elapsed:.2f} с вместо ~rerank_timeout (0.5)"
+        r = p._rescorer
+        assert r.failures == 1, "обрыв по дедлайну воркера обязан считаться отказом"
+        assert r.status().startswith("paused"), "эндпоинт уходит на паузу"
+        if r._worker is not None:
+            r._worker.join(3)  # воркер сам закрывает соединение и умирает — нить не остаётся
+        p.shutdown()
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 # -- blend (weight > 0) --------------------------------------------------------------------------------------

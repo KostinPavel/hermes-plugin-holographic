@@ -36,6 +36,8 @@ class _Response:
         self.at += len(piece)
         return piece
 
+    read1 = read  # what urllib's HTTPResponse offers: a chunk, then b""
+
     def __enter__(self):
         return self
 
