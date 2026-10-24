@@ -1,8 +1,9 @@
 # Benchmark on the PR head
 
 Every row of the raw files carries `git_sha`, `endpoint` and `scale`; each section names the head it
-ran on (the table above: `b6cbec5`, default config `RECALL_MARGIN = 1.0` — the 0.6 proposal lives in
-PR #17; the final merge run: `649276e`). Harness: `tools/provenance_probe.py`; raw rows:
+ran on (the table above: its `provenance_*` rows carry `git_sha 77c9325` — the head they actually ran
+on, committed later in the housekeeping `b6cbec5`; default config `RECALL_MARGIN = 1.0` — the 0.6
+proposal lives in PR #17; the final merge run: `649276e`). Harness: `tools/provenance_probe.py`; raw rows:
 `results/provenance_{multi,contrast_ru,contrast_en,contrast_zh}_{off,on}.jsonl`.
 
 **Sets.** One multilingual set (18 languages — 360 real queries + 90 negatives) and the contrast sets

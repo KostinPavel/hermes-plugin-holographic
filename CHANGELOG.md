@@ -10,7 +10,9 @@
   were compared in the issue and collapsed after review 2026-10-22): membership always stays with coverage, the
   reranker advises the order. New keys: `rerank`, `rerank_url`, `rerank_model`, `rerank_top_k` (40),
   `rerank_weight` (0 = order-only), `rerank_window` (0.05 = the tail below δ of the best score is cut before
-  the top five (coverage runs first, then the reranker, then the window; 0 keeps all)), `rerank_timeout` (3 s). `rerank_mode` and `rerank_margin` existed in
+  the top five (coverage runs first, then the reranker, then the window; 0 keeps all)), `rerank_timeout` (3 s, capped so that `embedding_timeout + rerank_timeout` stays under the core's 8 s
+  prefetch budget), `rerank_scale` (`logit` by default — the endpoint's own score scale; `unit` for a
+  [0, 1] endpoint such as Cohere or TEI). `rerank_mode` and `rerank_margin` existed in
   the drafts and are gone: a config carrying them is ignored with a warning. A failure or a slow answer keeps the
   current order and pauses the endpoint (60 s doubling to 900 s); a query holding a secret is never sent. One
   stdlib client, no new dependency (`rerank.py`); with the feature off, scores and recall are 0.17.8's (tests

@@ -666,8 +666,8 @@ Off by default, and the one part of the plugin that goes online. Words, keywords
 an embedding model you choose for the questions that share no word with their fact ("Which machine copies our data
 while we sleep?" against "The nightly backup runs from the OES box at 2 am."). It lives in its own module
 (`embeddings.py`) and needs no new dependency (the standard library's HTTP client, numpy as for HRR). With it off
-there are no calls and no vectors, and search scores (to six decimal places) and recall are 0.13.0's — a test pins
-them on a store of twenty facts in five languages; what
+there are no calls and no vectors, and search scores (to six decimal places) and recall are 0.13.0's — a test
+pins recall on six English facts and four queries (``test_recall_is_identical_to_main``); what
 else 0.14.0 changes is the prompt line (see the CHANGELOG), a `search_by_meaning` field in `stats`, and the empty
 `fact_embeddings` table a writable session creates.
 
@@ -833,7 +833,8 @@ keywords, is a separate benchmark; one store does not show what another will do.
 
 **Experimental — it does not raise hits.** The gate agreed on in
 [#9](https://github.com/itpartypattaya/hermes-plugin-holographic/issues/9) did not pass on either set
-(branch A needs +5 points and there are none; branch B allows no lost target and each run loses one),
+(branch A needs +5 points and there are none; branch B allows no lost target and each run loses at
+least one — the embeddings-on hold-out loses two),
 so the option ships **off by default** and states its trade plainly. Three independent runs, all with
 ``jina-reranker-v2-base-multilingual`` Q4_K_M, ``rerank_scale: logit``, window 0.05, weight 0 — the
 maintainer's held-out set twice, with embeddings off and on (bge-m3 Q4_K_M vectors from
@@ -843,8 +844,11 @@ vectorized per language):
 | run | hit@5 off → on | non-target in top 5 | lines/turn | targets lost / gained | confused rows |
 |---|---|---|---|---|---|
 | this PR's test split (90 queries) | 43 → 43 | 108 → 66 (−39 %) | 1.98 → 1.27 | 1 / 0 | 6 → 4 |
-| the maintainer's hold-out (126 queries) | 64 → 64 | 249 → 154 (−38 %) | 1.84 → 1.21 | 1 / 1 | 24 → 18 |
-| the maintainer's hold-out, embeddings on (126 queries) | 81 → 81 | 251 → 150 (−40 %) | 1.97 → 1.30 | 2 / 1 | 24 → 18 |
+| the maintainer's hold-out (126 queries) | 64 → 64 | 249 → 154 (−38 %) | 2.24 → 1.44 | 1 / 1 | 24 → 18 |
+| the maintainer's hold-out, embeddings on (126 queries) | 81 → 81 | 251 → 150 (−40 %) | 2.38 → 1.53 | 2 / 1 | 24 → 18 |
+
+*lines/turn во всех трёх строках — на реальный вопрос. Ранее приводившиеся для hold-out 1.84 → 1.21*
+*и 1.97 → 1.30 были средним по всем 195 строкам, включая чит-чат (знаменатель указал мейнтейнер** 2026-10-24); per-question: 2.24 → 1.44 и 2.38 → 1.53.*
 
 With it **on**, a third fewer lines reach the model and ~40 % fewer non-target facts, with fewer
 confusions in all runs and noise (chit-chat, no-answer) unchanged; the cost is no gain in hits and
@@ -853,7 +857,8 @@ lost on questions holding several facts of one kind (``q055``, ``h42``, ``h34``)
 the hold-out set), and failed rerank calls were 0 in all three runs.
 
 Off by default (``rerank: off``): words, keywords, HRR and, when on, meaning decide as above, with 0.17.8's scores and
-recall — a test pins them on a store of twenty facts in five languages. Turn it on to add a second stage: a
+recall — a test pins them on six English facts and four queries (``test_recall_is_identical_to_main``,
+golden blocks per mode). Turn it on to add a second stage: a
 cross-encoder reranker (Cohere's ``/v1/rerank`` shape; OpenAI has no rerank API) reorders the candidate pool before a
 turn, after the blend. It lives in its own module (``rerank.py``), needs no new dependency, and makes one synchronous
 HTTP call at recall time; a failure or a slow answer only keeps the current order and pauses the endpoint (60 s
