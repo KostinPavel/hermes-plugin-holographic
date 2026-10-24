@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Docs
+
+- **Stored times are UTC, and the README says so** (issue #3, njwangfeng: a weekly window written in local time
+  returned zero rows from `fact_versions.recorded_at`). `recorded_at`, `facts.created_at` and `updated_at` are UTC;
+  `fact_versions.recorded_on` holds the same moment as a date in Hermes's timezone, for windows in local days.
+
 ## 0.17.9 — 2026-10-23
 
 The tool description says what leaving `origin` out does, and CI runs faster on Windows. Nothing that is stored or

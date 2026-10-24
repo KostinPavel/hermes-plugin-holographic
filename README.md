@@ -237,7 +237,9 @@ months on, a rule the user set and a guess the agent made looked the same.
   `origin` until a new session starts: its facts land without one. A new fact or a changed version stored with no
   origin has none (`unknown` in `stats`), and the tool description says so; an `add` of a text already stored
   keeps that fact's origin and trust. In the database the origin is kept with
-  the version, in `fact_versions.src_origin` of the current row (`status = 'current'`), not on `facts`.
+  the version, in `fact_versions.src_origin` of the current row (`status = 'current'`), not on `facts`. Stored
+  times are UTC (`fact_versions.recorded_at`, `facts.created_at` / `updated_at`); for a window in local days use
+  `fact_versions.recorded_on`, the same moment as a date in Hermes's timezone (UTC when none is set).
 - **Starting trust.** What the person said or confirmed starts 0.1 above `default_trust`, the agent's conclusion 0.1
   below it (within 0 and 1), a fact without an origin at `default_trust` as before; a `change` starts over at its
   new origin's trust. Measured on 40 pairs of conflicting facts about the
