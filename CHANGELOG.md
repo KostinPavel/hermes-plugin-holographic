@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Fixed
+
+- **A message with a key across the 2000-character cut is no longer sent for embedding.** The message was cut to
+  `TEXT_MAX_CHARS` first and screened after, so a key that began just before the cut lost its tail, passed the
+  screen as a harmless fragment, and its first characters went to the embeddings endpoint (found in the PR #10
+  review, Codex). The whole message is screened now; a message holding a secret anywhere is not sent at all.
+
 ### Docs
 
 - **Stored times are UTC, and the README says so** (issue #3, njwangfeng: a weekly window written in local time
