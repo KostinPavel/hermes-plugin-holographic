@@ -83,9 +83,16 @@ class Settings:
         # сырые логиты. Набор значений держит _CHOICES у провайдера: вне его —
         # именованная проблема конфига и memory off, а не тихий fallback.
         self.scale = str(config.get("rerank_scale") or "logit").strip().lower()
-        emb = _number(config, "embedding_timeout", 3.0, 0.5, 6.0)  # кламп как в embeddings.py
-        self.timeout = _number(config, "rerank_timeout", DEFAULT_TIMEOUT, 0.5,
-                               min(10.0, _PREFETCH_BUDGET_S - emb))
+        # п.2 (ревью 19:39): бюджет ядра считает ТОЛЬКО включённые embeddings — левый
+        # embedding_timeout при выключенных ничего не должен резать. Вторая беда: _number
+        # отдаёт дефолт БЕЗ клампа, поэтому дефолтный rerank_timeout обходил кап (emb 6 + 3 = 9
+        # с при бюджете 7.5) — капаем явно: min(значение юзера, бюджет − emb).
+        # Заодно чинит мёртвый min(10.0, 7.5 − emb) из чек-листа 24:10: левая ветка теперь
+        # значение конфига (живое), правая — бюджет; 10 с остаётся верхним клампом юзера.
+        emb_on = str(config.get("embeddings", "off")).strip().lower() in {"on", "true", "yes", "1"}
+        emb = _number(config, "embedding_timeout", 3.0, 0.5, 6.0) if emb_on else 0.0  # как в embeddings.py
+        self.timeout = min(_number(config, "rerank_timeout", DEFAULT_TIMEOUT, 0.5, 10.0),
+                           _PREFETCH_BUDGET_S - emb)
 
 
 def settings_from(config: dict) -> Settings | None:

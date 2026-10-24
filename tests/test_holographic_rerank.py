@@ -481,12 +481,19 @@ def test_settings_validation():
     assert (s.top_k, s.window) == (15, 0.1)
     assert rerank.Settings({"rerank": "on"}).window == rerank.DEFAULT_WINDOW  # дефолт окна
 
-    # п.4 (майнтейнер 24:10): бюджет ядра — prefetch провайдера 8 с, embedding_timeout + 
-    # rerank_timeout обязаны укладываться меньше него при любых допустимых значениях
-    # (emb клампится 0.5..6, rerank раньше зажимался 0.5..10 независимо).
-    assert rerank.Settings({"rerank": "on", "embedding_timeout": "6", "rerank_timeout": "10"}).timeout == 1.5
-    assert rerank.Settings({"rerank": "on", "embedding_timeout": "0.5", "rerank_timeout": "10"}).timeout == 7.0
-    assert rerank.Settings({"rerank": "on"}).timeout == 3.0  # дефолт 3 + дефолт emb 3 = 6 влезает
+    # п.4 (майнтейнер 24:10) + п.2 (19:39): бюджет ядра — prefetch провайдера 8 с, сумма
+    # embedding_timeout + rerank_timeout обязана укладываться в него; emb считается ТОЛЬКО
+    # при embeddings: on (левый тюнинг не должен резать rerank), а дефолт rerank_timeout
+    # тоже проходит кап (_number возвращает дефолт БЕЗ клампа — их находка).
+    assert rerank.Settings({"rerank": "on", "embeddings": "on",
+                             "embedding_timeout": "6", "rerank_timeout": "10"}).timeout == 1.5
+    assert rerank.Settings({"rerank": "on", "embeddings": "on",
+                             "embedding_timeout": "0.5", "rerank_timeout": "10"}).timeout == 7.0
+    assert rerank.Settings({"rerank": "on", "embeddings": "on",
+                             "embedding_timeout": "6"}).timeout == 1.5  # дефолт 3 тоже капается
+    assert rerank.Settings({"rerank": "on",
+                             "embedding_timeout": "6", "rerank_timeout": "10"}).timeout == 7.5  # emb off
+    assert rerank.Settings({"rerank": "on"}).timeout == 3.0  # emb off: дефолт 3 влезает в 7.5
 
 
 def test_removed_keys_are_ignored_with_a_warning(caplog):
