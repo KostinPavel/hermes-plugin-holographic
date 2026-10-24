@@ -171,6 +171,13 @@ class Rescorer:
     def usable(self) -> bool:
         return self.status() == "ready"
 
+    def note_failure(self, why: str) -> None:
+        """Сбой ВНЕ scores() — исключение в маппинге/окне реранк-стадии у провайдера (п.3
+        чек-листа мейнтейнера 24:10): тот же результат, что у неудачного вызова — пауза
+        эндпоинта, счётчик failures и failed в last_status, чтобы fail-fast прогона это видел."""
+        self.last_status = f"failed: {why}"
+        self._failed(why)
+
     def order(self, query: str, documents: list[str]) -> list[int] | None:
         """Indexes of *documents* in descending relevance to *query*, top_k at most, or None: unusable, a secret in
         *query*, or a request failed (logged; paused). The caller keeps the current order on None."""

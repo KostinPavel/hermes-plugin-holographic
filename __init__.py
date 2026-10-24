@@ -1677,46 +1677,53 @@ class HolographicMemoryProvider(MemoryProvider):
         # Union: disjoint by construction (each stream excluded what the previous one admitted).
         union = meaning_facts + entity_facts + lexical
         send_idx, docs = self._sendable_docs(union)  # секрет-экран (PR #10, п.1)
-        ranked = rescorer.scores(query, docs) if docs else None
-        if ranked is not None:
-            ranked = self._rescored(ranked, send_idx)
-        if ranked is None:
-            # A failed call (or an empty pool): ровно off-раскладка (п.4(1) ревью 10:34) — до
-            # пяти лексических фактов, потом meaning/entity-дополнения, исключающие ТОЛЬКО эти
-            # пять: шестой лексический факт, который entity-поток добавил бы в off, не теряется
-            # при сбое. Раньше дополнения считались от ВСЕЙ лексики и в фолбэке не появлялись.
-            keep = lexical[:_PREFETCH_FACTS]
-            meaning_facts, entity_facts, by_meaning = self._stream_extras(
-                query, meaning, {f["fact_id"] for f in keep}, key, turn)
-            return keep + meaning_facts + entity_facts, by_meaning
-        order = [i for i, _ in ranked if i < len(union)]
-        w = rescorer.settings.weight
-        if w > 0.0:
-            # rerank_weight > 0: min-max-normalised cross-encoder score blended into the blend score —
-            # the order is decided by both (order-only when weight is 0). Вся выборка в одной шкале
-            # (п.4(4) ревью 10:34): смесь строится для ВСЕХ членов пула, см. blend_union.
-            blend_union(union, ranked, w)
-        else:
-            # Documents beyond top_k were never sent (scores() sends the first top_k only): they keep
-            # their blend order behind the ranked ones instead of being dropped.
-            tail = [i for i in range(len(union)) if i not in set(order)]
-            union = [union[i] for i in order + tail]
-        fresh = union
-        window = rescorer.settings.window
-        if w == 0.0 and window > 0.0:
-            # rerank_window (δ): срез НИЖНЕГО хвоста после coverage и реранкера, перед top-5 (п.6: вето-по-margin
-            # удалено, осталось окно). Сигмоид-нормализация — чтобы δ был одинаков для сырых логитов и [0,1].
-            keep = _bottom_cut(rescorer.normalized(ranked), window)
-            # Вариант (а) встроен в окно (майнтейнер 13:06): не резать ниже двух scored —
-            # без клавиши и без вариантов; (б) удалён вместе с rerank_window_named.
-            keep = _window_keep(keep, len(ranked))
-            # keep — позиции в RANKED, а хвост union (не-sendable-факты, которые recall показывает,
-            # и позиции за top_k) в ranked не входит. Он обязан пережить окно: состав пула для
-            # recall не меняется (докстринг _sendable_docs). Без этого каждый успешный вызов при
-            # rerank_window > 0 тихо терял хвост, даже когда окно не резало ничего
-            # (майнтейнер 24:10, п.1: три прокси-факта — off отдаёт 3 строки, on отдавал 2).
-            fresh = ([union[i] for i in keep] if keep else []) + union[len(ranked):]
-        return fresh[:_PREFETCH_FACTS], by_meaning
+        try:
+            ranked = rescorer.scores(query, docs) if docs else None
+            if ranked is not None:
+                ranked = self._rescored(ranked, send_idx)
+            if ranked is not None:
+                order = [i for i, _ in ranked if i < len(union)]
+                w = rescorer.settings.weight
+                if w > 0.0:
+                    # rerank_weight > 0: min-max-normalised cross-encoder score blended into the blend score —
+                    # the order is decided by both (order-only when weight is 0). Вся выборка в одной шкале
+                    # (п.4(4) ревью 10:34): смесь строится для ВСЕХ членов пула, см. blend_union.
+                    blend_union(union, ranked, w)
+                else:
+                    # Documents beyond top_k were never sent (scores() sends the first top_k only): they keep
+                    # their blend order behind the ranked ones instead of being dropped.
+                    tail = [i for i in range(len(union)) if i not in set(order)]
+                    union = [union[i] for i in order + tail]
+                fresh = union
+                window = rescorer.settings.window
+                if w == 0.0 and window > 0.0:
+                    # rerank_window (δ): срез НИЖНЕГО хвоста после coverage и реранкера, перед top-5 (п.6: вето-по-margin
+                    # удалено, осталось окно). Сигмоид-нормализация — чтобы δ был одинаков для сырых логитов и [0,1].
+                    keep = _bottom_cut(rescorer.normalized(ranked), window)
+                    # Вариант (а) встроен в окно (майнтейнер 13:06): не резать ниже двух scored —
+                    # без клавиши и без вариантов; (б) удалён вместе с rerank_window_named.
+                    keep = _window_keep(keep, len(ranked))
+                    # keep — позиции в RANKED, а хвост union (не-sendable-факты, которые recall показывает,
+                    # и позиции за top_k) в ranked не входит. Он обязан пережить окно: состав пула для
+                    # recall не меняется (докстринг _sendable_docs). Без этого каждый успешный вызов при
+                    # rerank_window > 0 тихо терял хвост, даже когда окно не резало ничего
+                    # (майнтейнер 24:10, п.1: три прокси-факта — off отдаёт 3 строки, on отдавал 2).
+                    fresh = ([union[i] for i in keep] if keep else []) + union[len(ranked):]
+                return fresh[:_PREFETCH_FACTS], by_meaning
+        except Exception as exc:  # noqa: BLE001 - ANY exception in the stage acts like a failed call (п.3)
+            # Любой exception, вылетевший из стадии (вызов, маппинг, окно — Codex ловил Thread.start()
+            # RuntimeError, переполнение счёта было ещё раньше), раньше уходил в обработчик prefetch:
+            # турн уходил БЕЗ фактов, failures оставался 0, эндпоинт не ставился на паузу. Теперь —
+            # как неудачный вызов: пауза + счётчик + last_status, а блок отдаёт off-раскладка
+            # (майнтейнер 24:10, п.3; «с провалом — только прежний порядок» и обещает README).
+            rescorer.note_failure(f"rerank stage: {type(exc).__name__}: {exc}")
+        # A failed call, an empty pool OR an exception in the stage: ровно off-раскладка (п.4(1) ревью
+        # 10:34) — до пяти лексических фактов, потом meaning/entity-дополнения, исключающие ТОЛЬКО эти
+        # пять: шестой лексический факт, который entity-поток добавил бы в off, не теряется при сбое.
+        keep = lexical[:_PREFETCH_FACTS]
+        meaning_facts, entity_facts, by_meaning = self._stream_extras(
+            query, meaning, {f["fact_id"] for f in keep}, key, turn)
+        return keep + meaning_facts + entity_facts, by_meaning
 
     def _recall_failed(self, exc: Exception) -> None:
         """Recall before a turn failed and the turn goes on without facts: a warning once per kind of failure (a

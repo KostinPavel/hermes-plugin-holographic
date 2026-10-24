@@ -292,6 +292,27 @@ def test_window_keeps_unscored_tail_in_block(tmp_path, endpoint):
     p.shutdown()
 
 
+def test_stage_exception_keeps_order_and_counts(tmp_path, endpoint, monkeypatch):
+    """Любой exception в реранк-стадии (вызов, маппинг, окно) = неудачный вызов: off-раскладка в
+    блоке, пауза эндпоинта, failures == 1, failed в last_status. Раньше exception уходил в обработчик
+    prefetch — турн уходил БЕЗ фактов, failures оставался 0, эндпоинт не ставился на паузу.
+    Майнтейнер 24:10, п.3 (Codex воспроизводил Thread.start() -> RuntimeError)."""
+    p = _provider(tmp_path, **RANK)
+    _fill(p)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("Thread.start() exploded")
+
+    monkeypatch.setattr(p._rescorer, "scores", boom)
+    block = _block(p, "when does the backup run?")
+    assert block, "исключение в стадии не должно уносить блок турна"
+    assert "The nightly backup runs from the OES box at 2 am." in block  # off-раскладка, а не пустота
+    assert p._rescorer.failures == 1, "сбой стадии обязан считаться отказом"
+    assert p._rescorer.status().startswith("paused"), "эндпоинт должен уйти на паузу"
+    assert p._rescorer.last_status.startswith("failed: rerank stage")
+    p.shutdown()
+
+
 def test_secret_straddling_the_2000_cut_is_screened(tmp_path, endpoint):
     """Секрет-экран гоняет ВЕСЬ запрос: ключ, начинающийся перед 2000-м символом, в срез [:2000]
     попадал обрывком («pas») и проходил экран, а первые буквы уходили на эндпоинт. Майнтейнер 24:10,
