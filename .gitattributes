@@ -1,3 +1,3 @@
-# Плагин хранит .py в LF (политика upstream); *.py eol=lf не даёт autocrlf↵
-# подмешать CRLF в блоб, как это случилось с rerank.py в 1175978.
+# The plugin keeps .py files with LF line endings; eol=lf stops a checkout with autocrlf from committing CRLF,
+# as happened to rerank.py in 1175978.
 *.py text eol=lf
