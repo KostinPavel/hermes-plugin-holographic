@@ -8,9 +8,11 @@
   characters are kept; a longer one was dropped and the 13th on were cut without a word, so an `update` with
   more than 12 quietly lost some. `add`, `change` and `update` now return the `keywords` kept and, when some were
   not, `keywords_dropped` with their positions in the list given and why (`2 not kept: #3 longer than 40
-  characters; #15 past the limit of 12`), never their text. An `add` of a text that is already stored keeps
-  that fact's keywords and now says so (`keywords_not_set`, with the `update` that sets them). The schema names
-  the limits.
+  characters; #15 past the limit of 12`), never their text; a repeat of a word past the limit is not kept
+  either and is counted. An `add` or a `change` onto a text another fact already holds keeps that fact's
+  keywords and now says so (`keywords_not_set`, with the `update` that sets them). The schema names the limits.
+  Reviewed by Codex CLI (two findings fixed: the count above, and a `change` that reported keywords it had not
+  written).
 
 ## 0.18.0 — 2026-10-25
 
