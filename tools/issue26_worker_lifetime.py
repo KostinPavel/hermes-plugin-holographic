@@ -14,6 +14,11 @@ Three local servers, ``rerank_timeout`` 0.5 (the Settings floor), one real ``Res
 Each read succeeds on its own (0.2 s < 0.5 s timeout), so only a check on the whole operation can stop
 the worker. ``--shutdown`` shows the candidate fix from #26: the caller does ``sock.shutdown(SHUT_RDWR)``
 at its deadline — the missing cancellation primitive, in sync code, without an HTTP layer of our own.
+
+Windows only: the run raises the system timer to 1 ms (``timeBeginPeriod``) and releases it after, so a
+wait does not overshoot by a whole 15.6 ms tick (measured 510.9 -> 500.7 ms mean on a 0.5 s timeout;
+Linux needs no such help — 500.8 ms mean in WSL). The numbers posted in #26 were taken WITHOUT it, at
+the default granularity: expect the stall/body rows ~10 ms (0.1x) tighter here, nothing else changes.
 """
 from __future__ import annotations
 
@@ -103,7 +108,11 @@ def _recording_opener(sock_box: dict) -> urllib.request.OpenerDirector:
                     super().connect()
                     sock_box["sock"] = self.sock
 
-            return self.do_open(Conn, req)  # AbstractHTTPHandler.do_open passes req.timeout along
+            try:
+                return self.do_open(Conn, req)  # AbstractHTTPHandler.do_open passes req.timeout along
+            except BaseException as exc:  # the failure the worker itself records (connect / header phase)
+                sock_box["error"] = f"{type(exc).__name__}: {exc}"
+                raise
 
     return urllib.request.build_opener(_Recorder(), rerank._NoRedirect())
 
@@ -137,20 +146,41 @@ def measure(mode: str, shutdown: bool) -> None:
         if worker is not None:
             worker.join(60)  # how long it REALLY lives (cap 60 s)
         total = time.monotonic() - start
+        error = rescorer._last_error  # why the endpoint was paused ("no answer (timeout)" etc.)
         print(f"  {mode:12s} shutdown={str(shutdown):5s}  caller {caller * 1000:6.1f} ms | "
               f"alive_after_call={str(alive):5s} | worker end {total * 1000:7.1f} ms ({total / TIMEOUT:4.1f}x)"
-              + (f" | killed at {at}" if at is not None else ""))
+              + (f" | killed at {at}" if at is not None else "")
+              + f" | paused: {error}" + (f" | worker exc: {sock_box['error']}" if "error" in sock_box else ""))
     finally:
         rerank._OPENER = original
         stop.set()
 
 
+def _high_resolution_timer():
+    """Windows: raise the system timer to 1 ms for the run, so a wait does not overshoot its
+    deadline by a whole 15.6 ms tick (measured: 510.9 -> 500.7 ms mean on a 0.5 s timeout).
+    Returns the handle to release in the caller's finally, or None where no such API exists —
+    Linux needs no help here (hrtimers: 500.8 ms mean on the same deadline, measured in WSL).
+    """
+    if sys.platform != "win32":
+        return None
+    import ctypes
+    winmm = ctypes.WinDLL("winmm")
+    winmm.timeBeginPeriod(1)
+    return winmm
+
+
 def main() -> None:
     shutdown = "--shutdown" in sys.argv
-    print(f"rerank_timeout = {TIMEOUT} s (Settings floor); worker end = x of that deadline")
-    for mode in ("stall", "drip_headers", "drip_body"):
-        for _run in range(RUNS):
-            measure(mode, shutdown)
+    winmm = _high_resolution_timer()
+    try:
+        print(f"rerank_timeout = {TIMEOUT} s (Settings floor); worker end = x of that deadline")
+        for mode in ("stall", "drip_headers", "drip_body"):
+            for _run in range(RUNS):
+                measure(mode, shutdown)
+    finally:
+        if winmm is not None:
+            winmm.timeEndPeriod(1)  # never leave the machine on a 1 ms tick
 
 
 if __name__ == "__main__":
