@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Stage traces at debug level** — statistics over the pipeline, fact ids only, never fact text (README,
+  "Data and privacy"). `embed`: the fact vectors stored after a turn, the facts the meaning stream admitted before
+  a turn, and the meaning matches a tool search returned. `rescore`: the pool and the documents the cross-encoder
+  was given, and its `#id=score` answer — at both call sites (prefetch and `fact_store search`) — or why no call
+  was made (`skipped_single`, `skipped_secret`, a failure). `fact_store search` now goes through
+  `Rescorer.scores()` instead of `order()`: the same indexes, plus the score the trace needs. Off at the normal
+  log level (`logging.level` in `config.yaml`); no new config key.
+
 ## 0.18.2 — 2026-10-25
 
 Fixes from two independent reviews of the outside code merged in 0.18.0 and of the last three days' changes. The

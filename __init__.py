@@ -400,6 +400,16 @@ def _one_line(text: str, limit: int = _PREFETCH_LINE_CHARS) -> str:
     return flat if len(flat) <= limit else flat[:limit - 1] + "…"
 
 
+def _trace_ids(fact_ids) -> str:
+    """``#1,#2,#5`` — the fact ids of one stage: a debug trace names rows for statistics, never their text."""
+    return ",".join(f"#{i}" for i in fact_ids)
+
+
+def _trace_scores(pairs) -> str:
+    """``#1=6.0,#2=4.0`` — a rescoring answer as (fact_id, score) pairs: ids and numbers only."""
+    return ",".join(f"#{fact_id}={score}" for fact_id, score in pairs)
+
+
 def _hermes_timezone():
     """Hermes's configured timezone (the local date of the fact history); None = UTC, also on cores without it."""
     try:
@@ -983,6 +993,8 @@ class HolographicMemoryProvider(MemoryProvider):
                     meaning_facts.append(fact)
                     have.add(fact["fact_id"])
                     by_meaning.add(fact["fact_id"])
+            logger.debug("holographic: embed: meaning admitted %d fact(s): %s", len(meaning_facts),
+                         _trace_ids(f["fact_id"] for f in meaning_facts))
         # Stream 3: the top facts of entities the message names — no word overlap needed, but the same
         # admissibility (safety, de-dup, prefetch_repeat_turns) as everything else, BEFORE the endpoint.
         entity_facts: list[dict] = []
@@ -1024,10 +1036,20 @@ class HolographicMemoryProvider(MemoryProvider):
         # Union: disjoint by construction (each stream excluded what the previous one admitted).
         union = meaning_facts + entity_facts + lexical
         send_idx, docs = self._sendable_docs(union)  # secret screen (PR #10, point 1)
+        # Stage trace (statistics): ids only — scores() scores the first top_k documents, so `sent` names what the
+        # stage was given; a trace line never carries fact text.
+        sent = [union[i]["fact_id"] for i in send_idx[:min(int(rescorer.settings.top_k), len(docs))]]
+        logger.debug("holographic: rescore prefetch: pool %d, documents %d: %s", len(union), len(docs),
+                     _trace_ids(sent))
         try:
             ranked = rescorer.scores(query, docs) if docs else None
             if ranked is not None:
                 ranked = self._rescored(ranked, send_idx)
+                logger.debug("holographic: rescore prefetch: %s: %s", rescorer.last_status,
+                             _trace_scores((union[i]["fact_id"], score) for i, score in ranked if i < len(union)))
+            else:
+                logger.debug("holographic: rescore prefetch: no answer (%s)",
+                             "nothing sendable" if not docs else rescorer.last_status)
             if ranked is not None:
                 order = [i for i, _ in ranked if i < len(union)]
                 w = rescorer.settings.weight
@@ -1168,6 +1190,8 @@ class HolographicMemoryProvider(MemoryProvider):
                         return
                     store.put_vectors(tag, [(fact_id, digest, embeddings.to_blob(vector))
                                             for (fact_id, _, digest), vector in zip(todo, vectors)])
+                    logger.debug("holographic: embed: %d fact vector(s) stored: %s", len(todo),
+                                 _trace_ids(fact_id for fact_id, _, _ in todo))
                 finally:
                     self._op_lock.release()
         except Exception as exc:  # noqa: BLE001 - a busy file, a broken connection: the next turn goes on
@@ -1665,7 +1689,20 @@ class HolographicMemoryProvider(MemoryProvider):
             # included) — they never go to the endpoint (PR #10, point 1).
             try:
                 send_idx, docs = self._sendable_docs(results)
-                indexes = self._rescorer.order(a["query"], docs) if docs else None
+                # Stage trace (statistics): as in _unified_stream — scores() scores the first top_k documents and
+                # gives the same indexes order() returned, plus the score for the trace (ids only).
+                sent = [results[i]["fact_id"] for i in send_idx[:min(int(self._rescorer.settings.top_k), len(docs))]]
+                logger.debug("holographic: rescore search: pool %d, documents %d: %s", len(results), len(docs),
+                             _trace_ids(sent))
+                ranked = self._rescorer.scores(a["query"], docs) if docs else None
+                if ranked is None:
+                    logger.debug("holographic: rescore search: no answer (%s)",
+                                 "nothing sendable" if not docs else self._rescorer.last_status)
+                else:
+                    logger.debug("holographic: rescore search: %s: %s", self._rescorer.last_status,
+                                 _trace_scores((results[send_idx[i]]["fact_id"], score)
+                                               for i, score in ranked if i < len(send_idx)))
+                indexes = [i for i, _ in ranked] if ranked is not None else None
                 if indexes is not None:
                     mapped = [send_idx[i] for i in indexes if 0 <= i < len(send_idx)]
                     # What the reranker did not score (the tail when limit > top_k) keeps its place AFTER the ranked
@@ -1691,6 +1728,9 @@ class HolographicMemoryProvider(MemoryProvider):
                                                      z_min=embeddings.SEARCH_Z_FLOOR, min_score=min_score):
                 fact["match"] = "meaning"
                 results.append(fact)
+        if meaning is not None:  # stage trace: what the embedding stage returned for this query (ids only)
+            traced = [f["fact_id"] for f in results if f.get("match") == "meaning"]
+            logger.debug("holographic: embed: meaning search returned %d fact(s): %s", len(traced), _trace_ids(traced))
         origins = self._store.origins([f["fact_id"] for f in results])  # who stands behind each (0.15.0)
         for fact in results:
             info = origins.get(fact["fact_id"]) or {}
