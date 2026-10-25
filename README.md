@@ -952,7 +952,7 @@ for commercial use. The plugin ships neither model.
 - `retrieval_count` counts how often a fact was handed to the model; nothing else is tracked.
 - For statistics, `logger.debug` stage traces name fact ids, never their text: `embed` — the fact vectors stored
   after a turn, the facts the meaning stage admitted before a turn and the meaning matches a tool search returned;
-  `rescore` — the pool and the documents the cross-encoder was given and its `#id=score` answer, or why no call was
+  `rescore` — the pool and the candidates the cross-encoder would score and its `#id=score` answer, or why no
   made. Set `logging.level: DEBUG` in `config.yaml` to see them in `logs/agent.log`; at the normal level they are
   not emitted, and there is no extra switch for them.
 - Each version keeps its source: platform, chat type, chat / thread / session id, the author of the turn (id and

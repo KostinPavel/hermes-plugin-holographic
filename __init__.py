@@ -993,8 +993,9 @@ class HolographicMemoryProvider(MemoryProvider):
                     meaning_facts.append(fact)
                     have.add(fact["fact_id"])
                     by_meaning.add(fact["fact_id"])
-            logger.debug("holographic: embed: meaning admitted %d fact(s): %s", len(meaning_facts),
-                         _trace_ids(f["fact_id"] for f in meaning_facts))
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug("holographic: embed: meaning admitted %d fact(s): %s", len(meaning_facts),
+                             _trace_ids(f["fact_id"] for f in meaning_facts))
         # Stream 3: the top facts of entities the message names — no word overlap needed, but the same
         # admissibility (safety, de-dup, prefetch_repeat_turns) as everything else, BEFORE the endpoint.
         entity_facts: list[dict] = []
@@ -1037,17 +1038,21 @@ class HolographicMemoryProvider(MemoryProvider):
         union = meaning_facts + entity_facts + lexical
         send_idx, docs = self._sendable_docs(union)  # secret screen (PR #10, point 1)
         # Stage trace (statistics): ids only — scores() scores the first top_k documents, so `sent` names what the
-        # stage was given; a trace line never carries fact text.
-        sent = [union[i]["fact_id"] for i in send_idx[:min(int(rescorer.settings.top_k), len(docs))]]
-        logger.debug("holographic: rescore prefetch: pool %d, documents %d: %s", len(union), len(docs),
-                     _trace_ids(sent))
+        # stage would be given. Logged before the call: the input is traced even when the stage raises; the answer
+        # line says whether a call happened (answered / skipped_single / skipped_secret / skipped_busy / failed).
+        if logger.isEnabledFor(logging.DEBUG):
+            sent = [union[i]["fact_id"] for i in send_idx[:min(int(rescorer.settings.top_k), len(docs))]]
+            logger.debug("holographic: rescore prefetch: pool %d, candidates %d: %s", len(union), len(sent),
+                         _trace_ids(sent))
         try:
             ranked = rescorer.scores(query, docs) if docs else None
             if ranked is not None:
                 ranked = self._rescored(ranked, send_idx)
-                logger.debug("holographic: rescore prefetch: %s: %s", rescorer.last_status,
-                             _trace_scores((union[i]["fact_id"], score) for i, score in ranked if i < len(union)))
-            else:
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug("holographic: rescore prefetch: %s: %s", rescorer.last_status,
+                                 _trace_scores((union[i]["fact_id"], score)
+                                               for i, score in ranked if i < len(union)))
+            elif logger.isEnabledFor(logging.DEBUG):
                 logger.debug("holographic: rescore prefetch: no answer (%s)",
                              "nothing sendable" if not docs else rescorer.last_status)
             if ranked is not None:
@@ -1188,10 +1193,11 @@ class HolographicMemoryProvider(MemoryProvider):
                 try:
                     if not self._open_here(store):
                         return
-                    store.put_vectors(tag, [(fact_id, digest, embeddings.to_blob(vector))
-                                            for (fact_id, _, digest), vector in zip(todo, vectors)])
-                    logger.debug("holographic: embed: %d fact vector(s) stored: %s", len(todo),
-                                 _trace_ids(fact_id for fact_id, _, _ in todo))
+                    written = store.put_vectors(tag, [(fact_id, digest, embeddings.to_blob(vector))
+                                                      for (fact_id, _, digest), vector in zip(todo, vectors)])
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug("holographic: embed: %d of %d fact vector(s) written: %s", written, len(todo),
+                                     _trace_ids(fact_id for fact_id, _, _ in todo))
                 finally:
                     self._op_lock.release()
         except Exception as exc:  # noqa: BLE001 - a busy file, a broken connection: the next turn goes on
@@ -1690,15 +1696,18 @@ class HolographicMemoryProvider(MemoryProvider):
             try:
                 send_idx, docs = self._sendable_docs(results)
                 # Stage trace (statistics): as in _unified_stream — scores() scores the first top_k documents and
-                # gives the same indexes order() returned, plus the score for the trace (ids only).
-                sent = [results[i]["fact_id"] for i in send_idx[:min(int(self._rescorer.settings.top_k), len(docs))]]
-                logger.debug("holographic: rescore search: pool %d, documents %d: %s", len(results), len(docs),
-                             _trace_ids(sent))
+                # gives the same indexes order() did, plus the score the trace needs (ids only, no fact text).
+                if logger.isEnabledFor(logging.DEBUG):
+                    sent = [results[i]["fact_id"]
+                            for i in send_idx[:min(int(self._rescorer.settings.top_k), len(docs))]]
+                    logger.debug("holographic: rescore search: pool %d, candidates %d: %s", len(results), len(sent),
+                                 _trace_ids(sent))
                 ranked = self._rescorer.scores(a["query"], docs) if docs else None
                 if ranked is None:
-                    logger.debug("holographic: rescore search: no answer (%s)",
-                                 "nothing sendable" if not docs else self._rescorer.last_status)
-                else:
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug("holographic: rescore search: no answer (%s)",
+                                     "nothing sendable" if not docs else self._rescorer.last_status)
+                elif logger.isEnabledFor(logging.DEBUG):
                     logger.debug("holographic: rescore search: %s: %s", self._rescorer.last_status,
                                  _trace_scores((results[send_idx[i]]["fact_id"], score)
                                                for i, score in ranked if i < len(send_idx)))
@@ -1728,7 +1737,7 @@ class HolographicMemoryProvider(MemoryProvider):
                                                      z_min=embeddings.SEARCH_Z_FLOOR, min_score=min_score):
                 fact["match"] = "meaning"
                 results.append(fact)
-        if meaning is not None:  # stage trace: what the embedding stage returned for this query (ids only)
+        if meaning is not None and logger.isEnabledFor(logging.DEBUG):  # stage trace: ids only, no fact text
             traced = [f["fact_id"] for f in results if f.get("match") == "meaning"]
             logger.debug("holographic: embed: meaning search returned %d fact(s): %s", len(traced), _trace_ids(traced))
         origins = self._store.origins([f["fact_id"] for f in results])  # who stands behind each (0.15.0)

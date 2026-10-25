@@ -81,8 +81,7 @@ def _rescorer():
 
 def test_single_candidate_scores_make_no_call(endpoint):
     rescorer = _rescorer()
-    assert rescorer.scores(QUERY, [FACT]) == [(0, 1.0)]
-    assert rescorer.order(QUERY, [FACT]) == [0]
+    assert rescorer.scores(QUERY, [FACT]) == [(0, 1.0)]  # the only caller of order() is gone: scores() is the API
     assert rescorer.calls == 0
     assert endpoint.requests == [], "one document must not reach the endpoint"
 

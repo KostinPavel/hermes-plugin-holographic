@@ -148,8 +148,8 @@ _OPENER = urllib.request.build_opener(_NoRedirect)
 
 
 class Rescorer:
-    """The endpoint: (query, documents) in, indexes in descending relevance order out. Shared by every store a
-    provider opens; thread-safe. ``order`` returns None on any failure (the caller keeps the current order)."""
+    """The endpoint: (query, documents) in, ``(index, score)`` pairs out. Shared by every store a provider opens;
+    thread-safe. ``scores`` returns None on any failure (the caller keeps the current order)."""
 
     def __init__(self, settings: Settings, secret_check=None):
         self.settings = settings
@@ -200,12 +200,6 @@ class Rescorer:
         paused, failures counted and failed in last_status, so the run's fail-fast sees it."""
         self.last_status = f"failed: {why}"
         self._failed(why)
-
-    def order(self, query: str, documents: list[str]) -> list[int] | None:
-        """Indexes of *documents* in descending relevance to *query*, top_k at most, or None: unusable, a secret in
-        *query*, or a request failed (logged; paused). The caller keeps the current order on None."""
-        ranked = self.scores(query, documents)
-        return [i for i, _ in ranked] if ranked is not None else None
 
     def scores(self, query: str, documents: list[str]) -> list[tuple[int, float]] | None:
         """``(index, relevance_score)`` pairs of *documents* in descending relevance, top_k at most; None when the
