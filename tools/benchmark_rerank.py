@@ -52,8 +52,8 @@ assert _data_spec and _data_spec.loader
 data = importlib.util.module_from_spec(_data_spec)
 _data_spec.loader.exec_module(data)
 
-# mode -> (rerank_weight, rerank_window): один режим (п.6 ревью 2026-10-22), ярлыки сохранены как
-# историческая номенклатура таблиц: gate_* = окно δ включено (0.05), reorder_* = окно выключено.
+# mode -> (rerank_weight, rerank_window): a single regime (review item 6, 2026-10-22); the labels are kept as
+# the historical table nomenclature: gate_* = δ window on (0.05), reorder_* = window off.
 MODES = {
     "off": ("0.0", "0.0"),
     "reorder_only": ("0.0", "0.0"),
@@ -158,7 +158,7 @@ class RecordingOpener:
         return _Response(raw)
 
 
-SCALE = "logit"  # rerank_scale конфига прогона: llama-server отдаёт сырые логиты (фикст-лист 19:07)
+SCALE = "logit"  # rerank_scale of the run config: llama-server emits raw logits (fix-list 19:07)
 
 
 def _provider(db_path: str, **config) -> HolographicMemoryProvider:
@@ -178,7 +178,7 @@ def _fill(p, lang: str) -> dict:
 
 def _inject(p, query: str) -> list[str]:
     """The fact_ids injected before the turn (prefetch), IN OUTPUT ORDER, or [].
-    Order matters: recall@5 must count the first five lines (matched top-5, п.8 ревью 2026-10-22) — off can show
+    Order matters: recall@5 must count the first five lines (matched top-5, review item 8, 2026-10-22) — off can show
     more than five facts while the unified path cannot, and counting every line mixes the cross-encoder with a
     smaller output."""
     block = p.prefetch(query)
@@ -202,7 +202,7 @@ def _percentile(times: list[float], q: float) -> float:
 
 
 def _git_sha() -> str:
-    """Стем ветки, чтобы каждая строка JSONL знала, на каком коммите снята (п.8: raw JSONL к таблицам)."""
+    """Stem of the branch, so every JSONL row knows at which commit it was captured (item 8: raw JSONL behind the tables)."""
     try:
         import subprocess
         return subprocess.run(["git", "rev-parse", "HEAD"], cwd=_REPO,
@@ -233,10 +233,10 @@ def run(langs: list[str], mode: str, endpoint_url: str | None, reverse: bool,
     if not endpoint_url:
         rerank._OPENER = mock
     else:
-        rerank._OPENER = recorder  # per-call rows, даже против живого эндпоинта (п.9 (1))
+        rerank._OPENER = recorder  # per-call rows, even against a live endpoint (item 9 (1))
 
     hit5 = asked = wrong = quiet = negatives = 0
-    out_lines = 0  # сколько строк recall реально вернул (matched top-5 считается по первым пяти)
+    out_lines = 0  # how many lines recall actually returned (matched top-5 counts the first five)
     queries = 0
     times: list[float] = []
     failures = 0  # ranked is None: fallbacks to the coverage order (counted in rerank.Rescorer)
@@ -248,7 +248,7 @@ def run(langs: list[str], mode: str, endpoint_url: str | None, reverse: bool,
             back = _fill(p, lang)
             for pass_no in range(warmup + repeats):
                 warm = pass_no < warmup
-                quality = pass_no == warmup  # качество считается один раз — на первом прогретом проходе
+                quality = pass_no == warmup  # quality is counted once — on the first warmed pass
                 if recorder is not None:
                     recorder.pass_no, recorder.warm = pass_no, warm
                 for i, (query, relevant) in enumerate(data.QUERIES[lang]):
@@ -265,10 +265,10 @@ def run(langs: list[str], mode: str, endpoint_url: str | None, reverse: bool,
                     if not warm:
                         times.append(dt)
                     if not quality:
-                        continue  # out_lines/hit5 только на прогретом проходе: repeats не размножают качество
+                        continue  # out_lines/hit5 only on the warmed pass: repeats do not multiply quality
                     out_lines += len(injected)
-                    # matched top-5: считаем только первые пять строк — иначе счёт смешивает точность с размером
-                    # вывода (off умеет отдавать больше пяти фактов, unified — нет)
+                    # matched top-5: only the first five lines are counted — otherwise the score mixes precision with the
+                    # output size (off can emit more than five facts, unified cannot)
                     top5 = injected[:5]
                     found_keys = {back[int(k)] for k in top5 if int(k) in back}
                     if relevant:
@@ -340,17 +340,17 @@ def main(argv: list[str]) -> None:
     ap.add_argument("--endpoint", default=None,
                     help="a real /v1/rerank URL (llama-server); default: a mock ranker")
     ap.add_argument("--rerank-scale", default="logit", choices=["logit", "unit"],
-                    help="rerank_scale для конфига (логиты llama-server -> logit; [0,1]-эндпоинт -> unit)")
+                    help="rerank_scale for the config (llama-server logits -> logit; [0,1] endpoint -> unit)")
     ap.add_argument("--reverse", action="store_true", help="the mock ranker inverts the order (worst case)")
     ap.add_argument("--json", action="store_true", help="print JSON instead of a markdown table")
     ap.add_argument("--label", default=None, help="run label (model x device) stamped into every row")
     ap.add_argument("--out", default=None, help="append rows as JSON-lines to this file (accumulate runs)")
     ap.add_argument("--warmup", type=int, default=0,
-                    help="warm-up passes excluded from every statistic (latency protocol, п.9 (4))")
+                    help="warm-up passes excluded from every statistic (latency protocol, item 9 (4))")
     ap.add_argument("--repeats", type=int, default=1,
                     help="warmed passes to time; quality is still counted once (default: 1)")
     ap.add_argument("--calls-out", default=None,
-                    help="write one JSON line per HTTP call (п.9 (1): tokens, doc lengths, call/prefetch ms)")
+                    help="write one JSON line per HTTP call (item 9 (1): tokens, doc lengths, call/prefetch ms)")
     args = ap.parse_args(argv)
     SCALE = args.rerank_scale
 
@@ -370,7 +370,7 @@ def main(argv: list[str]) -> None:
         with open(args.calls_out, "w", encoding="utf-8") as fh:
             for r in rows:
                 for call in (r.get("calls") or []):
-                    if isinstance(call, dict):  # mock-прогон пишет счётчик, а не per-call строки
+                    if isinstance(call, dict):  # a mock run writes a counter, not per-call rows
                         fh.write(json.dumps(call, ensure_ascii=False) + "\n")
     if args.json:
         print(json.dumps(rows, indent=2, ensure_ascii=False))

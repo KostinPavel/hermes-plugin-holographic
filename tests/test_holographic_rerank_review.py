@@ -1,14 +1,14 @@
-"""PR #10, пункты ревью 2026-10-22 (1, 2, 4, 5) — тесты, которые раньше не проходили бы.
+"""PR #10, review items 2026-10-22 (1, 2, 4, 5) — tests that would not have passed before.
 
-1. Факт, который recall МОЖЕТ показывать, но отправлять нельзя (_sendable < _recallable):
-   `OPENAI_API_KEY=*** / `Authorization: Bearer *** — не должен попасть в documents
-   ни в одном потоке prefetch, ни в search (раньше search не фильтрововал вообще).
-2. Сокет-таймаут воркера (воркер уже закончился, alive=False) обязан ставить паузу
-   и расти `failures` — иначе медленный сервер опрашивается каждый turn.
-4. Упавший реранк в `_unified_stream` отдаёт в точности раскладку off: lexical[:5],
-   затем meaning/entity-дополнения, а не (lexical+…+…)[:5], который их вытесняет.
-   Плюс `_search`: хвост limit > top_k сохраняет место ПОСЛЕ ранжированных.
-5. `rerank: on` сам по себе включает единственный режим; ключи `rerank_mode`/`rerank_margin` удалены (п.6) — старая конфигурация игнорируется с предупреждением.
+1. A fact that recall MAY show but must not send (_sendable < _recallable):
+   `OPENAI_API_KEY=*** / `Authorization: Bearer *** — must not end up in documents
+   in any prefetch stream nor in search (before, search did not filter at all).
+2. A worker socket timeout (the worker already finished, alive=False) must pause
+   and bump `failures` — otherwise a slow server is polled on every turn.
+4. A failed rerank in `_unified_stream` returns exactly the off layout: lexical[:5],
+   then the meaning/entity extras, not (lexical+…+…)[:5] which pushes them out.
+   Plus `_search`: a tail of limit > top_k keeps its place AFTER the ranked ones.
+5. `rerank: on` by itself enables the single mode; the `rerank_mode`/`rerank_margin` keys are gone (item 6) — an old configuration is ignored with a warning.
 """
 from __future__ import annotations
 
@@ -63,8 +63,8 @@ class FakeRerank:
         order = list(reversed(range(n))) if self.reverse else list(range(n))
         top_n = min(body.get("top_n", n), n)
         if self.reverse:
-            # smaller (ревью 19:39): после сортировки по счёту (24:10) счёт по позиции —
-            # иначе sort сводит reverse к identity
+            # smaller (review 19:39): after sorting by score (24:10) the score is by position —
+            # otherwise sort reduces reverse to identity
             chosen = [{"index": i, "relevance_score": float(i + 1)} for i in order[:top_n]]
         else:
             chosen = [{"index": i, "relevance_score": float(n - i)} for i in order[:top_n]]
@@ -83,23 +83,23 @@ def endpoint(monkeypatch):
 RANK = {"rerank": "on",
         "rerank_url": "https://rerank.example.net/v1/rerank", "rerank_model": "fake-reranker"}
 QUERY = "when does the backup run?"
-# Нейтральные fillers: без них IDF-вес «backup» почти во всех фактах роняет покрытие relevant()
-# ниже порога на этом маленьком сторе (проверено: 0.3 не проходит; с fillers — проходит).
+# Neutral fillers: without them the IDF weight of «backup» in almost every fact drags the relevant() coverage
+# below the threshold on this small store (checked: 0.3 does not pass; with fillers — it passes).
 FILLERS = ["apple note", "brick note", "cloud note", "daisy note", "eagle note"]
 PLAIN = ["The nightly backup runs from the OES box at 2 am.",
          "The backup rotation keeps seven days of archives.",
          "Mark plays the violin on Sundays.",
-         # п.9: единственный кандидат вызова не делает — endpoint-тесты нуждаются в пуле >= 2
+         # item 9: a single candidate makes no call — endpoint tests need a pool of >= 2
          "The weekly backup runs from the NAS box at 4 am."]
-# Литералы-«ключи» собираются в рантайме: готовый похожий на ключ текст редактируется при записи файла.
+# Key-like literals are assembled at runtime: ready-made key-looking text would be edited when the file is written.
 _BEARER = "ey" + "JhbGciOiJIUzI1NiJ9." + "abc123DEF456" * 3
 _KEY = "sk-" + "proj-" + "aB3" * 8 + "z9"
-assert len(_BEARER) >= 12 and len(_KEY) >= 6  # санити против плейсхолдерной правки
-# recallable=True, sendable=False (п.1): recall её показывает, эндпоинт не получает
-# (форма Authorization-заголовка — то, что _recall_problem не считает credential-with-value)
-_AUTH_HEAD = "The proxy sets Authorization:" + " " + "Bearer" + " "  # фрагменты: литерал не редактируется
+assert len(_BEARER) >= 12 and len(_KEY) >= 6  # sanity against a placeholder edit
+# recallable=True, sendable=False (item 1): recall shows it, the endpoint never gets it
+# (the shape of an Authorization header — something _recall_problem does not count as credential-with-value)
+_AUTH_HEAD = "The proxy sets Authorization:" + " " + "Bearer" + " "  # fragments: the literal is never edited
 SECRET = _AUTH_HEAD + _BEARER + " for backup requests."
-# вообще не recallable (credential with its value): search показывает, recall и эндпоинт — нет
+# not recallable at all (credential with its value): search shows it, recall and the endpoint do not
 KEY_FACT = f"The backup box stores OPENAI_API_KEY={_KEY} in /etc."
 VIOLET = "The backup password: violet-quilt-77."
 
@@ -125,25 +125,25 @@ def _without_rerank(tmp_path, query, extra=(), name="off.db") -> str:
         p.shutdown()
 
 
-# -- 1. секрет-экран на обоих путях -------------------------------------------------------------------------------
+# -- 1. the secret screen on both paths -------------------------------------------------------------------------------
 
 
 def test_secret_fact_is_never_in_the_payload(tmp_path, endpoint):
     p = _provider(tmp_path, **RANK)
     _fill(p, extra=[SECRET, KEY_FACT, VIOLET])
-    # посылка п.1: recallable, но не sendable — и на эндпоинт не уходит
+    # the premise of item 1: recallable but not sendable — and it never goes to the endpoint
     assert _sendable(SECRET) is False
     assert p._recallable({"content": SECRET, "trust_score": 0.9, "fact_id": 1}) is True
-    # контраст классов: credential-with-value отсекает уже recall-фильтр (и он тоже не отправляется)
+    # contrast of classes: the recall filter already cuts credential-with-value (it is not sent either)
     assert p._recallable({"content": KEY_FACT, "trust_score": 0.9, "fact_id": 2}) is False
     block = p.prefetch(QUERY)
     assert endpoint.requests, "rerank must actually run — the screen must not switch the feature off"
     sent = endpoint.documents
-    assert any("nightly backup" in d for d in sent)          # обычные факты уходят
-    assert all(_BEARER not in d for d in sent)               # _sendable-факт — нет
-    assert all("OPENAI_API_KEY" not in d for d in sent)      # не recallable — тем более нет
+    assert any("nightly backup" in d for d in sent)          # ordinary facts go out
+    assert all(_BEARER not in d for d in sent)               # the _sendable fact does not
+    assert all("OPENAI_API_KEY" not in d for d in sent)      # not recallable — even less so
     assert all("violet-quilt" not in d for d in sent)
-    assert "nightly backup" in block                          # recall работает
+    assert "nightly backup" in block                          # recall works
     p.shutdown()
 
 
@@ -155,17 +155,17 @@ def test_search_screens_documents_but_still_shows_the_fact(tmp_path, endpoint):
     assert all(_BEARER not in d for d in endpoint.documents)
     assert all("OPENAI_API_KEY" not in d for d in endpoint.documents)
     assert all("violet-quilt" not in d for d in endpoint.documents)
-    # показать — может (search намеренно показывает то, recall не инжектит); отправить — нет
+    # show — it may (search deliberately shows what recall does not inject); send — it may not
     shown = [r.get("content", "") for r in res.get("results", [])]
     assert any("OPENAI_API_KEY" in c for c in shown)
     p.shutdown()
 
 
 def test_search_order_exception_keeps_the_unranked_results_and_counts(tmp_path, endpoint, monkeypatch):
-    """п.4 (ревью 19:39): order() и маппинг жили вне try — исключение становилось ошибкой тула
-    вместо неотранжированных результатов, и ни одна неудача не считалась. Теперь вся стадия в try,
-    новый порядок присваивается только после сборки, с провалом — прежний порядок + note_failure
-    (как в _unified_stream, п.3)."""
+    """item 4 (review 19:39): order() and the mapping lived outside try — an exception became a tool error
+    instead of unranked results, and no failure was counted. Now the whole stage is in try,
+    the new order is assigned only after the build, on failure — the previous order + note_failure
+    (as in _unified_stream, item 3)."""
     p = _provider(tmp_path, **RANK)
     _fill(p, extra=[SECRET, KEY_FACT, VIOLET])
     off_p = _provider(tmp_path, name="off.db")
@@ -180,37 +180,37 @@ def test_search_order_exception_keeps_the_unranked_results_and_counts(tmp_path, 
 
     monkeypatch.setattr(p._rescorer, "order", boom)
     res = json.loads(p.handle_tool_call("fact_store", {"action": "search", "query": "backup"}))
-    # с провалом реранка search отдаёт НЕОТРАНЖИРОВАННЫЕ результаты, а не ошибку
+    # on a rerank failure search returns UNRANKED results, not an error
     assert [r.get("fact_id") for r in res.get("results", [])] == off_ids
-    assert p._rescorer.failures >= 1, "провал стадии обязан считаться отказом"
+    assert p._rescorer.failures >= 1, "a stage failure must count as a failure"
     assert p._rescorer.status().startswith("paused")
     p.shutdown()
 
 
-# -- 2. сокет-таймаут ставит паузу -------------------------------------------------------------------------------
+# -- 2. a socket timeout pauses -------------------------------------------------------------------------------
 
 
 def test_socket_timeout_pauses_the_endpoint(tmp_path, endpoint):
     p = _provider(tmp_path, **RANK)
     _fill(p)
-    endpoint.fail = TimeoutError("timed out")  # воркер закончился сам: alive=False
+    endpoint.fail = TimeoutError("timed out")  # the worker finished on its own: alive=False
     block = p.prefetch(QUERY)
-    assert block == _without_rerank(tmp_path, QUERY)   # порядок off-пути
-    assert len(endpoint.requests) == 1                 # один вызов, дальше пауза
+    assert block == _without_rerank(tmp_path, QUERY)   # the order of the off path
+    assert len(endpoint.requests) == 1                 # one call, then a pause
     assert p._rescorer.failures == 1
     assert p._rescorer.status().startswith("paused")
     p.shutdown()
 
 
-# -- 4a. фолбэк unified = раскладка off --------------------------------------------------------------------------
+# -- 4a. the unified fallback = the off layout --------------------------------------------------------------------------
 
 
 def test_failed_rerank_appends_extras_like_off(tmp_path, endpoint, monkeypatch):
     p = _provider(tmp_path, **RANK)
     _fill(p)
     endpoint.fail = urllib.error.URLError(ConnectionResetError("reset"))
-    # синтетические потоки meaning и entity (embeddings в тесте off): факты лежат в store,
-    # возвращаем их реальные dict'ы через search
+    # synthetic meaning and entity streams (embeddings are off in the test): the facts live in the store,
+    # we return their real dicts through search
     m_id = p._store.add_fact("Zebra paraphrase holds no shared word.")
     e_id = p._store.add_fact("Quartz wall fact arrives by entity only.")
     p.sync_turn("x", "y")
@@ -218,12 +218,12 @@ def test_failed_rerank_appends_extras_like_off(tmp_path, endpoint, monkeypatch):
     e_fact = p._retriever.search("quartz wall", limit=1)[0]
     p._embedding = SimpleNamespace(recall_facts=1, min_score=0.0)
     monkeypatch.setattr(p._retriever, "by_meaning", lambda *a, **k: [m_fact])
-    monkeypatch.setattr(p._store, "mentioned_entity_ids", lambda q: {1})  # известные сущности — set
+    monkeypatch.setattr(p._store, "mentioned_entity_ids", lambda q: {1})  # known entities — a set
     monkeypatch.setattr(p._retriever, "names_fit", lambda *a, **k: True)
     monkeypatch.setattr(p._retriever, "entity_facts", lambda *a, **k: [e_fact])
     fresh, by_meaning = p._unified_stream(QUERY, embeddings.Meaning([], [], weight=0.0),
                                           list(p._retriever.search(QUERY, limit=10)), "s", 1)
-    # раскладка off: lexical[:5], потом extras — extras НЕ вытесняются top-5 (п.4)
+    # the off layout: lexical[:5], then extras — extras are NOT pushed out by top-5 (item 4)
     assert [f["fact_id"] for f in fresh[-2:]] == [m_id, e_id]
     lexical_part = [f for f in fresh if f["fact_id"] not in (m_id, e_id)]
     assert len(lexical_part) <= 5
@@ -231,11 +231,11 @@ def test_failed_rerank_appends_extras_like_off(tmp_path, endpoint, monkeypatch):
     p.shutdown()
 
 
-# -- 4b. хвост limit в search ------------------------------------------------------------------------------------
+# -- 4b. a tail of limit in search ------------------------------------------------------------------------------------
 
 
 def test_search_keeps_the_unscored_tail(tmp_path, endpoint):
-    endpoint.reverse = True          # ранжированные идут задом наперёд — маппинг виден
+    endpoint.reverse = True          # the ranked ones go backwards — the mapping is visible
     facts = [f"note {i} about the backup window" for i in range(45)]
 
     def build(name, **cfg):
@@ -245,28 +245,28 @@ def test_search_keeps_the_unscored_tail(tmp_path, endpoint):
         p.sync_turn("x", "y")
         return p
 
-    p = build("tail.db", **RANK)  # _search окно вообще не применяет (правка мейнтейнера 19:39)
+    p = build("tail.db", **RANK)  # _search applies no window at all (maintainer fix 19:39)
     res = json.loads(p.handle_tool_call("fact_store", {"action": "search", "query": "backup", "limit": 45}))
     contents = [r.get("content", "") for r in res.get("results", [])]
     p.shutdown()
-    # эталон: тот же магазин без реранка — порядок до прикосновения эндпоинта
+    # reference: the same store without rerank — the order before the endpoint is touched
     off = build("tail_off.db")
     base = [r.get("content", "")
             for r in json.loads(off.handle_tool_call("fact_store",
                                                       {"action": "search", "query": "backup",
                                                        "limit": 45})).get("results", [])]
     off.shutdown()
-    # reverse-фейк ставит лучший счёт последнему индексу (smaller 19:39) — после sort (24:10)
-    # отранжированные 40 идут задом наперёд, а 5 неоценённых хвостом — в исходном порядке
+    # the reverse fake puts the best score at the last index (smaller 19:39) — after sort (24:10)
+    # the 40 ranked ones go backwards, while the 5 unrated tail ones stay in their original order
     assert len(contents) == 45, f"tail dropped: {len(contents)} of 45"
     assert contents == list(reversed(base[:40])) + base[40:]
 
 
-# -- 5. дефолт режима = UI ---------------------------------------------------------------------------------------
+# -- 5. the default mode = UI ---------------------------------------------------------------------------------------
 
 
 def test_rerank_on_alone_is_enough():
-    """п.6: один режим — rerank: on включает его без каких-либо режимных ключей."""
+    """item 6: one mode — rerank: on enables it without any mode keys."""
     settings = rerank.settings_from({"rerank": "on"})
     assert settings is not None
     assert settings.window == rerank.DEFAULT_WINDOW

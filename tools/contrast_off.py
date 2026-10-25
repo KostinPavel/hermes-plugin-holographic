@@ -1,22 +1,22 @@
 # -*- coding: utf-8 -*-
-"""Прогон contrast_ru в режиме off (без эндпоинта): парная метрика по 15 парам,
-recall@5, WRONG-ENTITY (чужая цель затеняет свою), тишина chit-chat,
-две оси names_fit (on / off) + проба, что подмена names_fit реально подхвачена.
+"""Run of contrast_ru in off mode (no endpoint): the paired metric over 15 pairs,
+recall@5, WRONG-ENTITY (a foreign target overshadows its own one), chit-chat silence,
+two names_fit axes (on / off) + a probe that the names_fit patch is really caught.
 
-Запуск (Windows / git-bash):
+Run (Windows / git-bash):
 
     HERMES_AGENT_REPO="C:/Users/Pavel/AppData/Local/hermes/hermes-agent" \\
         python tools/contrast_off.py
 
-Три ортогональные метрики (как у мейнтейнера, не смешиваются):
-  ПАРА    — падает только по MISS: одна из двух целей не найдена (recall-аспект);
-  WRONG5  — отдельный счётчик: чужая (partner-)цель в top-5 (wrong-entity);
-            по измерениям порядок её НЕ чинит — чужой семантически близок;
-  ШУМ     — chit-chat, вернувший не-пустой recall (admission-аспект).
-SHADOW (чужая выше своей) — диагностический, по измерениям = 0 во всех режимах.
+Three orthogonal metrics (as the maintainer defines them, never mixed):
+  PAIR    — fails only on MISS: one of the two targets was not found (recall aspect);
+  WRONG5  — a separate counter: the foreign (partner) target in top-5 (wrong-entity);
+            by measurement its position does NOT fix it — the foreign one is semantically close;
+  NOISE   — a chit-chat that returned a non-empty recall (admission aspect).
+SHADOW (foreign above own) — diagnostic; by measurement = 0 in every mode.
 
-names_fit OFF эмулируется подменой метода в тестовом прогоне
-(provider._retriever.names_fit -> всегда True); продакшн-код не меняется.
+names_fit OFF is emulated by patching the method in the test run
+(provider._retriever.names_fit -> always True); production code stays unchanged.
 """
 from __future__ import annotations
 
@@ -44,20 +44,20 @@ _spec.loader.exec_module(_mod)
 
 from hermes_plugin_holographic import HolographicMemoryProvider  # noqa: E402
 
-# Язык контрастного набора: CONTRAST_SET=contrast_ru (по умолчанию) | contrast_en | contrast_zh
+# Language of the contrast set: CONTRAST_SET=contrast_ru (default) | contrast_en | contrast_zh
 _SET = os.environ.get("CONTRAST_SET", "contrast_ru")
 _cspec = importlib.util.spec_from_file_location(_SET, _REPO / "tools" / f"{_SET}.py")
 assert _cspec and _cspec.loader
 contrast = importlib.util.module_from_spec(_cspec)
 _cspec.loader.exec_module(contrast)
 
-# Режимы PR #10 против реального эндпоинта (llama-server, логиты — проверено пробой).
-# Второй элемент — rerank_weight, третий — rerank_window (δ; 0 = окно выключено).
-# RERANK_URL переопределяется окружением: сравнение iGPU-инстанса и CPU (-dev none).
+# Modes of PR #10 against a real endpoint (llama-server, logits — verified by a probe).
+# The second element is rerank_weight, the third is rerank_window (δ; 0 = window off).
+# RERANK_URL is overridden by the environment: comparing an iGPU instance and CPU (-dev none).
 import os as _os
 RERANK_URL = _os.environ.get("RERANK_URL", "http://127.0.0.1:8091/v1/rerank")
 MODES = {
-    # один режим (п.6 ревью 2026-10-22): (rerank_weight, rerank_window); gate_* = окно δ включено
+    # a single regime (review item 6, 2026-10-22): (rerank_weight, rerank_window); gate_* = δ window on
     "off": None,
     "reorder_0": ("0.0", "0.0"),
     "reorder_05": ("0.5", "0.0"),
@@ -73,7 +73,7 @@ def _provider(db_path, **config) -> HolographicMemoryProvider:
 
 
 def _fill(p) -> dict[int, str]:
-    """FACTS в магазин; возвращает fact_id -> key."""
+    """Puts FACTS into the store; returns fact_id -> key."""
     back: dict[int, str] = {}
     for key, (text, entities) in contrast.FACTS.items():
         r = json.loads(p.handle_tool_call("fact_store",
@@ -83,13 +83,13 @@ def _fill(p) -> dict[int, str]:
 
 
 def _inject(p, query: str) -> list[int]:
-    """fact_id prefetch до поворота, В ПОРЯДКЕ ранжирования (та же расшифровка
-    блока, что в benchmark_rerank)."""
+    """fact_id of the prefetch BEFORE the turn, IN RANKING ORDER (the same block
+    decoding as in benchmark_rerank)."""
     block = p.prefetch(query)
     if not block:
         return []
     ids: list[int] = []
-    for line in block.splitlines()[1:]:  # строки "- #<id> [trust] <text>"
+    for line in block.splitlines()[1:]:  # lines "- #<id> [trust] <text>"
         try:
             ids.append(int(line.split()[1][1:]))
         except (IndexError, ValueError):
@@ -98,8 +98,8 @@ def _inject(p, query: str) -> list[int]:
 
 
 def _names_fit_probe(p) -> str:
-    """Подхватилась ли подмена: запрос с именем из одного факта + чужой факт
-    (две несекущиеся сущности; для языков без регистра результат не различим)."""
+    """Whether the patch is caught: a query with a name from one fact + a foreign fact
+    (two disjoint entities; for case-insensitive languages the outcome is indistinguishable)."""
     items = [(k, v) for k, v in contrast.FACTS.items() if v[1]]
     pair = None
     for i, (_k1, v1) in enumerate(items):
@@ -114,15 +114,15 @@ def _names_fit_probe(p) -> str:
     name, fact = pair
     try:
         fits = bool(p._retriever.names_fit(name, fact))
-    except Exception as exc:  # noqa: BLE001 — диагностическая проба
+    except Exception as exc:  # noqa: BLE001 — a diagnostic probe
         return f"ошибка вызова: {type(exc).__name__}: {exc}"
     return (f"fits={fits} — False: реальный метод отвергает (патч не подхвачен); "
             f"True: патч подхвачен" + ("" if fits else ""))
 
 
 def run(axis: str, mode: str = "off") -> dict:
-    """axis='on' — names_fit как в коде; 'off' — всегда True (тестовая подмена).
-    mode — ключ MODES; 'off' = без вызовов, остальные — реальный эндпоинт."""
+    """axis='on' — names_fit as in the code; 'off' — always True (a test patch).
+    mode — a MODES key; 'off' = no calls, the rest — the real endpoint."""
     spec = MODES[mode]
     config = {}
     if spec:
@@ -153,13 +153,13 @@ def run(axis: str, mode: str = "off") -> dict:
             own_pos = keys.index(target) + 1 if target in keys else None
             part = partner[i]
             if part == target:
-                part_pos = None  # пара-парафразы: оба запроса к одной цели — partner-нет
+                part_pos = None  # paraphrase pair: both queries target the same fact — partner does not apply
             else:
                 part_pos = keys.index(part) + 1 if part in keys else None
             miss = own_pos is None
             shadow = part_pos is not None and (own_pos is None or part_pos < own_pos)
-            wrong5 = part_pos is not None and part_pos <= 5  # чужая в top-5: wrong-entity
-            # мейнтейнера; счётчиком, НЕ провалом пары (порядок её не чинит — измерено)
+            wrong5 = part_pos is not None and part_pos <= 5  # foreign in top-5: wrong-entity
+            # per the maintainer — a counter, NOT a pair failure (its position does not fix it — measured)
             per.append({"q": query, "own": target, "own_pos": own_pos, "partner": part,
                         "partner_pos": part_pos, "keys": keys, "miss": miss, "shadow": shadow,
                         "wrong5": wrong5})
@@ -197,13 +197,13 @@ def run(axis: str, mode: str = "off") -> dict:
 
 
 def report(res: dict, verbose: bool = False) -> None:
-    print(f"\n=== names_fit {res['axis']} / режим {res['mode']} | проба: {res['probe']} ===")
-    print(f"пар пройдено: {res['pair_pass']}/{len(res['pairs'])} | по типам: "
+    print(f"\n=== names_fit {res['axis']} / mode {res['mode']} | probe: {res['probe']} ===")
+    print(f"pairs passed: {res['pair_pass']}/{len(res['pairs'])} | by type: "
           + ", ".join(f"{t} {a}/{b}" for t, (a, b) in sorted(res["by_type"].items())))
-    print(f"вопросов в цель: {res['question_hits']}/{res['questions']} | "
-          f"MISS {res['miss']} | SHADOW (чужая выше своей) {res['shadow']} | "
-          f"partner в top-5: {res['partner_top5']} | "
-          f"тишина chit-chat {res['quiet']}/{res['total']} | p50 {res['p50_ms']:.1f} мс")
+    print(f"queries on target: {res['question_hits']}/{res['questions']} | "
+          f"MISS {res['miss']} | SHADOW (foreign above own) {res['shadow']} | "
+          f"partner in top-5: {res['partner_top5']} | "
+          f"chit-chat silence {res['quiet']}/{res['total']} | p50 {res['p50_ms']:.1f} ms")
     if not verbose:
         return
     for r in res["pairs"]:
@@ -214,26 +214,26 @@ def report(res: dict, verbose: bool = False) -> None:
                 flags = ("MISS" if d["miss"] else "     ") + ("/SHADOW" if d["shadow"] else "") \
                     + ("/WRONG5" if d["wrong5"] else "")
                 print(f"        {flags} {d['q']!r}")
-                print(f"               своя {d['own']}#{d['own_pos']} | чужая {d['partner']}#{d['partner_pos']}")
+                print(f"               own {d['own']}#{d['own_pos']} | foreign {d['partner']}#{d['partner_pos']}")
                 print(f"               recall: {d['keys']}")
     if res["chit_leaks"]:
-        print("  утечки chit-chat (должно быть пусто):")
+        print("  chit-chat leaks (should be empty):")
         for q, found in res["chit_leaks"]:
             print(f"        {q!r} -> {found}")
 
 
 if __name__ == "__main__":
     if not _AGENT.is_dir():
-        raise SystemExit(f"нет каталога hermes-agent: {_AGENT} (задай HERMES_AGENT_REPO)")
+        raise SystemExit(f"hermes-agent directory not found: {_AGENT} (set HERMES_AGENT_REPO)")
     rows = [run(axis, mode) for axis in ("on", "off") for mode in MODES]
-    print("\n=== СВОДНАЯ ТАБЛИЦА (парная метрика, реальный эндпоинт) ===")
-    print(f"{'ось':<4} {'режим':<11} {'пар':>4} {'MISS':>5} {'WRONG5':>7} "
-          f"{'тишина':>7} {'шум':>5} {'p50мс':>7}")
+    print("\n=== SUMMARY TABLE (paired metric, real endpoint) ===")
+    print(f"{'axis':<4} {'mode':<11} {'pair':>4} {'MISS':>5} {'WRONG5':>7} "
+          f"{'quiet':>7} {'noise':>5} {'p50ms':>7}")
     for r in rows:
         noise = (r["total"] - r["quiet"]) / r["total"] if r["total"] else 0.0
         print(f"{r['axis']:<4} {r['mode']:<11} {r['pair_pass']:>4} {r['miss']:>5} "
               f"{r['partner_top5']:>7} {f'{r['quiet']}/{r['total']}':>7} {noise:>5.0%} {r['p50_ms']:>7.1f}")
-    # детали — только для оси names_fit on (off-режим на обеих осях идентичен)
+    # details — only for the names_fit on axis (the off mode is identical on both axes)
     for r in rows:
         if r["axis"] == "on":
             report(r, verbose=True)

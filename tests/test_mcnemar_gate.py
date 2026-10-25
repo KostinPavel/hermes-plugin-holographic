@@ -1,4 +1,4 @@
-"""Fixtures for tools/mcnemar_gate.py (п.2 14:01 + фикc-лист 19:07).
+"""Fixtures for tools/mcnemar_gate.py (item 2 at 14:01 + the fix list at 19:07).
 
 The partial-loss case stands fully paired on its own: if branch B ever reverts to the question-level
 `c == 0`, gate_only (which keeps the question but drops one target) would pass and the first test would
@@ -30,16 +30,16 @@ def _row(mode, qid, keys, targets, *, hit5=True, confused=False, git_sha=None):
 
 
 def _chit(mode, qid):
-    # одинаковый qid у всех режимов: парность chit проверяется так же, как real
+    # the same qid across all modes: chit pairing is checked just like real
     return {"lang": "en", "qid": qid, "mode": mode, "kind": "chit", "keys": [], "targets": [],
             "hit5": None, "confused": False, "out_n": 0}
 
 
 def test_partial_loss_fully_paired(tmp_path, capsys):
-    """Частичная потеря — чисто парный кейс: блокирует ТОЛЬКО l5, unpaired тут нет (п.5 19:07)."""
+    """Partial loss — a purely paired case: it blocks ONLY l5, there is no unpaired here (item 5 19:07)."""
     rows = [
-        # q1: два таргета; gate_only держит hit5 (t1 в top-5), но t2 вытолкнут на ШЕСТУЮ позицию —
-        # вопрос-level c == 0, а per-target потеря есть.
+        # q1: two targets; gate_only keeps hit5 (t1 in top-5) but t2 is pushed to the SIXTH position —
+        # question-level c == 0, yet the per-target loss exists.
         _row("off", "q1", ["t1", "t2", "f1", "f2", "f3"], ["t1", "t2"], confused=True),
         _row("gate_only", "q1", ["t1", "f1", "f2", "f3", "f4", "t2"], ["t1", "t2"]),
         _row("gate_min2", "q1", ["t1", "t2", "f1", "f2", "f3"], ["t1", "t2"]),
@@ -53,22 +53,22 @@ def test_partial_loss_fully_paired(tmp_path, capsys):
 
     gate_line = next(line for line in out.splitlines() if line.startswith("gate_only"))
     min2_line = next(line for line in out.splitlines() if line.startswith("gate_min2"))
-    # вопрос не потерян (c == 0), но таргет потерян — ветки B нет. При откате l5 на c этот тест
-    # упал бы: парность полная, conf 0 < 1, neg равны — B появился бы.
+    # the question is not lost (c == 0) but the target is lost — branch B is absent. If l5 reverted to c this test
+    # would fail: pairing is complete, conf 0 < 1, neg are equal — B would appear.
     assert gate_line.split()[-1] == "-", gate_line
-    # контроль, что фикстура вообще может дать B (иначе тест доказывал бы только подавление)
+    # a control that the fixture can produce B at all (otherwise the test would only prove suppression)
     assert min2_line.split()[-1] == "B", min2_line
     assert "UNPAIRED" not in out
 
 
 def test_unpaired_rows_fail_closed(tmp_path, capsys):
-    """Полная парность — иначе B не ставится, даже когда потерь не видно."""
+    """Complete pairing — otherwise B is never set, even when no losses are visible."""
     rows = [
-        # все прочие условия ветки B выполнены: потерь нет (l5 = 0), confused уменьшен, neg равны —
-        # остаётся единственная причина не ставить B: неполная парность (UNPAIRED).
+        # all other branch B conditions hold: no losses (l5 = 0), confused reduced, neg equal —
+        # the only remaining reason not to set B is incomplete pairing (UNPAIRED).
         _row("off", "q1", ["t1"], ["t1"], confused=True),
         _row("gate_only", "q1", ["t1"], ["t1"]),
-        _row("gate_only", "q2", ["t2"], ["t2"]),  # только у gate_only
+        _row("gate_only", "q2", ["t2"], ["t2"]),  # only for gate_only
         _chit("off", "c1"), _chit("gate_only", "c1"),
     ]
     path = tmp_path / "unpaired.jsonl"
@@ -82,11 +82,11 @@ def test_unpaired_rows_fail_closed(tmp_path, capsys):
 
 
 def test_unpaired_chit_rows_block(tmp_path, capsys):
-    """Real полностью парные, у gate_only нет своего chit-блока — neg был бы занижен (п.5 19:07)."""
+    """Real is fully paired, gate_only has no chit block of its own — neg would be undercounted (item 5 19:07)."""
     rows = [
         _row("off", "q1", ["t1"], ["t1"], confused=True),
         _row("gate_only", "q1", ["t1"], ["t1"]),
-        _chit("off", "c1"),  # chit gate_only отсутствует
+        _chit("off", "c1"),  # the gate_only chit is missing
     ]
     path = tmp_path / "unpaired_chit.jsonl"
     path.write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
@@ -101,7 +101,7 @@ def test_unpaired_chit_rows_block(tmp_path, capsys):
 def test_duplicate_rows_fail(tmp_path):
     rows = [
         _row("off", "q1", ["t1"], ["t1"]),
-        _row("off", "q1", ["t1"], ["t1"]),  # дубль: confused/lost задвоились бы
+        _row("off", "q1", ["t1"], ["t1"]),  # a duplicate: confused/lost would double up
         _row("gate_only", "q1", ["t1"], ["t1"]),
     ]
     path = tmp_path / "dup.jsonl"
@@ -113,7 +113,7 @@ def test_duplicate_rows_fail(tmp_path):
 def test_mixed_runs_fail(tmp_path):
     rows = [
         _row("off", "q1", ["t1"], ["t1"], git_sha="aaa1111"),
-        _row("off", "q2", ["t2"], ["t2"], git_sha="bbb2222"),  # другой прогон в одном файле
+        _row("off", "q2", ["t2"], ["t2"], git_sha="bbb2222"),  # another run in the same file
         _row("gate_only", "q1", ["t1"], ["t1"], git_sha="aaa1111"),
     ]
     path = tmp_path / "mixed.jsonl"
@@ -125,7 +125,7 @@ def test_mixed_runs_fail(tmp_path):
 def test_targets_mismatch_fail(tmp_path):
     rows = [
         _row("off", "q1", ["t1", "t2"], ["t1", "t2"]),
-        _row("gate_only", "q1", ["t1", "t2"], ["t1"]),  # другой лейбл: потеря «исчезает»
+        _row("gate_only", "q1", ["t1", "t2"], ["t1"]),  # a different label: the loss «disappears»
     ]
     path = tmp_path / "labels.jsonl"
     path.write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
@@ -134,7 +134,7 @@ def test_targets_mismatch_fail(tmp_path):
 
 
 def _a_rows(gate_confused: int):
-    """12 вопросов: off попадает в 6, gate во все 12 -> b=6, c=0, p=0.031, pts=+5.0."""
+    """12 questions: off hits 6, gate hits all 12 -> b=6, c=0, p=0.031, pts=+5.0."""
     rows = []
     for i in range(1, 13):
         hit = i > 6
@@ -149,14 +149,14 @@ def _a_rows(gate_confused: int):
 
 
 def test_branch_a_needs_confused_guard(tmp_path, capsys):
-    """A без охраны (п.4 19:07): +5 очков при p<0.05 даёт A только когда conf/noise не выше off."""
+    """Unprotected A (item 4 19:07): +5 points at p<0.05 yields A only when conf/noise is not above off."""
     path = tmp_path / "a_clean.jsonl"
     path.write_text("\n".join(json.dumps(r) for r in _a_rows(gate_confused=1)),
                     encoding="utf-8")
     mcnemar.report(str(path))
     out = capsys.readouterr().out
     line = next(ln for ln in out.splitlines() if ln.startswith("gate_only"))
-    assert "A" in line.split()[-1], line  # conf 1 <= 2, l5 = 0 -> A (и B)
+    assert "A" in line.split()[-1], line  # conf 1 <= 2, l5 = 0 -> A (and B)
 
     path = tmp_path / "a_guarded.jsonl"
     path.write_text("\n".join(json.dumps(r) for r in _a_rows(gate_confused=3)),
@@ -164,4 +164,4 @@ def test_branch_a_needs_confused_guard(tmp_path, capsys):
     mcnemar.report(str(path))
     out = capsys.readouterr().out
     line = next(ln for ln in out.splitlines() if ln.startswith("gate_only"))
-    assert line.split()[-1] == "-", line  # conf 3 > 2 -> ни A, ни B, хотя очки и p те же
+    assert line.split()[-1] == "-", line  # conf 3 > 2 -> neither A nor B, although the points and p are the same

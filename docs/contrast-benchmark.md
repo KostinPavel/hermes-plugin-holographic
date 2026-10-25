@@ -1,113 +1,116 @@
-# Контрастный бенчмарк реранка — метод и финальные числа
+# Rerank contrast benchmark — method and final numbers
 
-Контекст: PR #10 (RFC issue #9) добавляет слой 3 — кросс-энкодер поверх blend-этапа. Этот
-документ — метод контрастных сетов и финальные измерения на голове PR. Полный журнал
-экспериментов (гипотезы H1–H8, свипы порогов, промежуточные таблицы, удалённые пробные
-скрипты `score_probe`/`loss_probe`/`margin_sweep`/…) — в истории этого файла:
+Context: PR #10 (RFC issue #9) adds layer 3 — a cross-encoder on top of the blend stage. This
+document is the method of the contrast sets and the final measurements on the PR head. The full
+experiment log (hypotheses H1–H8, threshold sweeps, intermediate tables, deleted probe scripts
+`score_probe`/`loss_probe`/`margin_sweep`/…) lives in this file's history:
 [`634cfea`](https://github.com/itpartypattaya/hermes-plugin-holographic/blob/634cfea/docs/contrast-benchmark.md).
 
-## 1. Инфраструктура
+## 1. Infrastructure
 
-| Компонент | Значение |
+| Component | Value |
 |---|---|
-| Сервер | `llama-server` (MSYS2, llama.cpp 0.7.0-dev) или LM Studio |
-| Модель | `bge-reranker-v2-m3-GGUF`, Q4_K_M; эмбеддинги — bge-m3 Q4 (`:1237`) |
-| Флаги | `--reranking --embedding --pooling rank`; CPU — `-dev none` |
-| Репозиторий | ветка `feature/rerank-benchmark` (PR #10) |
+| Server | `llama-server` (MSYS2, llama.cpp 0.7.0-dev) or LM Studio |
+| Model | `bge-reranker-v2-m3-GGUF`, Q4_K_M; embeddings — bge-m3 Q4 (`:1237`) |
+| Flags | `--reranking --embedding --pooling rank`; CPU — `-dev none` |
+| Repository | branch `feature/rerank-benchmark` (PR #10) |
 
-Шкала ответа эндпоинта — **сырые логиты** (проба: релевантный +6.36, мусор −11.01). Отношение
-счётчиков на логитах при отрицательных значениях математически недостижимо, поэтому перед
-гейтом стоит сигмоид-нормализация (`rerank.normalized`); порядок она не меняет.
+The endpoint answers on the scale of **raw logits** (probe: relevant +6.36, garbage −11.01). A
+counter ratio on logits is mathematically unreachable at negative values, so a sigmoid
+normalization sits before the gate (`rerank.normalized`); it does not change the order.
 
-## 2. Наборы данных (`tools/contrast_{ru,en,zh}.py`)
+## 2. Data sets (`tools/contrast_{ru,en,zh}.py`)
 
-Единая схема: `FACTS` (текст, entities) / `PAIRS` / `CHITCHAT` / `self_check()` (exit 0 — без
-ошибок данных).
+One schema: `FACTS` (text, entities) / `PAIRS` / `CHITCHAT` / `self_check()` (exit 0 — no data
+errors).
 
-| Набор | Фактов | Пар (=30 запросов) | chit-chat |
+| Set | Facts | Pairs (=30 queries) | chit-chat |
 |---|---|---|---|
-| ru | 64 | 15 (c1_entity, c2 вкл. number, c3) | 45 (15/15/15) |
-| en | 64 | 15 (то же) | 45 (15/15/15) |
-| zh | 69 | 15 (то же) | 45 (15/15/15) |
+| ru | 64 | 15 (c1_entity, c2 incl. number, c3) | 45 (15/15/15) |
+| en | 64 | 15 (same) | 45 (15/15/15) |
+| zh | 69 | 15 (same) | 45 (15/15/15) |
 
-Типы пар: **c1_entity** — swap имени (Peter/Lena, 大卫/大伟…); **c2** — мост парафраза: цель не
-делит контент-со слов с запросом, дистрактор делится (ловушка BM25); подтип `number` — цифра в
-факте против прописью в запросе; **c3** — предикат при одном субъекте. **CHITCHAT** — 45
-сообщений, обязанных не вспомнить ничего: `greeting_entity` (имя из FACTS), `topic_shared_words`
-(делит слова с фактами), `vague`.
+Pair types: **c1_entity** — a name swap (Peter/Lena, 大卫/大伟…); **c2** — a paraphrase bridge:
+the target shares no content words with the query, the distractor does (the BM25 trap); the
+`number` subtype — a digit in the fact against the spelled-out word in the query; **c3** — a
+predicate with one subject. **CHITCHAT** — 45 messages that must recall nothing:
+`greeting_entity` (a name from FACTS), `topic_shared_words` (shares words with facts), `vague`.
 
-## 3. Метрики
+## 3. Metrics
 
-| Метрика | Определение |
+| Metric | Definition |
 |---|---|
-| hit | целевой факт в полном выводе (hit@5 — в первых пяти строках) |
-| WRONG5 / wrong-entity | чужая (partner-)цель в выводе запроса, у которого есть своя |
-| шум / noise | доля chit-chat с непустым выводом |
-| вывод | число строк ответа (avg, max) |
-| p50 / p95 | медиана / 95-й перцентиль прогона запроса, включая HTTP-вызов |
+| hit | the target fact in the full output (hit@5 — in the first five lines) |
+| WRONG5 / wrong-entity | a foreign (partner) target in the output of a query that has its own |
+| noise | the share of chit-chat with a non-empty output |
+| output | the number of answer lines (avg, max) |
+| p50 / p95 | median / 95th percentile of a query run, HTTP call included |
 
-## 4. Финальные числа
+## 4. Final numbers
 
-Голова PR, `git_sha b6cbec5` в каждой строке, дефолтный конфиг (`RECALL_MARGIN 1.0` —
-предложение 0.6 живёт в отдельном PR #17). Полная таблица — `results/BENCHMARK.md`, сырые
-строки — `results/provenance_*_{off,on}.jsonl`.
+Every row carries the `git_sha` it ran on (the `provenance_*` rows: `77c9325`, committed later in
+the housekeeping `b6cbec5`), default config (`RECALL_MARGIN 1.0` — the 0.6 proposal lives in
+PR #17). The full table is `results/BENCHMARK.md`, raw rows are
+`results/provenance_*_{off,on}.jsonl`.
 
-Агрегат (4 сета, 450 real / 225 negatives в ячейке):
+Aggregate (4 sets, 450 real / 225 negatives per cell):
 
-| embeddings | режим | hit / 450 | wrong | noise / 225 | вывод avg (max) |
+| embeddings | mode | hit / 450 | wrong | noise / 225 | output avg (max) |
 |---|---|---|---|---|---|
 | on | off | 433 | 28 | 73 | 1.80 (7) |
-| on | reorder_only (окно 0) | 433 | 26 | 73 | 1.72 (5) |
-| on | gate_only (окно 0.05) | 432 | 6 | 73 | 0.90 (5) |
+| on | reorder_only (window 0) | 433 | 26 | 73 | 1.72 (5) |
+| on | gate_only (window 0.05) | 432 | 6 | 73 | 0.90 (5) |
 | off | off | 430 | 25 | 73 | 1.80 (7) |
-| off | gate_only (окно 0.05) | 429 | 6 | 73 | 0.90 (5) |
+| off | gate_only (window 0.05) | 429 | 6 | 73 | 0.90 (5) |
 
-Контраст-сеты по ячейкам (emb=on; hit/30, wrong, noise/45):
+Per-cell contrast sets (emb=on; hit/30, wrong, noise/45):
 
-| сет | off | reorder_only | gate_only |
+| set | off | reorder_only | gate_only |
 |---|---|---|---|
 | ru | 27, 8, 25 | 27, 8, 25 | 27, **1**, 25 |
 | en | 23, 7, 26 | 23, 5, 26 | 22, **0**, 26 |
 | zh | 24, 12, 22 | 24, 12, 22 | 24, **5**, 22 |
 
-Шум одинаков во всех режимах: гейт-окно работает после recall и шум не двигает — это
-адмиссионная (покрытие + слова), а не реранк-проблема. 73 из 225 (emb=off, режим off):
-`greeting_entity` 45/45 — ловушка по построению, сообщение с именем человека должно
-вспоминать его факты (согласовано в потоке PR); `topic_shared_words` 26/45; `vague` 2/45 —
-стем-коллизии вылечены фиксом words-gate из main (PR #13); мультиязычные негативы 0/90.
+Noise is identical in every mode: the gate window runs after recall and does not move noise —
+that is an admission (coverage + words) problem, not a rerank one. 73 of 225 (emb=off, mode off):
+`greeting_entity` 45/45 — a trap by construction: a message with a person's name must recall
+their facts (agreed in the PR thread); `topic_shared_words` 26/45; `vague` 2/45 — the stem
+collisions were cured by the words-gate fix in main (PR #13); multilingual negatives 0/90.
 
-Латентность CPU (bge-q4, 240 вызовов, 0 фолбэков). Прогон на голове `77c9325`: llama-server
-`--threads 4` на **Ryzen 7 2700** — off p50 3.7 / p95 9.2 мс, rerank-режимы p50 176–184 /
-p95 393–413 мс (`results/bench_cpu_t4.jsonl`). Те же числа, снятые ранее на **другом процессоре**
-(Ryzen 7 5800H, msys2 `--device none`, `7f1efd6`, до фикса words-gate): off p50 3 / p95 6 мс,
-rerank-режимы p50 94–101 / p95 212–229 мс, пулы 2–5 доков (`results/bench_p8_cpu.jsonl`) —
-одна модель и один харнесс, но между машинами цифры не сопоставимы; кап в 4 потока в новом
-прогоне задуман (малые серверы). Ранние измерения на боксе с iGPU давали ~255–300 мс (iGPU) и
-~400 мс (CPU) на вызов — та же история, коммит `634cfea`.
+CPU latency (bge-q4, 240 calls, 0 fallbacks). Run on head `77c9325`: llama-server `--threads 4`
+on a **Ryzen 7 2700** — off p50 3.7 / p95 9.2 ms, rerank modes p50 176–184 / p95 393–413 ms
+(`results/bench_cpu_t4.jsonl`). The same numbers, measured earlier on a **different processor**
+(Ryzen 7 5800H, msys2 `--device none`, `7f1efd6`, before the words-gate fix): off p50 3 / p95 6
+ms, rerank modes p50 94–101 / p95 212–229 ms, pools of 2–5 docs (`results/bench_p8_cpu.jsonl`) —
+one model and one harness, but the two machines are not comparable; the 4-thread cap in the new
+run is deliberate (small servers). Early measurements on an iGPU box gave ~255–300 ms (iGPU) and
+~400 ms (CPU) per call — the same story, commit `634cfea`.
 
-Выводы, пережившие сокращение:
+Conclusions that survived the cuts:
 
-1. **Reorder не чинит recall**: 433 == 433, сдвиг wrong ≤ 2 от порядка — покрытий-гейт и
-   порядок друг друга не видят; работает только окно среза (wrong → 6 при выводе 1.80 → 0.90).
-2. **Wrong-entity не чинится порядком**: чужая цель семантически близка по определению пары;
-   у off низкий wrong@5 — часто артефакт пустого вывода, не заслуга.
-3. **A-класс (цели нет в словесном пуле) — территория embeddings**, не реранка; на zh это была
-   основа базовых MISS.
-4. **`top_k`/ширина в этих сетах не срабатывали** (кандидатов < 40) — «deep pool» RFC в них
-   не проверялся по-настоящему; wide-прогоны (~620 фактов) вынесены в историю.
-5. Следующий шаг по гейту мейнтейнера — публичный сет ~200 фактов с лейблами и dev/test
-   сплитом (рецепт в обсуждении PR #10, пункт 9).
+1. **Reorder does not fix recall**: 433 == 433, the wrong shift ≤ 2 comes from order — the
+   coverage gate and the order do not see each other; only the cut window works (wrong → 6 with
+   output 1.80 → 0.90).
+2. **Wrong-entity is not fixed by order**: a foreign target is semantically close by the design
+   of the pair; off's low wrong@5 is often an artifact of an empty output, not a merit.
+3. **Class A (the target is not in the word pool) belongs to embeddings**, not rerank; on zh it
+   was the base of the basic MISSes.
+4. **`top_k`/width did not fire in these sets** (fewer than 40 candidates) — the RFC's "deep pool"
+   was not really exercised on them; the wide runs (~620 facts) moved to the file's history.
+5. The maintainer's next step for the gate — a public set of ~200 facts with labels and a
+   dev/test split (the recipe is in the PR #10 discussion, point 9).
 
-## 5. Воспроизводимость
+## 5. Reproducibility
 
 ```bash
-# прогоны (из корня репозитория):
+# runs (from the repository root):
 PYTHONPATH=~/.hermes/hermes-agent HERMES_AGENT_REPO=~/.hermes/hermes-agent \
-    python -I tools/contrast_ru.py                       # самопроверка данных
-CONTRAST_SET=contrast_en python -I tools/contrast_off.py  # EN; аналогично zh
-python -I tools/provenance_probe.py ...                   # полный прогон (см. --help)
+    python -I tools/contrast_ru.py                       # data self-check
+CONTRAST_SET=contrast_en python -I tools/contrast_off.py  # EN; likewise zh
+python -I tools/provenance_probe.py ...                   # full run (see --help)
 ```
 
-Инструменты в дереве: `tools/contrast_{ru,en,zh}.py` (данные), `contrast_off.py` (драйвер),
-`provenance_probe.py` (харнесс с `git_sha` в строках), `benchmark_rerank.py` (метрики по
-язычным ячейкам). Пробные скрипты удалены при housekeeping (п.10) — они в истории коммитов.
+Tools in the tree: `tools/contrast_{ru,en,zh}.py` (data), `contrast_off.py` (driver),
+`provenance_probe.py` (harness with `git_sha` per row), `benchmark_rerank.py` (metrics per
+language cell). The probe scripts were deleted at housekeeping (point 10) — they are in the
+commit history.

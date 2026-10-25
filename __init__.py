@@ -991,9 +991,9 @@ _TRUE_WORDS, _FALSE_WORDS = frozenset({"1", "true", "yes", "on"}), frozenset({"0
 _CHOICES = (("scope", _SCOPES, "one of profile, user, chat, thread"), ("recall_source", {"off", "short"}, "off or short"),
             ("embeddings", _TRUE_WORDS | _FALSE_WORDS, "on or off"),
             ("rerank", _TRUE_WORDS | _FALSE_WORDS, "on or off"),
-            # Шкала реранкера — настройка пользователя (п.2 ревью 13:06): вне пары —
-            # именованная проблема конфига и memory off, как у остальных 0.17.8-ключей
-            # ("scope: users" молча слил все чаты в один стор), а не тихий fallback.
+            # The reranker's scale is the user's own setting (point 2 of the 13:06 review): anything outside the pair is
+            # a named config problem with memory off, like the other 0.17.8 keys
+            # ("scope: users" silently merged every chat into one store), not a silent fallback.
             ("rerank_scale", {"unit", "logit"}, "unit or logit"),
             *((key, _TRUE_WORDS | _FALSE_WORDS, "true or false")
               for key in ("recall_indicator", "cron_writes", "auto_extract", "mirror_memory_writes")))
@@ -1138,22 +1138,22 @@ def _bottom_cut(scores: list[float], window: float) -> list[int] | None:
     return [i for i, s in enumerate(scores) if top - s <= window]
 
 
-# Окно никогда не резает ниже стольких scored-кандидатов — встроено в работу среза (майнтейнер
-# 13:06: вместо ключа rerank_window_min — свойство самого окна, один порог меньше в конфиге).
+# The window never cuts below that many scored candidates — built into how the cut works (maintainer
+# 13:06: a property of the window itself instead of a rerank_window_min key, one threshold less in the config).
 _WINDOW_MIN = 2
 
 
 def _window_keep(keep: list[int] | None, ranked_len: int, need: int = _WINDOW_MIN) -> list[int] | None:
-    """Добор среза до минимум *need* scored-кандидатов (п.4(1) ревью 13:06): два факта, чтобы
-    покрытие не оставалось с одним «уверенно верным» верхом кросс-энкодера — поведение окна,
-    без отдельной клавиши (п.1).
+    """Top up the cut to at least *need* scored candidates (point 4(1) of the 13:06 review): two facts so that
+    coverage is not left with a single "confidently true" cross-encoder top — window behaviour,
+    with no separate switch (point 1).
 
-    Добор идёт по позициям РАНГА, которых не хватает: keep не обязан быть префиксом —
-    `_window_keep([1], 3)` добирает [0, 1], а не [1, 1] (п.4(4): старое заполнение
-    от range(len(out)) считало keep префиксом). Хвост за top_k не воскрешаем: scored ровно
-    ranked_len. keep=None (окно выключено) и пустой срез не оживляются: варианты спасают
-    от частичного среза, а не от пустого пула. Результат сортируется — порядок
-    переупорядоченного пула сохраняется."""
+    The top-up fills the RANK positions that are missing: keep need not be a prefix —
+    `_window_keep([1], 3)` tops up to [0, 1], not [1, 1] (point 4(4): the old fill
+    from range(len(out)) treated keep as a prefix). The tail beyond top_k is not resurrected: scored is exactly
+    ranked_len. keep=None (window off) and an empty cut are not revived: the variants protect
+    against a partial cut, not against an empty pool. The result is sorted — the order of the
+    reordered pool is preserved."""
     if not keep:
         return keep
     out = set(keep)
@@ -1165,11 +1165,11 @@ def _window_keep(keep: list[int] | None, ranked_len: int, need: int = _WINDOW_MI
 
 
 def blend_union(union: list[dict], ranked: list[tuple[int, float]], weight: float) -> list[dict]:
-    """rerank_weight > 0: min-max-нормированный скор реранкера в смесь с первым скором
-    ВСЕХ членов пула (п.4(4) ревью 10:34): факты, которых эндпоинт не скорировал (за
-    top_k), получают пол min-max-шкалы (0 = худший из оценённых), а не остаются на голом
-    первом скоре — иначе union сортируется по двум шкалам сразу. Порог top_k редко
-    отсекает (пулы малы), но вес-тест покрывал только полностью скорированный пул."""
+    """rerank_weight > 0: the reranker's min-max-normalised score blended with the first score of
+    EVERY pool member (point 4(4) of the 10:34 review): facts the endpoint did not score (beyond
+    top_k) get the full min-max scale (0 = the worst of the scored) instead of staying on the bare
+    first score — otherwise union is sorted on two scales at once. The top_k threshold rarely
+    cuts (pools are small), but the weight test only covered a fully scored pool."""
     raw = [s for _, s in ranked]
     lo, hi = min(raw), max(raw)
     span = (hi - lo) or 1.0
@@ -1595,21 +1595,21 @@ class HolographicMemoryProvider(MemoryProvider):
             else:
                 width = _PREFETCH_CANDIDATES
             candidates = self._retriever.search(query, min_trust=self._min_trust, limit=width, meaning=meaning)
-            # Развилка: rerank включён -> единый поток (блок 3); выключен (rescorer None) -> старый путь.
-            # Блок 3: coverage адмиит лексику, meaning/entity идут той же safety/dedup до эндпоинта, ОДИН
-            # rerank ранжирует union, top-5 строго по рангу; окно (rerank_window) и вес —
-            # единственные переключатели (п.6: override и режимы удалены; rescorer существует
-            # только для одного режима, и он идёт через _unified_stream.
+            # The fork: rerank on -> a single stream (block 3); off (rescorer None) -> the old path.
+            # Block 3: coverage admits the lexical, meaning/entity go through the same safety/dedup before the endpoint,
+            # ONE rerank ranks the union, top-5 strictly by rank; the window (rerank_window) and the weight are
+            # the only switches (point 6: override and the modes are gone; the rescorer exists
+            # for one mode only, and it goes through _unified_stream.
             if self._rescorer is not None:
                 # Safety and de-dup BEFORE the endpoint can see them: a fact recall would refuse
                 # (_recall_problem: a credential, an instruction, hidden markup) or a fact injected within
                 # prefetch_repeat_turns is never sent out for scoring — rerank.py refuses a query holding a
                 # secret, the documents must be refused here for the same reason. Both checks are
                 # order-independent, so filtering here gives the same top-5 as filtering after the gate (the
-                # `fresh` re-check in _unified_stream stays as a backstop). ТОЛЬКО на rerank-ветке: на off-пути
-                # эндпоинта нет, а _recallable на ВСЕХ кандидатах писал бы warning «fact #N is not recalled»
-                # о фактах, которые coverage и так отбросил бы — на main проверялись только выжившие
-                # (майнтейнер 24:10, smaller; вывод не меняется, чинится только лог).
+                # `fresh` re-check in _unified_stream stays as a backstop). ONLY on the rerank branch: the off path
+                # has no endpoint, and _recallable on ALL candidates would log a "fact #N is not recalled" warning
+                # about facts coverage would have dropped anyway — on main only the survivors were checked
+                # (maintainer 24:10, smaller; the outcome does not change, only the log is fixed).
                 candidates = [f for f in candidates
                               if self._recallable(f) and self._not_recent(key, f, turn)]
                 fresh, by_meaning = self._unified_stream(query, meaning, candidates, key, turn)
@@ -1635,29 +1635,29 @@ class HolographicMemoryProvider(MemoryProvider):
 
     @staticmethod
     def _sendable_docs(facts: list[dict]) -> tuple[list[int], list[str]]:
-        """Позиции и тексты для эндпоинта: проходят только facts, которые допустимо ОТПРАВИТЬ (_sendable).
-        _recallable пускает факты с «похожим на секрет» текстом (OPENAI_API_KEY=..., Authorization: ...), а
-        показывать их recall может — на эндпоинт они не уходят (PR #10, п.1). Индексы отвечают позициям в
-        facts: ответ эндпоинта маппится обратно, состав пула для recall не меняется."""
+        """Positions and texts for the endpoint: only facts that may be SENT pass (_sendable).
+        _recallable lets facts whose text looks secret through (OPENAI_API_KEY=..., Authorization: *** and recall
+        may show them — they never go to the endpoint (PR #10, point 1). The indexes answer to positions in
+        facts: the endpoint's answer maps back, the pool composition for recall does not change."""
         idx = [i for i, f in enumerate(facts) if _sendable(f.get("content") or "")]
         return idx, [facts[i].get("content") or "" for i in idx]
 
     @staticmethod
     def _rescored(ranked, send_idx: list[int]):
-        """Ответ эндпоинта (индексы по send-списку) -> индексы по исходному пулу."""
+        """The endpoint's answer (indexes into the send list) -> indexes into the original pool."""
         return [(send_idx[i], score) for i, score in ranked if 0 <= i < len(send_idx)]
 
     def _stream_extras(self, query: str, meaning, have: set[int], key: str, turn: int):
-        """Потоки 2 (meaning) и 3 (entity) поверх уже занятых `have` — ОДНА функция для
-        off-пути и для ОБОИХ исходов _unified_stream (п.4(1) ревью 10:34): фолбэк обязан
-        исключать ровно те пять, что исключает off, иначе шестой лексический факт, который
-        entity-поток добавил бы в off, теряется при падении вызова реранкера.
+        """Streams 2 (meaning) and 3 (entity) on top of what `have` already holds — ONE function for
+        the off path and for BOTH outcomes of _unified_stream (point 4(1) of the 10:34 review): the fallback must
+        exclude exactly those same five that off excludes, otherwise the sixth lexical fact the
+        entity stream would have added to off is lost when the reranker call fails.
 
-        Возвращает (meaning_facts, entity_facts, by_meaning); `have` пополняется."""
+        Returns (meaning_facts, entity_facts, by_meaning); `have` is filled in."""
         if self._retriever is None or self._store is None:
-            # Недостижимо при recall (prefetch проверяет выше): строка нужна типам, чтобы
-            # Optional-поля сузились, как сузились в prefetch. _embedding НЕ проверяем здесь:
-            # embeddings выключены — это норма, а meaning при них None.
+            # Unreachable at recall (prefetch checks above): the line is for the types, so that
+            # the Optional fields narrow the way they narrow in prefetch. _embedding is NOT checked here:
+            # embeddings off is the normal case, and meaning is None with them off.
             return [], [], set()
         by_meaning: set[int] = set()
         meaning_facts: list[dict] = []
@@ -1688,33 +1688,33 @@ class HolographicMemoryProvider(MemoryProvider):
 
     def _unified_stream(self, query: str, meaning, candidates: list[dict], key: str,
                         turn: int) -> tuple[list[dict], set[int]]:
-        """Блок 3: один rerank на union-выборке трёх потоков → top-5 строго по рангу (режимы
+        """Block 3: one rerank over the union sample of the three streams → top-5 strictly by rank (the modes
         reorder_before_gate / gate_reads_score).
 
-        - Stream 1 (lexical): coverage адмиит по словам ДО ранга — членство решают слова, реранк судит
-          только порядок и срез (_bottom_cut). В режиме gate это сдвигает coverage раньше окна (состав
-          почти тот же: coverage не смотрит на ранг) — замерено пробом.
-        - Stream 2 (meaning) и 3 (entity): та же safety/dedup-проверка ДО эндпоинта. Раньше они
-          добавлялись ПОСЛЕ гейта, мимо и coverage, и реранка (provenance: entity-сплайс — 60%
-          recall-инстансов без ранга; топ-5 был «лексика первой, потоки в придачу»).
-        - В списке документов потоки стояТ перед лексикой: scores() отправляет только первые top_k —
-          позиция в запросе на скоринг не влияет, а так малые потоки не оказываются отрезанными хвостом
-          wide-пула.
-        - Пустой/упавший реранк → прежний порядок (лексика первой, потоки в придачу), как в off.
+        - Stream 1 (lexical): coverage admits by words BEFORE the rank — membership is decided by the words, the rerank judges
+          order and the cut only (_bottom_cut). In gate mode this moves coverage before the window (the composition
+          is nearly the same: coverage does not look at rank) — measured by a probe.
+        - Stream 2 (meaning) and 3 (entity): the same safety/dedup check BEFORE the endpoint. They used to be
+          added AFTER the gate, bypassing both coverage and the rerank (provenance: the entity splice — 60% of
+          recall instances with no rank; the top-5 was "lexical first, streams thrown in").
+        - In the document list the streams stand BEFORE the lexical: scores() sends only the first top_k —
+          position in the request does not affect scoring, and this way the small streams are not cut off by the tail
+          of the wide pool.
+        - An empty/failed rerank → the old order (lexical first, streams thrown in), as in off.
         """
         rescorer = self._rescorer
-        assert rescorer is not None  # вызывается только при включённом rerank
+        assert rescorer is not None  # called only when rerank is on
 
         # Stream 1: membership is decided by the words, before any rank.
         lexical = self._retriever.relevant(query, candidates, self._min_coverage)
         have = {f["fact_id"] for f in lexical}
-        # Streams 2 и 3 общей функцией: здесь have = ВСЯ лексика (union disjoint по построению);
-        # при падении эндпоинта фолбэк пересчитает их с have = только первые пять — как в off
-        # (п.4(1) ревью 10:34).
+        # Streams 2 and 3 by the same function: here have = ALL the lexical (union disjoint by construction);
+        # when the endpoint fails the fallback recomputes them with have = only the first five — as in off
+        # (point 4(1) of the 10:34 review).
         meaning_facts, entity_facts, by_meaning = self._stream_extras(query, meaning, have, key, turn)
         # Union: disjoint by construction (each stream excluded what the previous one admitted).
         union = meaning_facts + entity_facts + lexical
-        send_idx, docs = self._sendable_docs(union)  # секрет-экран (PR #10, п.1)
+        send_idx, docs = self._sendable_docs(union)  # secret screen (PR #10, point 1)
         try:
             ranked = rescorer.scores(query, docs) if docs else None
             if ranked is not None:
@@ -1724,8 +1724,8 @@ class HolographicMemoryProvider(MemoryProvider):
                 w = rescorer.settings.weight
                 if w > 0.0:
                     # rerank_weight > 0: min-max-normalised cross-encoder score blended into the blend score —
-                    # the order is decided by both (order-only when weight is 0). Вся выборка в одной шкале
-                    # (п.4(4) ревью 10:34): смесь строится для ВСЕХ членов пула, см. blend_union.
+                    # the order is decided by both (order-only when weight is 0). The whole sample on one scale
+                    # (point 4(4) of the 10:34 review): the blend is built for EVERY pool member, see blend_union.
                     blend_union(union, ranked, w)
                 else:
                     # Documents beyond top_k were never sent (scores() sends the first top_k only): they keep
@@ -1735,47 +1735,47 @@ class HolographicMemoryProvider(MemoryProvider):
                 fresh = union
                 window = rescorer.settings.window
                 if w == 0.0 and window > 0.0:
-                    # rerank_window (δ): срез НИЖНЕГО хвоста после coverage и реранкера, перед top-5 (п.6: вето-по-margin
-                    # удалено, осталось окно). Сигмоид-нормализация — чтобы δ был одинаков для сырых логитов и [0,1].
+                    # rerank_window (δ): a cut of the LOWER tail after coverage and the reranker, before top-5 (point 6: the
+                    # margin veto is gone, the window remains). Sigmoid normalisation — so δ is the same for raw logits and [0,1].
                     keep = _bottom_cut(rescorer.normalized(ranked), window)
-                    # Вариант (а) встроен в окно (майнтейнер 13:06): не резать ниже двух scored —
-                    # без клавиши и без вариантов; (б) удалён вместе с rerank_window_named.
+                    # Variant (a) is built into the window (maintainer 13:06): never cut below two scored —
+                    # no switch, no variants; (b) is removed along with rerank_window_named.
                     keep = _window_keep(keep, len(ranked))
-                    # keep — позиции в RANKED, а хвост union (не-sendable-факты, которые recall показывает,
-                    # и позиции за top_k) в ranked не входит. Он обязан пережить окно: состав пула для
-                    # recall не меняется (докстринг _sendable_docs). Без этого каждый успешный вызов при
-                    # rerank_window > 0 тихо терял хвост, даже когда окно не резало ничего
-                    # (майнтейнер 24:10, п.1: три прокси-факта — off отдаёт 3 строки, on отдавал 2).
+                    # keep — positions in RANKED, while the tail of union (non-sendable facts that recall shows,
+                    # and the positions beyond top_k) is not in ranked. It must survive the window: the pool
+                    # composition for recall does not change (the _sendable_docs docstring). Without this every
+                    # successful call with rerank_window > 0 silently lost the tail, even when the window cut nothing
+                    # (maintainer 24:10, point 1: three proxy facts — off returns 3 lines, on returned 2).
                     fresh = ([union[i] for i in keep] if keep else []) + union[len(ranked):]
                 return fresh[:_PREFETCH_FACTS], by_meaning
-        except Exception as exc:  # noqa: BLE001 - ANY exception in the stage acts like a failed call (п.3)
-            # Любой exception, вылетевший из стадии (вызов, маппинг, окно — Codex ловил Thread.start()
-            # RuntimeError, переполнение счёта было ещё раньше), раньше уходил в обработчик prefetch:
-            # турн уходил БЕЗ фактов, failures оставался 0, эндпоинт не ставился на паузу. Теперь —
-            # как неудачный вызов: пауза + счётчик + last_status, а блок отдаёт off-раскладка
-            # (майнтейнер 24:10, п.3; «с провалом — только прежний порядок» и обещает README).
+        except Exception as exc:  # noqa: BLE001 - ANY exception in the stage acts like a failed call (point 3)
+            # Any exception raised by the stage (call, mapping, window — Codex caught a Thread.start()
+            # RuntimeError, the counter overflow came even earlier) used to go to the prefetch handler:
+            # the turn went WITHOUT facts, failures stayed 0, the endpoint was not paused. Now it counts as
+            # a failed call: pause + counter + last_status, and the block returns the off layout
+            # (maintainer 24:10, point 3; "on failure — only the old order", as the README promises).
             rescorer.note_failure(f"rerank stage: {type(exc).__name__}: {exc}")
-        # A failed call, an empty pool OR an exception in the stage: ровно off-раскладка (п.4(1) ревью
-        # 10:34), но БЕЗ кандидатов (п.3 ревью 19:39): фолбэк ищет заново с off-лимитом 15 — иначе
-        # расширенный пул (max(15×4, top_k)) и отсутствие фильтра «недавнего» дают другой состав, чем
-        # off (кандидаты 1–15 показаны, цель на 17-м: off пуст, старый фолбэк возвращал пятёрку).
+        # A failed call, an empty pool OR an exception in the stage: exactly the off layout (point 4(1) of the
+        # 10:34 review), but WITHOUT candidates (point 3 of the 19:39 review): the fallback searches anew with the
+        # off limit of 15 — otherwise the widened pool (max(15×4, top_k)) and the missing "recent" filter give a
+        # different composition than off (candidates 1–15 shown, the target on the 17th: off empty, the old fallback returned five).
         return self._off_layout(query, meaning, key, turn)
 
     def _off_layout(self, query, meaning, key, turn, candidates: list[dict] | None = None) -> tuple[list[dict], set[int]]:
-        """Раскладка recall с выключенным rerank — и та же самая для фолбэка упавшей реранк-стадии
-        (п.3 ревью 19:39): первые 15 кандидатов через coverage-гейт, потом meaning/entity-дополнения.
+        """The recall layout with rerank off — and the same one for the fallback of a failed rerank stage
+        (point 3 of the 19:39 review): the first 15 candidates through the coverage gate, then meaning/entity extras.
 
-        Фолбэк зовёт её БЕЗ candidates: повторный поиск с off-лимитом, чтобы расширенный пул
-        (max(15×4, top_k)) никогда не попадал в блок — off и фолбэк обязаны отдавать один и тот же
-        блок (мейнтейнер: «move the off branch of prefetch into one method and call it from both»)."""
+        The fallback calls it WITHOUT candidates: a fresh search with the off limit, so the widened pool
+        (max(15×4, top_k)) never enters the block — off and the fallback must return one and the same
+        block (maintainer: "move the off branch of prefetch into one method and call it from both")."""
         if candidates is None:
             candidates = self._retriever.search(query, min_trust=self._min_trust,
                                                 limit=_PREFETCH_CANDIDATES, meaning=meaning)
         gate = self._retriever.relevant(query, candidates, self._min_coverage)
         fresh = [f for f in gate
                  if self._not_recent(key, f, turn) and self._recallable(f)][:_PREFETCH_FACTS]
-        # Потоки 2 и 3 той же функцией, что и фолбэк _unified_stream (п.4(1)): здесь
-        # have = только пять сохранённых лексических фактов.
+        # Streams 2 and 3 with the same function as the _unified_stream fallback (point 4(1)): here
+        # have = only the five stored lexical facts.
         meaning_facts, entity_facts, by_meaning = self._stream_extras(
             query, meaning, {f["fact_id"] for f in fresh}, key, turn)
         return fresh + meaning_facts + entity_facts, by_meaning
@@ -2336,20 +2336,20 @@ class HolographicMemoryProvider(MemoryProvider):
         # Rescoring, after search() and before the by_meaning / beyond_words splice (rerank.py): the pool is
         # reordered, then the meaning splice fills what is left. Any failure keeps the current order.
         if self._rescorer and results:
-            # Секрет-экран: search намеренно показывает факты, которые recall не инжектит (включая
-            # учётные данные) — на эндпоинт они не уходят (PR #10, п.1).
+            # Secret screen: search deliberately shows facts that recall does not inject (credentials
+            # included) — they never go to the endpoint (PR #10, point 1).
             try:
                 send_idx, docs = self._sendable_docs(results)
                 indexes = self._rescorer.order(a["query"], docs) if docs else None
                 if indexes is not None:
                     mapped = [send_idx[i] for i in indexes if 0 <= i < len(send_idx)]
-                    # Что реранк не оценил (хвост limit > top_k) сохраняет место ПОСЛЕ ранжированных
-                    # (PR #10, п.4): раньше пересборка из ≤top_k индексов молча резала хвост.
+                    # What the reranker did not score (the tail when limit > top_k) keeps its place AFTER the ranked
+                    # ones (PR #10, point 4): before, rebuilding from ≤top_k indexes silently cut the tail.
                     seen = set(mapped)
                     reordered = [results[i] for i in mapped + [j for j in range(len(results)) if j not in seen]]
-                    # Новый порядок присваивается ТОЛЬКО после сборки (п.4 ревью 19:39).
+                    # The new order is assigned ONLY after the list is built (point 4 of the 19:39 review).
                     results, words = reordered, list(reordered)
-            except Exception as exc:  # noqa: BLE001 - как в _unified_stream: результаты остаются, отказ считается
+            except Exception as exc:  # noqa: BLE001 - as in _unified_stream: the results stay, the failure is counted
                 self._rescorer.note_failure(f"search: {type(exc).__name__}: {exc}")
         min_score = self._embedding.min_score if self._embedding is not None else None
         if meaning is not None and len(results) < limit:  # by meaning: after every fact that holds the words

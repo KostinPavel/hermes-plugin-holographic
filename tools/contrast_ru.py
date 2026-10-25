@@ -1,39 +1,39 @@
 # -*- coding: utf-8 -*-
-"""Contrast set RU для tools/benchmark_rerank.py (RFC #9, гейты 2 и 3).
+"""Contrast set RU for tools/benchmark_rerank.py (RFC #9, gates 2 and 3).
 
-Дизайн (см. cross-encoder-rerank/references/validation-datasets.md):
-  - каждая запись PAIRS — минимальная ПАРА: два запроса, различающиеся одним
-    фактором; обе цели лежат в магазине; метрика ПАРНАЯ (both-or-nothing);
-  - магазин общий для всех контрастов (~70 фактов), дистракторы одного
-    контраста — филлеры другого;
-  - CHITCHAT — 15 запросов, которые обязаны НЕ вспомнить ничего (сторона 2
-    контраста C5 для gate_reads_score; сторона 1 — «hard»-запросы C2);
-  - ожидаемое поведение базы (off) и ловушки записаны в поле `note` —
-    это ОЦЕНКИ дизайна, обязательная проверка: прогнать off-режим и убедиться,
-    что база реально проваливает пары (самопроверка ниже печатает план).
+Design (see cross-encoder-rerank/references/validation-datasets.md):
+  - every PAIRS entry is a minimal PAIR: two queries differing by a single
+    factor; both targets live in the store; the metric is PAIRED (both-or-nothing);
+  - the store is shared by all contrasts (~70 facts); the distractors of one
+    contrast are fillers of the other;
+  - CHITCHAT — 15 queries that MUST recall nothing (side 2
+    of contrast C5 for gate_reads_score; side 1 — the C2 "hard" queries);
+  - the expected behaviour of the base (off) and the traps are recorded in the `note` field —
+    these are design ASSESSMENTS, a mandatory check: run the off mode and make sure
+    the base actually fails the pairs (the self-check below prints the plan).
 
-Типы: c1_entity — swap имени; c2 (+subtype number) — мост парафраза без
-общих корней; c3 — предикат при одном субъекте (документированная слабость
+Types: c1_entity — a name swap; c2 (+subtype number) — a paraphrase bridge with no
+shared roots; c3 — a predicate over a single subject (the documented weakness
 retrieval.py:173-176).
 
-Синтетические данные, написаны для PR itpartypattaya/hermes-plugin-holographic#10.
+Synthetic data, written for PR itpartypattaya/hermes-plugin-holographic#10.
 """
 
 FACTS = {
-    # --- c1e-1: дни рождения (один тип «даты», чтобы тип был загружен) ---
+    # --- c1e-1: birthdays (one "date" type so the type gets loaded) ---
     "peter_bd": ("День рождения Петра — 12 марта.", ["Петр"]),
     "lena_bd": ("День рождения Лены — 3 июня.", ["Лена"]),
     "olga_wedding": ("Свадьба Ольги — 18 августа 2023 года.", ["Ольга"]),
     "app_deadline": ("Крайний срок подачи заявки — 25 сентября.", []),
     "barsik_shot": ("Прививка кота Барсика — 14 ноября.", ["Барсик"]),
 
-    # --- c1e-2: работа (общее слово Норникель у обеих целей) ---
+    # --- c1e-2: work (the shared word Nornickel in both targets) ---
     "denis_work": ("Денис работает в Норникеле в Москве.", ["Денис"]),
     "dina_work": ("Дина работает в Норникеле в Екатеринбурге.", ["Дина"]),
     "sergey_nornickel": ("Сергей уволился из Норникеля в 2022 году.", ["Сергей"]),
     "nornickel_office": ("Офис Норникеля на Пятницкой закрыт на ремонт.", []),
 
-    # --- c1e-3: бассейн (Саша/Соня: согласование форм) ---
+    # --- c1e-3: pool (Sasha/Sonya: verb-form agreement) ---
     "sasha_pool": ("Саша ходит в бассейн по вторникам.", ["Саша"]),
     "sonya_pool": ("Соня ходит в бассейн по четвергам.", ["Соня"]),
     "masha_pool": ("Маша записалась в бассейн на январь.", ["Маша"]),
@@ -41,7 +41,7 @@ FACTS = {
     "sasha_chess": ("Саша играет в шахматы по субботам.", ["Саша"]),
     "sonya_yoga": ("Соня занимается йогой по утрам.", ["Соня"]),
 
-    # --- c2-numeric: цифры в факте, прописью в запросе ---
+    # --- c2-numeric: digits in the fact, spelled out in the query ---
     "denis_car": ("Денис купил машину в 2024 году.", ["Денис"]),
     "denis_tires": ("Денис менял зимнюю резину в октябре.", ["Денис"]),
     "denis_sochi": ("Денис отдыхал в Сочи летом.", ["Денис"]),
@@ -56,7 +56,7 @@ FACTS = {
     "andrey_dentist": ("Андрей записан к стоматологу на субботу.", ["Андрей"]),
     "andrey_cat": ("Андрей кормит кота дважды в день.", ["Андрей"]),
 
-    # --- c2: мост парафраза (цель не делит слова запроса; ловушка делится) ---
+    # --- c2: paraphrase bridge (the target shares no query words; the trap does) ---
     "marina_night": ("Марина гуляет по ночам в парке.", ["Марина"]),
     "marina_cams": ("Марина видна по камерам у метро.", ["Марина"]),
     "marina_gagarin": ("Марина живёт на улице Гагарина.", ["Марина"]),
@@ -75,8 +75,8 @@ FACTS = {
     "masha_return": ("Маша вернула покупку в магазин.", ["Маша"]),
     "masha_savings": ("Маша экономит на продуктах каждый месяц.", ["Маша"]),
 
-    # --- c3: предикат при одном субъекте (субъект должен быть загружен
-    #     минимум 6 фактами, иначе top-5 не режет и база не падает) ---
+    # --- c3: predicate over a single subject (the subject must carry
+    #     at least 6 facts, else top-5 does not cut and the base never fails) ---
     "olga_teach": ("Ольга преподаёт математику.", ["Ольга"]),
     "olga_run": ("Ольга бегает по утрам.", ["Ольга"]),
     "olga_ielts": ("Ольга сдала IELTS на 7.5.", ["Ольга"]),
@@ -91,7 +91,7 @@ FACTS = {
     "sergey_market": ("Сергей ходит на рынок по субботам.", ["Сергей"]),
     "sergey_flat": ("Сергей снимает квартиру рядом с метро.", ["Сергей"]),
 
-    # --- общие филлеры: толпа для top-5 и дистракторы болтовни ---
+    # --- shared fillers: crowd for top-5 and chit-chat distractors ---
     "filler_train": ("Поезд в Питер отправляется в 07:30.", []),
     "filler_coffee": ("Кофе в офисе подорожал на треть.", []),
     "filler_berries": ("Сезон дачных ягод начинается в июле.", []),
@@ -100,9 +100,9 @@ FACTS = {
     "filler_winter_tires": ("Зимнюю резину ставят после первых заморозков.", []),
 }
 
-# 15 пар = 30 запросов. Парная метрика: оба запроса должны попасть в цель.
+# 15 pairs = 30 queries. Paired metric: both queries must hit the target.
 PAIRS = [
-    # ---------- C1: swap различающего токена ----------
+    # ---------- C1: swap of the discriminating token ----------
     {"id": "c1e-1", "type": "c1_entity", "queries": [
         ("Когда день рождения Петра?", "peter_bd"),
         ("Когда день рождения Лены?", "lena_bd")],
@@ -122,7 +122,7 @@ PAIRS = [
              "Факты отличаются только днём недели; прочие факты бассейна "
              "делят слова запроса (бассейн)."},
 
-    # ---------- C2: мост парафраза (2 числовых + 3 обычных) ----------
+    # ---------- C2: paraphrase bridge (2 numeric + 3 plain) ----------
     {"id": "c2n-1", "type": "c2", "subtype": "number", "queries": [
         ("Когда Денис купил машину?", "denis_car"),
         ("Что Денис сделал в двадцать четвёртом году?", "denis_car")],
@@ -150,7 +150,7 @@ PAIRS = [
      "note": "A: «вай-фай» ≠ «интернет» по корню; ловушка light_evening делится "
              "«вечером/квартире». B — контроль («интернет», «квартире»)."},
 
-    # ---------- C3: предикат при одном субъекте ----------
+    # ---------- C3: predicate over a single subject ----------
     {"id": "c3-1", "type": "c3", "queries": [
         ("Что Марина делает по ночам?", "marina_night"),
         ("Что Марина делает в офисе?", "marina_office")],
@@ -190,11 +190,11 @@ PAIRS = [
              "Ольги-факты в top-5 наравне; B: «экзамен» ≠ IELTS по корню."},
 ]
 
-# 45 запросов (15/категорию), обязана вернуть ПУСТОЙ recall.
-# Правило трёх: 0 шумов при n=45 → шум < 7% на языке.
+# 45 queries (15 per category), must return EMPTY recall.
+# Rule of three: 0 noise at n=45 → noise < 7% per language.
 CHITCHAT = [
-    # приветствия с сущностью (общие слова с фактами есть → coverage админит,
-    # gate_reads_score обязан отказать по score)
+    # greetings with an entity (shared words with facts exist → coverage admits,
+    # gate_reads_score must refuse on score)
     ("Привет, Марина! Как дела?", "greeting_entity"),
     ("Марина, доброе утро!", "greeting_entity"),
     ("Денис, что нового?", "greeting_entity"),
@@ -210,7 +210,7 @@ CHITCHAT = [
     ("Привет, Петруся!", "greeting_entity"),
     ("Ольга, здравствуй!", "greeting_entity"),
     ("Андрей, ты где?", "greeting_entity"),
-    # болтовня, делящая слова с фактами (coverage-ловушка)
+    # chatter sharing words with facts (coverage trap)
     ("По ночам в городе шумно.", "topic_shared_words"),
     ("В бассейн зимой идти холодно.", "topic_shared_words"),
     ("В Норникеле сейчас много вакансий.", "topic_shared_words"),
@@ -226,7 +226,7 @@ CHITCHAT = [
     ("Дачный сезон скоро откроется.", "topic_shared_words"),
     ("По выходным все куда-то едут.", "topic_shared_words"),
     ("В офисе летом душно.", "topic_shared_words"),
-    # нерелевантный общий хвост
+    # irrelevant shared tail
     ("Как тебе погода на этой неделе?", "vague"),
     ("Что посмотреть вечером?", "vague"),
     ("Кто это сказал?", "vague"),
@@ -246,24 +246,24 @@ CHITCHAT = [
 
 
 def self_check():
-    """Печатает план и ловит ошибки данных. Запуск: python contrast_ru.py"""
+    """Prints the plan and catches data errors. Run: python contrast_ru.py"""
     errors = []
     seen = {}
     for p in PAIRS:
         if len(p["queries"]) != 2:
-            errors.append(f'{p["id"]}: нужно ровно 2 запроса')
+            errors.append(f'{p["id"]}: exactly 2 queries are required')
         for q, key in p["queries"]:
             if key not in FACTS:
-                errors.append(f'{p["id"]}: нет факта {key!r}')
+                errors.append(f'{p["id"]}: no fact {key!r}')
             if q in seen:
-                errors.append(f'{p["id"]}: запрос дублирует {seen[q]!r}: {q!r}')
+                errors.append(f'{p["id"]}: query duplicates {seen[q]!r}: {q!r}')
             seen[q] = p["id"]
     chit_seen = {}
     for q, cat in CHITCHAT:
         if q in seen:
-            errors.append(f"chit-chat дублирует {seen[q]!r}: {q!r}")
+            errors.append(f"chit-chat duplicates {seen[q]!r}: {q!r}")
         if q in chit_seen:
-            errors.append(f"chit-chat дублирует сам себя: {q!r}")
+            errors.append(f"chit-chat duplicates itself: {q!r}")
         chit_seen[q] = True
     subj = {}
     for key, (text, ents) in FACTS.items():
@@ -275,19 +275,19 @@ def self_check():
     by_type = {}
     for p in PAIRS:
         by_type[p["type"]] = by_type.get(p["type"], 0) + 1
-    print(f"фактов в магазине: {len(FACTS)}")
-    print(f"пар: {n_pairs} (запросов: {n_q}), chit-chat: {len(CHITCHAT)}")
-    print("по типам:", by_type)
-    print("субъекты с числом фактов (для c3 надо >=5, лучше >=6):")
+    print(f"facts in the store: {len(FACTS)}")
+    print(f"pairs: {n_pairs} (queries: {n_q}), chit-chat: {len(CHITCHAT)}")
+    print("by type:", by_type)
+    print("subjects with their fact counts (c3 needs >=5, better >=6):")
     for e, keys in sorted(subj.items(), key=lambda kv: -len(kv[1])):
         print(f"   {e}: {len(keys)}")
     if n_pairs != 15:
-        errors.append(f"ожидалось 15 пар, есть {n_pairs}")
+        errors.append(f"expected 15 pairs, got {n_pairs}")
     if n_q != 30:
-        errors.append(f"ожидалось 30 запросов, есть {n_q}")
+        errors.append(f"expected 30 queries, got {n_q}")
     if len(CHITCHAT) != 45:
-        errors.append(f"ожидалось 45 chit-chat, есть {len(CHITCHAT)}")
-    print("ОШИБКИ:" if errors else "Ошибок данных нет.")
+        errors.append(f"expected 45 chit-chat, got {len(CHITCHAT)}")
+    print("ERRORS:" if errors else "No data errors.")
     for e in errors:
         print("  -", e)
     return not errors

@@ -1,11 +1,11 @@
-"""PR #10, п.7 (ревью 2026-10-22): пиним сами гарантии, а не факт вызова.
+"""PR #10, item 7 (review 2026-10-22): we pin the guarantees themselves, not the fact of a call.
 
-1. rerank off + embeddings off/on — recall ПОБАЙТОВО равен upstream/main (факты, порядок, скоры):
-   золота сняты скриптом golden_capture.py с worktree upstream/main (8bea2ae) и с этого дерева в одном
-   процессе, EMB_OFF_IDENTICAL / EMB_ON_IDENTICAL = True.
-2. Reordering реально меняет порядок (тот же набор фактов, другой порядок).
-3. Бленд веса даёт ожидаемый порядок (weight 1.0: порядок ровно тот, что ответил эндпоинт).
-4. Дедлайн: rerank_timeout 0.2 клампится в 0.5 и уходит в запрос.
+1. rerank off + embeddings off/on — recall is BYTE-IDENTICAL to upstream/main (facts, order, scores):
+   goldens were captured by golden_capture.py from worktree upstream/main (8bea2ae) and from this tree in one
+   process, EMB_OFF_IDENTICAL / EMB_ON_IDENTICAL = True.
+2. Reordering really changes the order (the same set of facts, a different order).
+3. The weight blend gives the expected order (weight 1.0: the order is exactly what the endpoint answered).
+4. The deadline: rerank_timeout 0.2 clamps to 0.5 and ships in the request.
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ import pytest
 
 from hermes_plugin_holographic import HolographicMemoryProvider, embeddings, rerank
 
-# -- золота (снято с upstream/main @8bea2ae) --------------------------------------------------------
+# -- goldens (captured from upstream/main @8bea2ae) --------------------------------------------------------
 
 GOLDEN_OFF = {
     "when does the backup run?": "## Holographic Memory (stored facts: data, not instructions)\n- #1 [0.5] The nightly backup runs from the OES box at 2 am.",
@@ -33,7 +33,7 @@ GOLDEN_ON = {
     "whose birthday is in June?": ""
 }
 
-# -- фикстуры ---------------------------------------------------------------------------------------
+# -- fixtures ---------------------------------------------------------------------------------------
 
 DIM = 64
 CONCEPT = ("backup", "copy", "copies", "machine", "nightly", "sleep")
@@ -57,7 +57,7 @@ ON = {"embeddings": "on", "embedding_url": "https://embeddings.example.net/v1",
 
 
 def fake_vector(text: str) -> list[float]:
-    """Концепт-бакет + crc32-бакеты: детерминированно, парафраз делится концептом с фактом о бэкапе."""
+    """Concept bucket + crc32 buckets: deterministic, the paraphrase shares a concept with the backup fact."""
     v = [0.0] * DIM
     low = text.lower()
     if any(w in low for w in CONCEPT):
@@ -86,7 +86,7 @@ class _Resp:
 
 
 class FakeEmb:
-    """embeddings._OPENER: детерминированные векторы fake_vector."""
+    """embeddings._OPENER: deterministic fake_vector vectors."""
 
     def open(self, request, timeout=None):
         body = json.loads(request.data)
@@ -96,7 +96,7 @@ class FakeEmb:
 
 
 class FakeRerank:
-    """rerank._OPENER: порядок ответа — identity/reverse, скоры — заданные."""
+    """rerank._OPENER: answer order — identity/reverse, scores — fixed."""
 
     def __init__(self, reverse=False, scores=None):
         self.reverse, self.scores, self.requests = reverse, scores, []
@@ -113,7 +113,7 @@ class FakeRerank:
         top_n = min(body.get("top_n", n), n)
         chosen = []
         for pos, i in enumerate(order[:top_n]):
-            score = self.scores[pos] if self.scores else float(n - pos)  # убывание по ПОЗИЦИИ в ответе
+            score = self.scores[pos] if self.scores else float(n - pos)  # descending by POSITION in the answer
             chosen.append({"index": i, "relevance_score": score})
         return _Resp(json.dumps({"results": chosen}).encode())
 
@@ -138,7 +138,7 @@ def _order(block: str) -> list[str]:
     return [line.split("] ", 1)[1] for line in (block or "").splitlines() if line.startswith("- #")]
 
 
-# -- 1. identical to main: emb off и emb on ----------------------------------------------------------
+# -- 1. identical to main: emb off and emb on ----------------------------------------------------------
 
 @pytest.mark.parametrize("emb", [False, True], ids=["embeddings_off", "embeddings_on"])
 def test_recall_is_identical_to_main(tmp_path, emb, monkeypatch, endpoint_emb):
@@ -159,7 +159,7 @@ def endpoint_emb(monkeypatch):
     return fake
 
 
-# -- 2. reorder реально меняет порядок --------------------------------------------------------------
+# -- 2. reorder really changes the order --------------------------------------------------------------
 
 def test_reordering_really_changes_the_order(tmp_path, monkeypatch):
     fake = FakeRerank(reverse=True)
@@ -168,21 +168,21 @@ def test_reordering_really_changes_the_order(tmp_path, monkeypatch):
     _fill(base)
     off_block = base.prefetch("what about the note?")
     base.shutdown()
-    # window выключен: нас интересует только порядок, а не срез хвоста
+    # the window is off: we only care about the order, not the tail cut
     p = _provider(tmp_path, **{**RANK, "rerank_window": "0.0"})
     _fill(p)
     on_block = p.prefetch("what about the note?")
     p.shutdown()
     assert fake.requests, "the endpoint was not called"
-    assert set(_order(on_block)) == set(_order(off_block))  # тот же набор фактов ...
+    assert set(_order(on_block)) == set(_order(off_block))  # the same set of facts ...
     assert len(_order(off_block)) >= 2
-    assert _order(on_block) != _order(off_block)            # ... но порядок другой
+    assert _order(on_block) != _order(off_block)            # ... but a different order
 
 
-# -- 3. бленд веса даёт ожидаемый порядок -------------------------------------------------------------
+# -- 3. the weight blend gives the expected order -------------------------------------------------------------
 
 def test_weight_blend_gives_the_expected_order(tmp_path, monkeypatch):
-    # weight 1.0: min-max эндпоинта и есть итоговый скор — порядок обязан совпасть с ответом ровно
+    # weight 1.0: the endpoint's min-max is the final score — the order must match the answer exactly
     fake = FakeRerank(reverse=True)
     monkeypatch.setattr(rerank, "_OPENER", fake)
     p = _provider(tmp_path, **{**RANK, "rerank_weight": "1.0"})
@@ -190,23 +190,23 @@ def test_weight_blend_gives_the_expected_order(tmp_path, monkeypatch):
     block = p.prefetch("what about the note?")
     p.shutdown()
     sent = fake.requests[0]["body"]["documents"]
-    expected = list(reversed(sent))  # эндпоинт ответил обратным порядком
+    expected = list(reversed(sent))  # the endpoint answered in reverse order
     assert _order(block) == expected
 
 
-# -- 4. дедлайн: 0.2 клампится в 0.5 --------------------------------------------------------------------
+# -- 4. the deadline: 0.2 clamps to 0.5 --------------------------------------------------------------------
 
 def test_timeout_is_clamped_and_enforced(tmp_path, monkeypatch):
     fake = FakeRerank()
     monkeypatch.setattr(rerank, "_OPENER", fake)
     p = _provider(tmp_path, **{**RANK, "rerank_timeout": "0.2"})
     _fill(p)
-    assert p._rescorer.settings.timeout == 0.5  # кламп: минимум 0.5
+    assert p._rescorer.settings.timeout == 0.5  # clamp: at least 0.5
     start = time.perf_counter()
-    # п.9: единственный кандидат вызова не делает — берём пул из трёх note-фактов
+    # item 9: a single candidate makes no call — we take a pool of three note facts
     block = p.prefetch("what about the note?")
     elapsed = time.perf_counter() - start
     p.shutdown()
     assert block
-    assert fake.requests[0]["timeout"] == 0.5  # в запрос ушёл именно клампнутый дедлайн
-    assert elapsed < 1.0  # тест укладывается в свою секунду (ревью, п.7)
+    assert fake.requests[0]["timeout"] == 0.5  # the clamped deadline is what shipped in the request
+    assert elapsed < 1.0  # the test fits into its own second (review, item 7)

@@ -1,25 +1,25 @@
 # -*- coding: utf-8 -*-
-"""Provenance probe: откуда каждый факт в top-5 перед ходом (лексический / смысл / имена),
-что фильтр coverage вырезал, срезало ли окно rerank_window (класс E) и почему цель не найдена
-(классы A/D/C).
+"""Provenance probe: where each fact in top-5 came from before the turn (lexical / meaning / names),
+what the coverage filter cut, whether the rerank_window cut it (class E) and why the target was not found
+(classes A/D/C).
 
-Патчит только экземпляр провайдера в тестовом прогоне (продакшн-код не меняется):
-  search      -> пул (кандидаты после blend)
-  relevant    -> kept / blocked (+ позиция в пуле, top-5 пула = класс D)
-  by_meaning  -> источник 'meaning'
-  entity_facts-> источник 'entity'
-  rescorer.scores -> порядок реранка (top-5 реранка)
+Patches only the provider instance in a test run (production code stays unchanged):
+  search      -> pool (candidates after blend)
+  relevant    -> kept / blocked (+ position in the pool, pool top-5 = class D)
+  by_meaning  -> source 'meaning'
+  entity_facts-> source 'entity'
+  rescorer.scores -> the rerank order (rerank top-5)
   _not_recent / _recallable -> 'recent' / 'unsafe'
 
-Запуск:
+Run:
     PYTHONPATH=~/.hermes/hermes-agent python -I tools/provenance_probe.py \
         --set multi --langs en,ru,zh,de,ja,it,nl,th --modes off,reorder_only,gate_only
     PYTHONPATH=~/.hermes/hermes-agent python -I tools/provenance_probe.py \
         --set contrast_ru --modes off,gate_only --emb on
-    # --endpoint http://127.0.0.1:1235/v1/rerank   реальный реранк (иначе мок)
-    # --emb on|off|both                              embeddings с :1237 (по умолчанию off)
+    # --endpoint http://127.0.0.1:1235/v1/rerank   a real rerank (otherwise a mock)
+    # --emb on|off|both                              embeddings from :1237 (default off)
 
-Строки: results/provenance_<set>_<emb>.jsonl (по строке на запрос; mode — поле строки, git_sha — коммит).
+Rows: results/provenance_<set>_<emb>.jsonl (one row per query; mode is a row field, git_sha is the commit).
 """
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ for _p in (str(_AGENT), str(_REPO.parent)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-if "hermes_plugin_holographic" not in sys.modules:  # в тестах пакет уже загружен conftest
+if "hermes_plugin_holographic" not in sys.modules:  # in tests the package is already loaded by conftest
     _spec = importlib.util.spec_from_file_location(
         "hermes_plugin_holographic", _REPO / "__init__.py", submodule_search_locations=[str(_REPO)])
     assert _spec and _spec.loader
@@ -50,32 +50,32 @@ from hermes_plugin_holographic import HolographicMemoryProvider  # noqa: E402
 from hermes_plugin_holographic import _sendable as _holographic_sendable  # noqa: E402
 from hermes_plugin_holographic import embeddings as _holographic_embeddings  # noqa: E402
 
-# mode -> (rerank_weight, rerank_window): окно (δ) теперь настоящая клавиша конфига (rerank_window);
-# margin-вето и критериальные хуки (_margin_clears / подмены _bottom_cut) удалены (п.6 ревью 2026-10-22).
+# mode -> (rerank_weight, rerank_window): the window (δ) is now a real config key (rerank_window);
+# the margin veto and the criterion hooks (_margin_clears / _bottom_cut replacements) are gone (review item 6, 2026-10-22).
 MODES = {
     "off": None,
     "reorder_only": ("0.0", "0.0"),
     "reorder_blend": ("0.5", "0.0"),
     "gate_only": ("0.0", "0.05"),
     "gate_blend": ("0.5", "0.05"),
-    # свип окна (бывшие botwin:δ) — то же числом в rerank_window:
+    # window sweep (formerly botwin:δ) — the same numbers in rerank_window:
     "win10": ("0.0", "0.10"),
     "win03": ("0.0", "0.03"),
     "win02": ("0.0", "0.02"),
-    # режимов gate_min2/gate_named больше (п.1 ревью 13:06): минимум два —
-    # встроено в окно, защита названного лица удалена; gate_only = готовая
-    # конфигурация для мержа (δ=0.05 + этот встроенный минимум).
+    # the gate_min2/gate_named modes are gone (review item 1, 13:06): the minimum of two —
+    # is built into the window, the named-person guard is gone; gate_only = a ready
+    # configuration for the merge (δ=0.05 + this built-in minimum).
 }
 
 
 EMB_URL = os.environ.get("EMB_URL", "http://127.0.0.1:1237/v1")
 EMB_MODEL = os.environ.get("EMB_MODEL", "bge-m3")
 ENDPOINT = os.environ.get("RERANK_URL", "http://127.0.0.1:1235/v1/rerank")
-SCALE = os.environ.get("RERANK_SCALE", "logit")  # шкала эндпоинта (п.4 фикс-листа 14:01)
+SCALE = os.environ.get("RERANK_SCALE", "logit")  # endpoint scale (fix-list item 4, 14:01)
 
 
 def _git_sha() -> str:
-    """Стем коммита: каждая строка JSONL знает, на каком коде снята (п.8 ревью 2026-10-22)."""
+    """Stem of the commit: every JSONL row knows at which code it was captured (review item 8, 2026-10-22)."""
     try:
         import subprocess
         return subprocess.run(["git", "rev-parse", "HEAD"], cwd=_REPO,
@@ -84,7 +84,7 @@ def _git_sha() -> str:
         return "unknown"
 
 
-# ---------------------------------------------------------------- данные наборов
+# ---------------------------------------------------------------- set data
 
 def load_multilingual():
     spec = importlib.util.spec_from_file_location(
@@ -103,7 +103,7 @@ def load_contrast(name: str):
     return mod
 
 
-# ---------------------------------------------------------------- провайдер
+# ---------------------------------------------------------------- provider
 
 def make_provider(db: Path, mode: str, emb, extra: dict | None = None) -> HolographicMemoryProvider:
     spec = MODES[mode]
@@ -121,7 +121,7 @@ def make_provider(db: Path, mode: str, emb, extra: dict | None = None) -> Hologr
 
 
 class Probe:
-    """Собирает provenance одного prefetch. Контекст сбрасывается на каждый запрос."""
+    """Collects the provenance of a single prefetch. The context resets on every query."""
 
     def __init__(self, p: HolographicMemoryProvider):
         self.p = p
@@ -135,7 +135,7 @@ class Probe:
         self._wrap(p, "_sendable_docs", self._sendable_docs)
         self._wrap(p, "_not_recent", self._not_recent)
         self._wrap(p, "_recallable", self._recallable)
-        # runner на main не имеет _rescorer вообще — getattr, не прямой доступ (п.5 фикс-листа)
+        # the runner on main has no _rescorer at all — getattr, no direct access (fix-list item 5)
         rsc = getattr(p, "_rescorer", None)
         if rsc is not None:
             self._wrap(rsc, "scores", self._scores)
@@ -147,7 +147,7 @@ class Probe:
         self._orig[(id(obj), name)] = orig
         setattr(obj, name, wrapper(orig))
 
-    # -- вызовы пайплайна ------------------------------------------------
+    # -- pipeline calls ---------------------------------------------------
     def _search(self, orig):
         def call(*a, **kw):
             out = orig(*a, **kw)
@@ -159,9 +159,9 @@ class Probe:
     def _sendable_docs(self, orig):
         def call(facts):
             out = orig(facts)
-            # ranked индексирует ДОКУМЕНТЫ (send-список), а не пул: при meaning/entity-потоках
-            # union и pool не совпадают, поэтому запоминаем union и send-позиции для перевода
-            # индекса ответа в fact_id (раньше писалось pool[i] — чужие id в JSONL).
+            # ranked indexes DOCUMENTS (the send list), not the pool: in meaning/entity flows
+            # union and pool differ, so we remember union and the send positions to translate
+            # the response index into fact_id (pool[i] used to be written — foreign ids in JSONL).
             self.ctx["union"] = [f.get("fact_id") for f in facts]
             self.ctx["send_idx"] = list(out[0])
             return out
@@ -170,14 +170,14 @@ class Probe:
     def _scores(self, orig):
         def call(query, docs):
             ranked = orig(query, docs)
-            owner = getattr(orig, "__self__", None)  # тестовые стабы подменяют scores функцией без __self__
+            owner = getattr(orig, "__self__", None)  # test stubs replace scores with a plain function without __self__
             status = getattr(owner, "last_status", None) or "not_called"
             if ranked is None and status.startswith("failed"):
-                # Фикс-лист 19:07: упавший вызов не должен выглядеть как «реранкер ничего не изменил» —
-                # прогон останавливается сразу, чтобы итоговые строки гарантированно имели 0 failed calls.
+                # Fix-list 19:07: a failed call must not look like "the reranker changed nothing" —
+                # the run stops at once so the final rows are guaranteed to have 0 failed calls.
                 raise SystemExit(
-                    f"rerank-вызов не удался ({status}) — прогон остановлен "
-                    "(фикс-лист 19:07: нулевой бюджет failed calls)")
+                    f"rerank call failed ({status}) — the run was stopped "
+                    "(fix-list 19:07: zero failed-call budget)")
             self.ctx["rerank_call"] = status
             if ranked is None:
                 self.ctx["ranked"] = False
@@ -186,7 +186,7 @@ class Probe:
             send_idx = self.ctx.get("send_idx") or []
             order = [union[send_idx[i]] for i, _ in ranked
                      if 0 <= i < len(send_idx) and send_idx[i] < len(union)]
-            self.ctx["rank_order"] = order  # порядок реранка ДО окна и top-5
+            self.ctx["rank_order"] = order  # the rerank order BEFORE the window and top-5
             self.ctx["rerank_top5"] = order[:5]
             self.ctx["ranked"] = True
             return ranked
@@ -239,7 +239,7 @@ class Probe:
             return ok
         return call
 
-    # -- обёртка запроса --------------------------------------------------
+    # -- query wrapper -----------------------------------------------------
     def prefetch(self, query: str) -> tuple[str, dict]:
         self.ctx = {"tags": {}, "blocked": {}, "gate_called": False,
                     "pool": [], "rerank_top5": [], "rank_order": [], "ranked": None,
@@ -247,11 +247,11 @@ class Probe:
                     "window": 0.0, "weight": 0.0}
         rescorer = getattr(self.p, "_rescorer", None)
         if rescorer is None:
-            self.ctx["rerank_call"] = "off"  # rerank выключен конфигом — вызова не будет по построению
+            self.ctx["rerank_call"] = "off"  # rerank is off in the config — no call can happen by construction
         else:
-            rescorer.last_status = "not_called"  # исход известен только после вызова; сброс на каждый запрос
+            rescorer.last_status = "not_called"  # the outcome is known only after the call; reset on every query
         if rescorer is not None and getattr(rescorer, "settings", None) is not None:
-            # окно режет только при weight == 0 (см. _unified_stream) — фиксируем для classify
+            # the window cuts only at weight == 0 (see _unified_stream) — recorded for classify
             self.ctx["window"] = float(getattr(rescorer.settings, "window", 0.0) or 0.0)
             self.ctx["weight"] = float(getattr(rescorer.settings, "weight", 0.0) or 0.0)
         block = self.p.prefetch(query)
@@ -262,12 +262,12 @@ class Probe:
 
 
 def catch_up_vectors(p: HolographicMemoryProvider) -> bool:
-    """Векторы фактов делаются только в _catch_up_vectors (after-turn хук ядра).
-    В прогоне драйвера его никто не вызывает -> индекс пуст -> meaning=None.
-    Гоняем вручную, пока есть pending: ready() проверяет «хотя бы один вектор»
-    (LIMIT 1), а бюджет одного _catch_up_vectors (embedding_catch_up_seconds)
-    отсекает хвост — на wide-базе (600+ фактов) это вырезало цели real-запросов
-    (fact_id 1..25): «готово» при 25 неэбедженных."""
+    """Fact vectors are built only in _catch_up_vectors (the core's after-turn hook).
+    A driver run never calls it -> the index is empty -> meaning=None.
+    We run it manually while pending remains: ready() checks "at least one vector"
+    (LIMIT 1), while a single _catch_up_vectors budget (embedding_catch_up_seconds)
+    cuts off the tail — on a wide base (600+ facts) this cut the targets of real queries
+    (fact_id 1..25): "done" while 25 were still un-embedded."""
     if not p._embedding:
         return True
     idx = p._retriever.vector_index(p._embedding.tag)
@@ -276,7 +276,7 @@ def catch_up_vectors(p: HolographicMemoryProvider) -> bool:
             pending = idx.pending(_holographic_embeddings.BATCH, allowed=_holographic_sendable)
         except Exception:
             pending = None
-        if pending is None:  # API неожиданного вида — старая эвристика
+        if pending is None:  # an unexpected API shape — the old heuristic
             if idx.ready():
                 return True
         elif not pending:
@@ -298,12 +298,12 @@ def parse_ids(block: str) -> list[int]:
 
 
 def classify(fid: int | None, ctx: dict) -> str:
-    """Почему цель не в recall (для real-запросов).
+    """Why the target is not in recall (for real queries).
 
-    E («срезан окном»): цель прошла все фильтры и стояла в top-5 ранга ДО среза
-    rerank_window — её убрало окно, а не слова и не top-5. Раньше такой случай
-    лгал «ниже top-5 (пул#N)»: пул — порядок кандидатов, а не ранг реранка
-    (кейс «What does Andrey do on weekends?», ревью 2026-10-23).
+    E («срезан окном»): the target passed every filter and stood in the top-5 of the rank BEFORE the
+    rerank_window cut — the window removed it, not the words and not top-5. Such a case used to
+    lie «ниже top-5 (пул#N)»: the pool is the candidate order, not the rerank rank
+    (case «What does Andrey do on weekends?», review 2026-10-23).
     """
     if fid is None:
         return "-"
@@ -316,7 +316,7 @@ def classify(fid: int | None, ctx: dict) -> str:
         if pos < 5:
             if cut:
                 return f"E: срезан окном (ранг #{pos})"
-            # top-5 ранга без среза должен был попасть в recall — сюда не доходим
+            # the top-5 of the rank without the cut should have made it into recall — we never get here
         else:
             return f"C: ниже top-5 (ранг #{pos})"
     pool = ctx.get("pool") or []
@@ -328,18 +328,18 @@ def classify(fid: int | None, ctx: dict) -> str:
         r5 = fid in (ctx.get("rerank_top5") or [])
         return "D: вырезан coverage" + (" (top-5 реранка!)" if r5 else f" (пул#{pos})")
     if not ctx.get("gate_called"):
-        # gate_reads_score адмитит пул без coverage: цель либо ниже top-5, либо отвергнута margin
+        # gate_reads_score admits the pool without coverage: the target is either below top-5 or rejected by margin
         order = ctx.get("gate_order") or pool
         if fid in order[:5]:
             return "gate: отвергнут margin (в top-5 порядка!)"
         return "C: ниже top-5"
-    # coverage пустил, но не в recall: свежесть/лимит top-5
+    # coverage let it through but not into recall: recency / the top-5 limit
     order = ctx.get("gate_order") or pool
     pos = order.index(fid) if fid in order else 999
     return f"C: ниже top-5 (пул#{pos})"
 
 
-# ---------------------------------------------------------------- прогоны
+# ---------------------------------------------------------------- runs
 
 def run_multilingual(langs, modes, emb, endpoint, extra: dict | None = None) -> list[dict]:
     data = load_multilingual()
@@ -361,7 +361,7 @@ def run_multilingual(langs, modes, emb, endpoint, extra: dict | None = None) -> 
             probe = Probe(p)
             if emb == "on":
                 ok = catch_up_vectors(p)
-                print(f"  [{lang}] векторы готовы: {ok}")
+                print(f"  [{lang}] vectors ready: {ok}")
             persons = dict(data.PROBES[lang])
             for i, (query, relevant) in enumerate(data.QUERIES[lang]):
                 p.on_session_switch(f"pv{li(mode, lang)}_{i}", reset=True)
@@ -372,8 +372,8 @@ def run_multilingual(langs, modes, emb, endpoint, extra: dict | None = None) -> 
                 keys = [back[f] for f in found if f in back]
                 kind = "real" if relevant else "chit"
                 hit = bool(set(keys) & set(relevant)) if relevant else None
-                # matched top-5 (п.8): off умеет вернуть больше пяти строк, unified — нет; честное сравнение
-                # по первым пяти, плюс счёт «всего строк» как output count.
+                # matched top-5 (item 8): off can return more than five lines, unified cannot; an honest comparison
+                # on the first five, plus the "total lines" count as the output count.
                 hit5 = bool(set(keys[:5]) & set(relevant)) if relevant else None
                 wrong_keys, wrong_keys5 = [], []
                 if relevant:
@@ -384,7 +384,7 @@ def run_multilingual(langs, modes, emb, endpoint, extra: dict | None = None) -> 
                             wrong_keys5 = sorted(set(keys[:5]) & set(other))
                 miss_cls = "-"
                 if relevant and not hit5:
-                    # цель(и) без hit: класс по первой ненайденной
+                    # target(s) without a hit: the class of the first missing one
                     miss_cls = next((classify(next((f for f, k in back.items() if k == rk), None), ctx)
                                      for rk in relevant if rk not in keys), "-")
                 rows.append({"set": "multi", "lang": lang, "mode": mode, "emb": emb,
@@ -403,7 +403,7 @@ def run_multilingual(langs, modes, emb, endpoint, extra: dict | None = None) -> 
     return rows
 
 
-def li(mode, lang):  # префикс сессии — уникален на режим+язык
+def li(mode, lang):  # session prefix — unique per mode+language
     return f"{mode}_{lang}"
 
 
@@ -426,7 +426,7 @@ def run_contrast(set_name, modes, emb, endpoint, extra: dict | None = None) -> l
         probe = Probe(p)
         if emb == "on":
             ok = catch_up_vectors(p)
-            print(f"  [{set_name}] векторы готовы: {ok}")
+            print(f"  [{set_name}] vectors ready: {ok}")
         for pi, pair in enumerate(contrast.PAIRS):
             partner = [pair["queries"][1 - i][1] for i in range(len(pair["queries"]))]
             for i, (query, target) in enumerate(pair["queries"]):
@@ -467,17 +467,17 @@ def run_contrast(set_name, modes, emb, endpoint, extra: dict | None = None) -> l
     return rows
 
 
-# ---------------------------------------------------------------- отчёт
+# ---------------------------------------------------------------- report
 
 
 def run_household(modes, emb, endpoint, split="all", names_fit="on",
                   extra: dict | None = None) -> list[dict]:
-    """П.9 (рецепт майнтейнера, PR #10 2026-10-22): один дом, en/ru/zh,
-    dev/test заморожены, лейблы на каждый вопрос.
+    """Item 9 (the maintainer's recipe, PR #10 2026-10-22): one home, en/ru/zh,
+    dev/test frozen, a label on every question.
 
-    Строки несут qid/split/slice/lang — отчёт считает rescued/lost и классы
-    промаха (E срезан окном / A нет в пуле / C ниже top-5) по языкам.
-    names_fit off = проверка имени выключена (как в tests ..._rerank_review).
+    Rows carry qid/split/slice/lang — the report counts rescued/lost and the miss
+    classes (E cut by the window / A not in the pool / C below top-5) per language.
+    names_fit off = the name check is off (as in tests ..._rerank_review).
     """
     hh = load_contrast("household")
     rows = []
@@ -500,11 +500,11 @@ def run_household(modes, emb, endpoint, split="all", names_fit="on",
                 r = json.loads(p.handle_tool_call(
                     "fact_store", {"action": "add", "content": text, "entities": ents}))
                 back[int(r["fact_id"])] = key
-            ent_map = hh.entities(lang)  # key -> имена сущностей этого языка
+            ent_map = hh.entities(lang)  # key -> entity names of this language
             probe = Probe(p)
             if emb == "on":
                 ok = catch_up_vectors(p)
-                print(f"  [household {lang}] векторы готовы: {ok}")
+                print(f"  [household {lang}] vectors ready: {ok}")
             for qid in qids:
                 q = hh.QUERIES[qid]
                 query, targets = q[lang], set(q["targets"])
@@ -514,18 +514,18 @@ def run_household(modes, emb, endpoint, split="all", names_fit="on",
                 ms = (time.perf_counter() - t0) * 1000
                 found = parse_ids(block)
                 keys = [back[f] for f in found if f in back]
-                # старый wrong-лукап искал fact key в словаре имён (всегда пусто —
-                # баг из ревью 10:05). Теперь две колонки:
-                #   named   — не-цели, упоминающие лицо из запроса (правильные
-                #             extra и тёзки; описание, case-слабо на ru);
-                #   confused — лейблы неправильных ответов в топ-5 (мера, статика).
+                # the old wrong-lookup searched the fact key in the name dictionary (always empty —
+                # a bug from review 10:05). Now there are two columns:
+                #   named   — non-targets that mention the person from the query (correct
+                #             extras and namesakes; descriptive, weak on ru cases);
+                #   confused — labels of wrong answers in the top-5 (a measure, static).
                 named = hh.named_extra(lang, query, keys, targets, ent_map)
                 conf = hh.confusion(q, keys[:5])
                 hit = bool(set(keys) & targets) if targets else None
                 hit5 = bool(set(keys[:5]) & targets) if targets else None
                 cov = (len(set(keys) & targets) / len(targets)) if targets else None
                 miss = []
-                for t in q["targets"]:  # каждый лейбл, не попавший в top-5
+                for t in q["targets"]:  # every label that missed the top-5
                     if t in keys[:5]:
                         continue
                     if t in keys:
@@ -571,17 +571,17 @@ def _cls(misses: list[str], prefix: str) -> int:
 
 
 def summarize_household(rows: list[dict]) -> None:
-    """Таблица по языкам × сплиту: hit@5, покрытие, named/confused, шум (только
-    где лейбл пустой) и три класса промаха — E срезан окном / A нет в пуле /
-    C ниже top-5 (запрос майнтейнера 2026-10-23, per language). В конце —
-    парный счёт confused off→режим: строка «путаница», когда лейбл неправильного
-    ответа попал в топ-5 (его 10:34: считать парно off против on)."""
+    """Table by language × split: hit@5, coverage, named/confused, noise (only
+    where the label is empty) and the three miss classes — E cut by the window / A not in the pool /
+    C below top-5 (the maintainer's request 2026-10-23, per language). At the end —
+    the paired confused count off→mode: the confusion row, when the label of a wrong
+    answer lands in the top-5 (his 10:34: count off against on in pairs)."""
     modes = sorted({(r["mode"], r["emb"]) for r in rows})
     for mode, emb in modes:
         sel = [r for r in rows if r["mode"] == mode and r["emb"] == emb]
         print(f"\n=== household mode={mode} emb={emb} ===")
         print(f"{'lang':<4} {'split':<5} {'real':>4} {'hit5':>4} {'cov%':>5} {'named':>5} "
-              f"{'conf':>4} {'шум':>4} {'E':>2} {'A':>2} {'C':>2} {'проч':>4}")
+              f"{'conf':>4} {'noise':>4} {'E':>2} {'A':>2} {'C':>2} {'othr':>4}")
         cells = [(lang, sp) for lang in ("en", "ru", "zh") for sp in ("dev", "test")]
         for lang, sp in cells:
             real = [r for r in sel if r["kind"] == "real" and r["lang"] == lang
@@ -606,11 +606,11 @@ def summarize_household(rows: list[dict]) -> None:
         hits5 = sum(bool(r["hit5"]) for r in lab)
         named = sum(1 for r in sel if r["kind"] == "real" and r["named"])
         conf = sum(1 for r in sel if r["kind"] == "real" and r["confused"])
-        print(f"{'итого':<9} {len(lab):>4} {hits5:>4} "
+        print(f"{'total':<9} {len(lab):>4} {hits5:>4} "
               f"hit5={hits5}/{len(lab)} named={named} confused={conf}")
 
-    # парный счёт (майнтейнера 10:34): строка confusion, если хотя бы один лейбл
-    # неправильного ответа в топ-5; off против каждого режима — снято/добавлено
+    # paired count (maintainer 10:34): a confusion row if at least one label
+    # of a wrong answer lands in the top-5; off against each mode — removed/added
     for emb in sorted({str(r["emb"]) for r in rows}):
         sel = [r for r in rows if str(r["emb"]) == emb and r["kind"] == "real"]
         base = {(r["lang"], r["qid"]): bool(r["confused"])
@@ -622,12 +622,12 @@ def summarize_household(rows: list[dict]) -> None:
             cut = sum(1 for k in both if base[k] and not cur[k])
             add = sum(1 for k in both if not base[k] and cur[k])
             print(f"confused paired emb={emb} off→{m2}: "
-                  f"снято {cut}, добавлено {add} (строк {len(both)})")
+                  f"removed {cut}, added {add} ({len(both)} rows)")
 
-    # per-target lost/gained (п.5 ревью 13:06): hit@5 «любая цель» скрывает частичные
-    # потери multi-target запросов. Считаем top-5 с ОБЕИХ сторон парно против off —
-    # раньше цели брались из всего keys, а у off могло быть больше пяти строк, так что
-    # счёт завышал потери; печатаем и gained, по id (qid:цель) с языком каждой строки.
+    # per-target lost/gained (review item 5, 13:06): hit@5 "any target" hides partial
+    # losses of multi-target queries. We count top-5 on BOTH sides, paired against off —
+    # targets used to come from all of keys while off could have more than five lines, so
+    # the count overstated the losses; gained is printed too, by id (qid:target) with the language of each row.
     for emb in sorted({str(r["emb"]) for r in rows}):
         base_top5: dict[tuple, set] = {}
         for r in rows:
@@ -661,8 +661,8 @@ def summarize_household(rows: list[dict]) -> None:
 
 def summarize(rows: list[dict]) -> None:
     modes = sorted({(r["mode"], r["emb"]) for r in rows})
-    print(f"\n{'режим':<14} {'emb':<4} {'real':>5} {'hit':>5} {'hit5':>5} {'шум':>5} "
-          f"{'wrong':>5} {'wrong5':>6} {'out':>4} | источники recall (доминирует) | классы промахов")
+    print(f"\n{'mode':<14} {'emb':<4} {'real':>5} {'hit':>5} {'hit5':>5} {'noise':>5} "
+          f"{'wrong':>5} {'wrong5':>6} {'out':>4} | recall sources (dominant) | miss classes")
     for mode, emb in modes:
         sel = [r for r in rows if r["mode"] == mode and r["emb"] == emb]
         real = [r for r in sel if r["kind"] == "real"]
@@ -673,12 +673,12 @@ def summarize(rows: list[dict]) -> None:
         wrong = sum(1 for r in real if r["wrong"])
         wrong5 = sum(1 for r in real if (r.get("wrong5") if "wrong5" in r else r.get("wrong")))
         out_avg = sum(len(r["keys"]) for r in sel) / max(1, len(sel))
-        # источники всех recalled-фактов
+        # sources of all recalled facts
         src: dict[str, int] = {}
         for r in sel:
             for tags in r["sources"].values():
                 key = "+".join(t if t != "pool-only" else "words?" for t in tags) \
-                    if "pool-only" not in tags else "words?(без coverage — gate)"
+                    if "pool-only" not in tags else "words?(no coverage — gate)"
                 src[key] = src.get(key, 0) + 1
         src_s = ", ".join(f"{k}:{v}" for k, v in sorted(src.items(), key=lambda x: -x[1]))
         classes: dict[str, int] = {}
@@ -692,23 +692,23 @@ def summarize(rows: list[dict]) -> None:
 
 def main(argv):
     global ENDPOINT, SCALE
-    ap = argparse.ArgumentParser(description="Provenance probe: источники фактов в prefetch")
+    ap = argparse.ArgumentParser(description="Provenance probe: the sources of facts in prefetch")
     ap.add_argument("--set", default="multi",
                     help="multi | contrast_ru | contrast_en | contrast_zh | household")
     ap.add_argument("--split", default="all", choices=["all", "dev", "test"],
-                    help="для --set household: какой сплит гонять (по умолчанию все)")
+                    help="for --set household: which split to run (default: all)")
     ap.add_argument("--names-fit", default="on", choices=["on", "off"],
-                    help="для --set household: names_fit вкл/выкл (ось свипа п.9)")
+                    help="for --set household: names_fit on/off (the sweep axis, item 9)")
     ap.add_argument("--langs", default="en,ru,zh,de,ja,it,nl,th",
-                    help="языки для --set multi (по умолчанию: ключевые из бенча)")
+                    help="languages for --set multi (default: the benchmark's key ones)")
     ap.add_argument("--modes", default="off,reorder_only,gate_only")
     ap.add_argument("--emb", default="off", choices=["off", "on", "both"])
-    ap.add_argument("--endpoint", default=ENDPOINT, help="/v1/rerank URL (мок, если не задан)")
+    ap.add_argument("--endpoint", default=ENDPOINT, help="/v1/rerank URL (a mock if not set)")
     ap.add_argument("--rerank-scale", default="logit", choices=["logit", "unit"],
-                    help="rerank_scale: шкала эндпоинта; значение пишется в каждую строку (п.4, 14:01)")
-    ap.add_argument("--out", default=None, help="каталог JSONL (по умолчанию results/)")
+                    help="rerank_scale: the endpoint scale; the value is written to every row (item 4, 14:01)")
+    ap.add_argument("--out", default=None, help="JSONL directory (default: results/)")
     ap.add_argument("--label", default=None,
-                    help="метка в имени файла (например jina): не перезаписывает строки другого реранкера")
+                    help="a label in the file name (e.g. jina): does not overwrite the rows of another reranker")
     args = ap.parse_args(argv)
 
     ENDPOINT = args.endpoint
@@ -720,9 +720,9 @@ def main(argv):
     modes = [m.strip() for m in args.modes.split(",") if m.strip()]
     all_rows: list[dict] = []
 
-    # мок-раннер, если endpoint не задан — как в benchmark_rerank
+    # a mock runner when no endpoint is set — as in benchmark_rerank
     if not args.endpoint:
-        print("внимание: endpoint не задан — используется мок-порядок (без реальных скоров)")
+        print("warning: no endpoint set — using a mock order (no real scores)")
 
     for emb in embs:
         if args.set == "multi":
@@ -735,18 +735,18 @@ def main(argv):
             rows = run_contrast(args.set, modes, emb, args.endpoint)
         suffix = "" if args.set != "household" else (
             f"_{args.split}" + ("_nfoff" if args.names_fit == "off" else ""))
-        # --label: второй реранкер/модель не должен перезаписать файл первого (п.9: bge vs jina)
+        # --label: the second reranker/model must not overwrite the first one's file (item 9: bge vs jina)
         label = f"_{args.label}" if args.label else ""
         path = out_dir / f"provenance_{args.set}{suffix}{label}_{emb}.jsonl"
         sha = _git_sha()
         for r in rows:
             r["git_sha"] = sha
             r["endpoint"] = args.endpoint or "mock"
-            r["scale"] = SCALE  # какая шкала была выставлена при прогоне
+            r["scale"] = SCALE  # which scale was set for the run
         with open(path, "w", encoding="utf-8") as fh:
             for r in rows:
                 fh.write(json.dumps(r, ensure_ascii=False) + "\n")
-        print(f"\n=== {args.set} emb={emb}: {len(rows)} запросов -> {path}")
+        print(f"\n=== {args.set} emb={emb}: {len(rows)} queries -> {path}")
         if args.set == "household":
             summarize_household(rows)
         else:

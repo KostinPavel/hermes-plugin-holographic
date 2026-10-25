@@ -1,58 +1,58 @@
 # -*- coding: utf-8 -*-
-"""Contrast set ZH для tools/benchmark_rerank.py (RFC #9, гейты 2 и 3).
+"""Contrast set ZH for tools/benchmark_rerank.py (RFC #9, gates 2 and 3).
 
-Дизайн общий с contrast_ru.py, структура файла байт-в-байт совместима
-(FACTS / PAIRS / CHITCHAT / self_check), см. cross-encoder-rerank/
+The design is shared with contrast_ru.py; the file structure is byte-for-byte
+(FACTS / PAIRS / CHITCHAT / self_check), see cross-encoder-rerank/
 references/validation-datasets.md):
-  - каждая запись PAIRS — минимальная ПАРА: два запроса, различающиеся одним
-    фактором; обе цели лежат в магазине; метрика ПАРНАЯ (both-or-nothing);
-  - магазин общий для всех контрастов (69 фактов), дистракторы одного
-    контраста — филлеры другого;
-  - CHITCHAT — 45 запросов (15/категорию), которые обязаны НЕ вспомнить ничего;
-  - ожидаемое поведение базы (off) и ловушки записаны в поле `note` —
-    на русском, как в contrast_ru.py.
+  - every PAIRS entry is a minimal PAIR: two queries differing by a single
+    factor; both targets live in the store; the metric is PAIRED (both-or-nothing);
+  - the store is shared by all contrasts (69 facts); the distractors of one
+    contrast are fillers of the other;
+  - CHITCHAT — 45 queries (15 per category) that MUST recall nothing;
+  - the expected behaviour of the base (off) and the traps are recorded in the `note` field —
+    in Russian, as in contrast_ru.py.
 
-Китайская специфика (иероглиф ≈ токен, «слово» — это подстрока иероглифов):
-  - текст на упрощённом китайском, сущности — пиньинь-имена в иероглифах
+Chinese specifics (a hanzi ≈ a token, a "word" is a substring of hanzi):
+  - text in Simplified Chinese, entities are pinyin names written in hanzi
     (["彼得"], ["莲娜"], ["德尼斯"]);
-  - c1_entity — swap имени, имена подобраны контрастными, различающимися
-    одним иероглифом: 大卫/大伟 (卫/伟), 德尼斯/丹尼斯 (德/丹),
+  - c1_entity — a name swap: the names are chosen to be contrastive, differing
+    by a single hanzi: 大卫/大伟 (卫/伟), 德尼斯/丹尼斯 (德/丹),
     迪娜/蒂娜 (迪/蒂);
-  - c2 — мост парафраза: HARD-запрос (первый в паре) не делит НИ ОДНОГО
-    иероглифа с целевым фактом, дистрактор делится (проверяет self_check);
-    в 2 парах из 5 subtype='number' — цифра в факте против прописью в
-    запросе (2024 → 二零二四, 5月7日至20日 → 七号到二十号);
-  - c3 — предикат при одном субъекте (документированная слабость
-    retrieval.py:173-176): у каждого c3-субъекта >=6 фактов, кроме
-    пары-контроля c3-4 (迪娜/蒂娜 по 4 факта);
-  - в hard-запросах c2 субъект назван местоимением 他/她 — иероглифы
-    запроса и цели не пересекаются вообще, а чтение 他/她 одинаково (tā):
-    глифы разные, звучание одно; chit-chat использует тот же приём.
+  - c2 — a paraphrase bridge: the HARD query (first in the pair) shares NOT A SINGLE
+    hanzi with the target fact, while the distractor does (self_check verifies it);
+    in 2 pairs out of 5 subtype='number' — a digit in the fact against the spelled-out
+    form in the query (2024 → 二零二四, 5月7日至20日 → 七号到二十号);
+  - c3 — a predicate over a single subject (the documented weakness
+    in retrieval.py:173-176): every c3 subject has >=6 facts, except
+    the control pair c3-4 (迪娜/蒂娜 with 4 facts each);
+  - in the c2 hard queries the subject is named by the pronoun 他/她 — the hanzi
+    of the query and the target do not overlap at all, while 他/她 reads the same (tā):
+    different glyphs, one sound; chit-chat uses the same trick.
 
-Синтетические данные, структура повторяет tools/contrast_ru.py.
+Synthetic data; the structure mirrors tools/contrast_ru.py.
 """
 
 FACTS = {
-    # --- c1e-1: дни рождения (один тип «даты», чтобы тип был загружен) ---
+    # --- c1e-1: birthdays (one "date" type so the type gets loaded) ---
     "david_bd": ("大卫的生日是3月12日。", ["大卫"]),
     "dawei_bd": ("大伟的生日是6月3日。", ["大伟"]),
     "mary_wedding": ("玛丽的婚礼定在8月18日。", ["玛丽"]),
     "app_deadline": ("申请的截止日期是9月25日。", []),
     "baji_vaccine": ("猫咪巴奇的疫苗是11月14日。", ["巴奇"]),
 
-    # --- c1e-2: работа (общее слово 华为 у обеих целей) ---
+    # --- c1e-2: work (the shared word 华为 in both targets) ---
     "denis_work": ("德尼斯在深圳的华为上班。", ["德尼斯"]),
     "dennis_work": ("丹尼斯在武汉的华为上班。", ["丹尼斯"]),
     "sergey_huawei": ("谢尔盖2022年从华为离职。", ["谢尔盖"]),
     "huawei_hq": ("华为的总部在深圳龙岗。", []),
 
-    # --- c1e-3: бассейн (迪娜/蒂娜: разные дни недели) ---
+    # --- c1e-3: pool (迪娜/蒂娜: different days of the week) ---
     "dina_pool": ("迪娜每周二去游泳馆。", ["迪娜"]),
     "tina_pool": ("蒂娜每周四去游泳馆。", ["蒂娜"]),
     "pite_pool_card": ("皮特一月份办了游泳卡。", ["皮特"]),
     "pool_hours": ("游泳馆每天开到晚上十点。", []),
 
-    # --- c3-контроль c3-4: у каждого субъекта ровно 4 факта (слабая пара) ---
+    # --- c3 control c3-4: exactly 4 facts per subject (a weak pair) ---
     "dina_chess": ("迪娜每周六下国际象棋。", ["迪娜"]),
     "dina_flat": ("迪娜去年在长沙买了一套房。", ["迪娜"]),
     "dina_serials": ("迪娜周五晚上看电视剧。", ["迪娜"]),
@@ -60,7 +60,7 @@ FACTS = {
     "tina_suv": ("蒂娜开一辆大的越野车。", ["蒂娜"]),
     "tina_trip": ("蒂娜秋天打算去贵州玩。", ["蒂娜"]),
 
-    # --- c2-numeric: цифры в факте, прописью в запросе ---
+    # --- c2-numeric: digits in the fact, spelled out in the query ---
     "denis_car": ("德尼斯的新车是2024款。", ["德尼斯"]),
     "denis_tires": ("德尼斯十月换了冬季轮胎。", ["德尼斯"]),
     "denis_passport": ("德尼斯的护照2027年到期。", ["德尼斯"]),
@@ -75,7 +75,7 @@ FACTS = {
     "andrey_dentist": ("安德鲁周六约了牙医。", ["安德鲁"]),
     "andrey_cat": ("安德鲁一天喂两次猫。", ["安德鲁"]),
 
-    # --- c2: мост парафраза (hard-запрос не делит иероглифов с целью) ---
+    # --- c2: paraphrase bridge (the hard query shares no hanzi with the target) ---
     "sergey_pattaya": ("谢尔盖选择清迈，不去曼谷。", ["谢尔盖"]),
     "sergey_fear": ("谢尔盖怕坐飞机去泰国。", ["谢尔盖"]),
     "sergey_dog": ("谢尔盖一天遛两次狗。", ["谢尔盖"]),
@@ -93,8 +93,8 @@ FACTS = {
     "light_evening": ("公寓晚上按点停电。", []),
     "provider": ("运营商说一周内恢复速度。", []),
 
-    # --- c3: предикат при одном субъекте (субъект должен быть загружен
-    #     минимум 6 фактами, иначе top-5 не режет и база не падает) ---
+    # --- c3: predicate over a single subject (the subject must carry
+    #     at least 6 facts, else top-5 does not cut and the base never fails) ---
     "peter_run": ("彼得每天晚上在公园跑步。", ["彼得"]),
     "peter_cook": ("彼得周末在家做饭。", ["彼得"]),
     "peter_guitar": ("彼得跟老师学吉他。", ["彼得"]),
@@ -111,7 +111,7 @@ FACTS = {
     "mary_car": ("玛丽开着一辆小轿车。", ["玛丽"]),
     "mary_tent": ("玛丽十月中旬在外面露营。", ["玛丽"]),
 
-    # --- общие филлеры: толпа для top-5 и дистракторы болтовни ---
+    # --- shared fillers: crowd for top-5 and chit-chat distractors ---
     "filler_train": ("去青岛的高铁早上7点发车。", []),
     "filler_coffee": ("办公室的咖啡豆涨价了。", []),
     "filler_berries": ("山上的野果七月份熟。", []),
@@ -120,11 +120,11 @@ FACTS = {
     "filler_tires": ("入冬前要换雪地胎。", []),
 }
 
-# 15 пар = 30 запросов. Парная метрика: оба запроса должны попасть в цель.
-# В c2 первый запрос пары — HARD (ноль общих иероглифов с целью), второй —
-# контроль (делит слова с целью); в number-парах пропись стоит в HARD.
+# 15 pairs = 30 queries. Paired metric: both queries must hit the target.
+# In c2 the first query of a pair is HARD (zero hanzi shared with the target), the second —
+# the control (shares words with the target); in number pairs the spelled-out form sits in HARD.
 PAIRS = [
-    # ---------- C1: swap различающего токена ----------
+    # ---------- C1: swap of the discriminating token ----------
     {"id": "c1e-1", "type": "c1_entity", "queries": [
         ("大卫的生日是哪一天？", "david_bd"),
         ("大伟的生日是哪一天？", "dawei_bd")],
@@ -146,7 +146,7 @@ PAIRS = [
              "только днём недели; ловушки pite_pool_card и pool_hours делят "
              "«游泳馆» с запросом и с целями."},
 
-    # ---------- C2: мост парафраза (2 числовых + 3 обычных) ----------
+    # ---------- C2: paraphrase bridge (2 numeric + 3 plain) ----------
     {"id": "c2n-1", "type": "c2", "subtype": "number", "queries": [
         ("他在二零二四年买了什么？", "denis_car"),
         ("德尼斯的新车是哪一款？", "denis_car")],
@@ -181,7 +181,7 @@ PAIRS = [
              "(上/无/线) и light_evening (上) делят запрос. B — контроль "
              "(точные 公寓的宽带), но light_evening делит и с ним 公寓/晚上."},
 
-    # ---------- C3: предикат при одном субъекте ----------
+    # ---------- C3: predicate over a single subject ----------
     {"id": "c3-1", "type": "c3", "queries": [
         ("彼得周末做什么？", "peter_cook"),
         ("彼得每天晚上做什么？", "peter_run")],
@@ -227,11 +227,11 @@ PAIRS = [
              "иероглифам (мост), ловушка mary_wedding делит «玛丽»."},
 ]
 
-# 45 запросов (15/категорию), обязана вернуть ПУСТОЙ recall.
-# Правило трёх: 0 шумов при n=45 → шум < 7% на языке.
+# 45 queries (15 per category), must return EMPTY recall.
+# Rule of three: 0 noise at n=45 → noise < 7% per language.
 CHITCHAT = [
-    # приветствия с сущностью (общие иероглифы с фактами есть → coverage
-    # админит, gate_reads_score обязан отказать по score)
+    # greetings with an entity (hanzi shared with facts exist → coverage
+    # admits, gate_reads_score must refuse on score)
     ("彼得，最近怎么样？", "greeting_entity"),
     ("早上好，莲娜！", "greeting_entity"),
     ("德尼斯，你好啊。", "greeting_entity"),
@@ -247,8 +247,8 @@ CHITCHAT = [
     ("巴奇，吃饭了！", "greeting_entity"),
     ("彼得，帮我看一下。", "greeting_entity"),
     ("玛丽，先这样吧。", "greeting_entity"),
-    # болтовня, делящая иероглифы с фактами (coverage-ловушка); две строки
-    # используют омофон 他/她 (чтение tā одно, глифы разные)
+    # chatter sharing hanzi with facts (a coverage trap); two lines
+    # use the homophone 他/她 (same reading tā, different glyphs)
     ("晚上散步的人真多。", "topic_shared_words"),
     ("冬天换轮胎要趁早。", "topic_shared_words"),
     ("华为最近在招人。", "topic_shared_words"),
@@ -264,7 +264,7 @@ CHITCHAT = [
     ("他总说猫粮又贵了。", "topic_shared_words"),
     ("去菜市场买点青菜。", "topic_shared_words"),
     ("她每天都在忙。", "topic_shared_words"),
-    # нерелевантный общий хвост
+    # irrelevant shared tail
     ("这周天气怎么样？", "vague"),
     ("今晚有什么好节目？", "vague"),
     ("这话是谁说的？", "vague"),
@@ -284,25 +284,25 @@ CHITCHAT = [
 
 
 def self_check():
-    """Печатает план и ловит ошибки данных. Запуск: python contrast_zh.py"""
-    weak = "c3-4"  # пара-контроль: субъекты ниже 6 фактов — намеренно
+    """Prints the plan and catches data errors. Run: python contrast_zh.py"""
+    weak = "c3-4"  # control pair: subjects below 6 facts — on purpose
     errors = []
     seen = {}
     for p in PAIRS:
         if len(p["queries"]) != 2:
-            errors.append(f'{p["id"]}: нужно ровно 2 запроса')
+            errors.append(f'{p["id"]}: exactly 2 queries are required')
         for q, key in p["queries"]:
             if key not in FACTS:
-                errors.append(f'{p["id"]}: нет факта {key!r}')
+                errors.append(f'{p["id"]}: no fact {key!r}')
             if q in seen:
-                errors.append(f'{p["id"]}: запрос дублирует {seen[q]!r}: {q!r}')
+                errors.append(f'{p["id"]}: query duplicates {seen[q]!r}: {q!r}')
             seen[q] = p["id"]
     chit_seen = {}
     for q, cat in CHITCHAT:
         if q in seen:
-            errors.append(f"chit-chat дублирует {seen[q]!r}: {q!r}")
+            errors.append(f"chit-chat duplicates {seen[q]!r}: {q!r}")
         if q in chit_seen:
-            errors.append(f"chit-chat дублирует сам себя: {q!r}")
+            errors.append(f"chit-chat duplicates itself: {q!r}")
         chit_seen[q] = True
     subj = {}
     for key, (text, ents) in FACTS.items():
@@ -314,26 +314,26 @@ def self_check():
     by_type = {}
     for p in PAIRS:
         by_type[p["type"]] = by_type.get(p["type"], 0) + 1
-    print(f"фактов в магазине: {len(FACTS)}")
-    print(f"пар: {n_pairs} (запросов: {n_q}), chit-chat: {len(CHITCHAT)}")
-    print("по типам:", by_type)
-    print("субъекты с числом фактов (для c3 надо >=6, кроме пары-контроля):")
+    print(f"facts in the store: {len(FACTS)}")
+    print(f"pairs: {n_pairs} (queries: {n_q}), chit-chat: {len(CHITCHAT)}")
+    print("by type:", by_type)
+    print("subjects with their fact counts (c3 needs >=6, except the control pair):")
     for e, keys in sorted(subj.items(), key=lambda kv: -len(kv[1])):
         print(f"   {e}: {len(keys)}")
     if n_pairs != 15:
-        errors.append(f"ожидалось 15 пар, есть {n_pairs}")
+        errors.append(f"expected 15 pairs, got {n_pairs}")
     if n_q != 30:
-        errors.append(f"ожидалось 30 запросов, есть {n_q}")
+        errors.append(f"expected 30 queries, got {n_q}")
     if len(CHITCHAT) != 45:
-        errors.append(f"ожидалось 45 chit-chat, есть {len(CHITCHAT)}")
+        errors.append(f"expected 45 chit-chat, got {len(CHITCHAT)}")
     cats = {}
     for _, cat in CHITCHAT:
         cats[cat] = cats.get(cat, 0) + 1
     for cat in ("greeting_entity", "topic_shared_words", "vague"):
         if cats.get(cat, 0) != 15:
-            errors.append(f"категория {cat}: ожидалось 15, есть {cats.get(cat, 0)}")
+            errors.append(f"category {cat}: expected 15, got {cats.get(cat, 0)}")
 
-    # c3: у каждого субъекта >=6 фактов, кроме пары-контроля
+    # c3: every subject has >=6 facts, except the control pair
     for p in PAIRS:
         if p["type"] != "c3":
             continue
@@ -342,34 +342,34 @@ def self_check():
             n = len(subj.get(e, []))
             if p["id"] == weak:
                 if n >= 6:
-                    errors.append(f'{p["id"]}: пара-контроль перестала быть '
-                                  f'слабой: {e} имеет {n} фактов')
+                    errors.append(f'{p["id"]}: the control pair stopped being '
+                                  f'weak: {e} has {n} facts')
             elif n < 6:
-                errors.append(f'{p["id"]}: субъект {e} имеет {n} фактов, '
-                              f"для c3 нужно >=6")
+                errors.append(f'{p["id"]}: subject {e} has {n} facts, '
+                              f"c3 needs >=6")
 
-    # c2: hard-запрос (первый в паре) не делит иероглифов с целью,
-    # но делит их хотя бы с одним дистрактором
+    # c2: the hard query (first in the pair) shares no hanzi with the target,
+    # but shares at least some with one distractor
     for p in PAIRS:
         if p["type"] != "c2":
             continue
         hard, key = p["queries"][0]
         shared = set(hard) & set(FACTS[key][0])
         if shared:
-            errors.append(f'{p["id"]}: hard-запрос делит с целью иероглифы '
+            errors.append(f'{p["id"]}: the hard query shares hanzi with the target: '
                           f'{sorted(shared)}')
         traps = [k for k, (t, _) in FACTS.items()
                  if k != key and set(hard) & set(t)]
         if not traps:
-            errors.append(f'{p["id"]}: ни один дистрактор не делит иероглифы '
-                          f"с hard-запросом")
+            errors.append(f'{p["id"]}: no distractor shares hanzi '
+                          f"with the hard query")
         if p.get("subtype") == "number":
             if not any(c in hard for c in "〇零一二三四五六七八九十百千两"):
-                errors.append(f'{p["id"]}: в hard-запросе нет числа прописью')
+                errors.append(f'{p["id"]}: no spelled-out number in the hard query')
             if not any(c.isdigit() for c in FACTS[key][0]):
-                errors.append(f'{p["id"]}: в целевом факте нет цифр')
+                errors.append(f'{p["id"]}: no digits in the target fact')
 
-    print("ОШИБКИ:" if errors else "Ошибок данных нет.")
+    print("ERRORS:" if errors else "No data errors.")
     for e in errors:
         print("  -", e)
     return not errors

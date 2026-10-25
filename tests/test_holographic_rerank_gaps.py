@@ -73,9 +73,9 @@ class FakeRerank:
         if self.scores is not None:
             chosen = [{"index": i, "relevance_score": self.scores[i % len(self.scores)]} for i in order[:top_n]]
         elif self.reverse:
-            # smaller (ревью 19:39): после сортировки по счёту (24:10) ответ обязан быть реально
-            # перевёрнут — счёт по позиции (лучший у последнего индекса), иначе sort сводит reverse
-            # к identity и тест перестаёт проверять переворот
+            # smaller (review 19:39): after sorting by score (24:10) the answer must be genuinely
+            # flipped — score by position (best at the last index), otherwise sort reduces reverse
+            # to identity and the test stops verifying the flip
             chosen = [{"index": i, "relevance_score": float(i + 1)} for i in order[:top_n]]
         else:
             chosen = [{"index": i, "relevance_score": float(n - i)} for i in order[:top_n]]
@@ -92,11 +92,11 @@ def endpoint(monkeypatch):
 # -- a store to run on -------------------------------------------------------------------------------------------
 
 RANK = {"rerank": "on", "rerank_url": "https://rerank.example.net/v1/rerank",
-        "rerank_model": "fake-reranker"}  # one mode since п.6: rerank_mode is gone
+        "rerank_model": "fake-reranker"}  # one mode since item 6: rerank_mode is gone
 QUERY = "when does the backup run?"
 FACTS = ["The nightly backup runs from the OES box at 2 am.", "Lena's birthday is on June 3.",
          "Mark plays the violin on Sundays.", "Tom is allergic to peanut satay.",
-         # п.9: единственный кандидат вызова не делает — endpoint-тесты нуждаются в пуле >= 2
+         # item 9: a single candidate makes no call — endpoint tests need a pool of >= 2
          "The weekly backup runs from the NAS box at 4 am."]
 FILLERS = ["apple note", "brick note", "cloud note", "daisy note", "eagle note"]
 SECRET = "The backup password: violet-quilt-77."  # stored, but recall refuses it (a credential with its value)
@@ -280,7 +280,7 @@ def test_unified_stream_sends_the_union_and_ranks_it_strictly(tmp_path, endpoint
     p, meaning_fact = _unified_store(tmp_path, endpoint, monkeypatch)
     query, meaning, candidates, key, turn = _stream_arguments(p)
     lexical = [f["content"] for f in p._retriever.relevant(query, candidates, p._min_coverage)]
-    # stream 1: the words alone decide membership (п.9: пул backup-запроса теперь из двух фактов)
+    # stream 1: the words alone decide membership (item 9: the backup request pool is now two facts)
     assert lexical == [FACTS[0], FACTS[4]]
     endpoint.reverse = True  # the endpoint answers the pool backwards: worst rank first
     fresh, by_meaning = p._unified_stream(query, meaning, candidates, key, turn)
@@ -290,11 +290,11 @@ def test_unified_stream_sends_the_union_and_ranks_it_strictly(tmp_path, endpoint
     assert endpoint.documents == [MEANING, ENTITY, FACTS[0], FACTS[4]]
     assert endpoint.documents.count(MEANING) == 1
     assert by_meaning == {meaning_fact["fact_id"]}
-    # Семантика счёта с 24:10 (smaller, майнтейнер: «a sort would close the case»): _ranked
-    # сортирует по relevance_score, позиция списка больше не авторитет. Reverse-фейк теперь
-    # ставит лучший счёт последнему индексу (smaller 19:39) — перевёрнутый ответ реально
-    # переворачивается и после sort: F4(4.0) -> F0(3.0) -> ENTITY(2.0) -> MEANING(1.0);
-    # окно δ=0.05 режет ниже best-δ (0.982, 0.953 проходят, 0.881 — нет): верхние два.
+    # Score semantics since 24:10 (smaller, maintainer: «a sort would close the case»): _ranked
+    # sorts by relevance_score, list position is no longer authoritative. The reverse fake now
+    # puts the best score at the last index (smaller 19:39) — a flipped answer really
+    # stays flipped after sort too: F4(4.0) -> F0(3.0) -> ENTITY(2.0) -> MEANING(1.0);
+    # the window δ=0.05 cuts below best-δ (0.982 and 0.953 pass, 0.881 does not): the top two.
     assert [f["content"] for f in fresh] == [FACTS[4], FACTS[0]]
     p.shutdown()
 
@@ -304,7 +304,7 @@ def test_unified_stream_falls_back_to_the_old_order_when_scores_is_none(tmp_path
     query, meaning, candidates, key, turn = _stream_arguments(p)
     endpoint.fail = ConnectionRefusedError("refused")  # scores() returns None
     fresh, by_meaning = p._unified_stream(query, meaning, candidates, key, turn)
-    # lexical first (оба backup-факта, п.9), streams after: as in off
+    # lexical first (both backup facts, item 9), streams after: as in off
     assert [f["content"] for f in fresh] == [FACTS[0], FACTS[4], MEANING, ENTITY]
     assert by_meaning == {meaning_fact["fact_id"]}  # the marks are kept so the prompt can still say "(by meaning)"
     p.shutdown()
@@ -345,20 +345,20 @@ def test_a_file_that_is_not_a_database_takes_recall_off(tmp_path):
 
 
 
-# -- the fallback IS the off layout (ревью 19:39, п.3) -------------------------------------------------------
+# -- the fallback IS the off layout (review 19:39, item 3) -------------------------------------------------------
 
 def test_fallback_block_equals_off_block_when_the_target_sits_past_candidate_15(tmp_path, endpoint):
-    """Фолбэк брал top-5 из РАСШИРЕННОГО пула (max(15×4, top_k)) и без фильтра «показано недавно»,
-    а off ищет 15: кандидаты 1–15 показаны, цель на 17-м месте — off возвращает пусто, старый фолбэк
-    возвращал бы пятёрку из широкого пула. Теперь фолбэк зовёт _off_layout БЕЗ кандидатов (повторный
-    поиск с off-лимитом) — блоки обязаны совпасть ЦЕЛИКОМ. Механизм «shown recently» из сценария
-    мейнтейнера: три прогона показывают топ-15 филлеров, четвёртый — пусто."""
+    """The fallback took top-5 from the WIDENED pool (max(15×4, top_k)) and without the «shown recently» filter,
+    while off searches 15: candidates 1–15 are shown, the target sits at 17th place — off returns empty, the old fallback
+    would have returned five from the wide pool. Now the fallback calls _off_layout WITHOUT candidates (a repeated
+    search with the off limit) — the blocks must match EXACTLY. The «shown recently» mechanism from the
+    maintainer's scenario: three runs show the top-15 fillers, the fourth — empty."""
     query = "nightly backup schedule"
 
     def store_provider(name, **cfg):
         p = _provider(tmp_path, name=name, **cfg)
-        # филлеры делят все три слова запроса с высоким TF — BM25 держит их над короткой целью,
-        # которая уходит на 17-е место, за предел off-поиска limit=15
+        # the fillers share all three query words with a high TF — BM25 keeps them above the short target,
+        # which falls to 17th place, beyond the off search limit=15
         for k in range(20):
             p._store.add_fact(f"nightly nightly backup backup backup schedule schedule schedule of subsystem {k}"
                               f" pending in the apple tree of configuration layer {k}")
@@ -366,21 +366,21 @@ def test_fallback_block_equals_off_block_when_the_target_sits_past_candidate_15(
         p.sync_turn("x", "y")
         pool = p._retriever.search(query, min_trust=p._min_trust, limit=60, meaning=None)
         position = next(i for i, fact in enumerate(pool) if fact["fact_id"] == target_id)
-        assert position >= 15, f"конструкция сломалась: цель на {position}-м месте, нужен >= 15"
+        assert position >= 15, f"construction broke: the target is at position {position}, need >= 15"
         return p
 
     off = store_provider("off.db")
-    for _ in range(3):  # топ-15 филлеров показаны недавними
+    for _ in range(3):  # the top-15 fillers are shown as recent
         off.prefetch(query)
     block_off = off.prefetch(query)
-    assert block_off == "", f"off обязан вернуть пусто (все 15 показаны): {block_off!r}"
+    assert block_off == "", f"off must return empty (all 15 are shown): {block_off!r}"
     off.shutdown()
 
     on = store_provider("on.db", **RANK)
-    endpoint.fail = RuntimeError("endpoint down")  # каждый вызов уходит в фолбэк
-    for _ in range(3):  # фолбэк обязан продвигаться ровно как off (фильтр недавнего + лимит 15)
+    endpoint.fail = RuntimeError("endpoint down")  # every call goes to the fallback
+    for _ in range(3):  # the fallback must advance exactly like off (the recent filter + limit 15)
         on.prefetch(query)
     block_fallback = on.prefetch(query)
     on.shutdown()
-    assert block_fallback == block_off, ("фолбэк обязан быть off-раскладкой: "
+    assert block_fallback == block_off, ("the fallback must be the off layout: "
                                          f"off={block_off!r}, fallback={block_fallback!r}")

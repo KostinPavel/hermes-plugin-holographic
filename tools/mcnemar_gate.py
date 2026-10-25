@@ -38,16 +38,16 @@ def mcnemar(b: int, c: int) -> float:
 
 
 def _validate(rows: list[dict], path: str) -> None:
-    """Отчёт невозможен — падаем, а не молчим (фикc-лист 19:07, пп. 2-3)."""
+    """The report is impossible — we fail instead of staying silent (fix-list 19:07, items 2-3)."""
     seen = collections.Counter((r.get("mode"), r.get("kind"), r.get("lang"), r.get("qid"))
                                for r in rows)
     dup = sorted(k for k, v in seen.items() if v > 1)
     if dup:
-        raise SystemExit(f"{path}: дубликат строк {dup[:5]} — отчёт невозможен")
+        raise SystemExit(f"{path}: duplicate rows {dup[:5]} — the report is impossible")
     for field in ("git_sha", "scale", "endpoint", "emb", "split"):
         vals = sorted({str(r[field]) for r in rows if r.get(field) not in (None, "")})
         if len(vals) > 1:
-            raise SystemExit(f"{path}: смешанные прогоны — {field}={vals}")
+            raise SystemExit(f"{path}: mixed runs — {field}={vals}")
     off_targets = {(r.get("lang"), r.get("qid")): (r.get("targets") or [])
                    for r in rows
                    if r.get("mode") == "off" and r.get("kind") == "real"}
@@ -56,7 +56,7 @@ def _validate(rows: list[dict], path: str) -> None:
             continue
         key = (r.get("lang"), r.get("qid"))
         if key in off_targets and (r.get("targets") or []) != off_targets[key]:
-            raise SystemExit(f"{path}: targets расходятся с off у {r.get('mode')} {key}: "
+            raise SystemExit(f"{path}: targets disagree with off for {r.get('mode')} {key}: "
                              f"{r.get('targets')} != {off_targets[key]}")
 
 
@@ -74,14 +74,14 @@ def report(path: str) -> None:
     confused = collections.Counter()
     lost = collections.Counter()
     neg = collections.Counter()
-    # targets берутся только из off: расхождение другого режима — ошибка валидации,
-    # а не «какая строка прочиталась последней» (фикc-лист 19:07, п. 3).
+    # targets come from off only: a mismatch in another mode is a validation error,
+    # not "whichever row was read last" (fix-list 19:07, item 3).
     off_targets = {(r["lang"], r["qid"]): set(r.get("targets") or [])
                    for r in real if r["mode"] == "off"}
     for r in real:
         key = (r["lang"], r["qid"])
         hits[r["mode"]][key] = bool(r["hit5"])
-        top5[r["mode"]][key] = set((r.get("keys") or [])[:5])  # matched top-5 (п.8)
+        top5[r["mode"]][key] = set((r.get("keys") or [])[:5])  # matched top-5 (item 8)
         if r.get("confused"):
             confused[r["mode"]] += 1
         if key in off_targets:
@@ -121,9 +121,9 @@ def report(path: str) -> None:
         p = mcnemar(b, c)
         branches = ""
         if m != "off":
-            # Общая охрана ОБОИХ веток (согласованный гейт, 2026-10-22): парность (real И chit),
-            # confused и noise не выше off. A добавляет +5 очков при p<0.05, B — l5==0 и
-            # строго меньше путаницы (фикc-лист 19:07, п. 4).
+            # Shared guard for BOTH branches (agreed gate, 2026-10-22): pairing (real AND chit),
+            # confused and noise no higher than off. A adds +5 points at p<0.05, B — l5==0 and
+            # strictly less confusion (fix-list 19:07, item 4).
             guard = (unpaired.get(m, 0) == 0
                      and confused[m] <= confused["off"] and neg[m] <= neg["off"])
             if guard and pts >= 5.0 and p < 0.05:

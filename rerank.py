@@ -34,11 +34,11 @@ MAX_RESPONSE = 64 << 20
 DEFAULT_TOP_K = 40  # depth of the pool the cross-encoder sees; the first stage's limit is widened to match
 DEFAULT_TIMEOUT = 3.0  # seconds; 3.0, not 2.0: a slow local endpoint is the normal case (issue #5)
 
-#: Бюджет ядра на prefetch провайдера: _EXTERNAL_PREFETCH_TIMEOUT_S в agent/memory_manager.py.
-#: Embedding-вызов и реранк идут подряд, поэтому сумма их клампов обязана укладывается меньше
-#: него с запасом (майнтейнер 24:10, п.4: дефолты 3 + 3 влезают, emb 6 + rerank 10 — нет).
+#: The core's budget for the provider's prefetch: _EXTERNAL_PREFETCH_TIMEOUT_S in agent/memory_manager.py.
+#: The embedding call and the rerank run back to back, so the sum of their clamps has to fit below
+#: it with margin (maintainer 24:10, point 4: defaults 3 + 3 fit, emb 6 + rerank 10 — no).
 _PREFETCH_BUDGET_S = 7.5
-DEFAULT_WINDOW = 0.05  # rerank_window: доля хвоста ниже которой пул отсекается (0 = ничего не отсекать)
+DEFAULT_WINDOW = 0.05  # rerank_window: the share of the tail below which the pool is cut (0 = cut nothing)
 
 
 def _number(config: dict, key: str, default, low, high, kind=float):
@@ -68,7 +68,7 @@ class Settings:
     __slots__ = ("url", "model", "top_k", "weight", "timeout", "window", "scale")
 
     def __init__(self, config: dict):
-        # rerank_mode / rerank_margin удалены (п.6 ревью 2026-10-22): один режим, окно - отдельная клавиша.
+        # rerank_mode / rerank_margin removed (point 6 of the 2026-10-22 review): one mode, the window is a separate switch.
         for gone, replacement in (("rerank_mode", "one mode; rerank: on is the switch"),
                                   ("rerank_margin", "rerank_window instead")):
             if config.get(gone) is not None and str(config.get(gone)).strip():
@@ -78,19 +78,19 @@ class Settings:
         self.top_k = _number(config, "rerank_top_k", DEFAULT_TOP_K, 1, 1000, int)  # int (kind=int)
         self.weight = _number(config, "rerank_weight", 0.0, 0.0, 1.0)
         self.window = _number(config, "rerank_window", DEFAULT_WINDOW, 0.0, 1.0)
-        # шкала скоров — свойство ЭНДПОИНТА и настройка пользователя (п.3 ревью
-        # 13:06): явная, без пробы и латча; дефолт logit — llama-server отдаёт
-        # сырые логиты. Набор значений держит _CHOICES у провайдера: вне его —
-        # именованная проблема конфига и memory off, а не тихий fallback.
+        # the score scale is the ENDPOINT's own property and the user's setting (point 3 of the
+        # 13:06 review): explicit, no probing and no latching; default logit — llama-server returns
+        # raw logits. The provider's _CHOICES holds the set of values: outside it —
+        # a named config problem with memory off, not a silent fallback.
         self.scale = str(config.get("rerank_scale") or "logit").strip().lower()
-        # п.2 (ревью 19:39): бюджет ядра считает ТОЛЬКО включённые embeddings — левый
-        # embedding_timeout при выключенных ничего не должен резать. Вторая беда: _number
-        # отдаёт дефолт БЕЗ клампа, поэтому дефолтный rerank_timeout обходил кап (emb 6 + 3 = 9
-        # с при бюджете 7.5) — капаем явно: min(значение юзера, бюджет − emb).
-        # Заодно чинит мёртвый min(10.0, 7.5 − emb) из чек-листа 24:10: левая ветка теперь
-        # значение конфига (живое), правая — бюджет; 10 с остаётся верхним клампом юзера.
+        # point 2 (19:39 review): the core's budget counts ONLY the enabled embeddings — the stray
+        # embedding_timeout with embeddings off must not cut anything. Second problem: _number
+        # returns the default WITHOUT a clamp, so the default rerank_timeout bypassed the cap (emb 6 + 3 = 9
+        # s against a budget of 7.5) — we cap explicitly: min(user value, budget − emb).
+        # This also fixes the dead min(10.0, 7.5 − emb) from the 24:10 checklist: the left branch is now
+        # the (live) config value, the right one — the budget; 10 s stays the user's upper clamp.
         emb_on = str(config.get("embeddings", "off")).strip().lower() in {"on", "true", "yes", "1"}
-        emb = _number(config, "embedding_timeout", 3.0, 0.5, 6.0) if emb_on else 0.0  # как в embeddings.py
+        emb = _number(config, "embedding_timeout", 3.0, 0.5, 6.0) if emb_on else 0.0  # as in embeddings.py
         self.timeout = min(_number(config, "rerank_timeout", DEFAULT_TIMEOUT, 0.5, 10.0),
                            _PREFETCH_BUDGET_S - emb)
 
@@ -162,12 +162,12 @@ class Rescorer:
         self._epoch = 0
         self.calls = 0  # requests sent (stats, tests)
         self.failures = 0  # counted fallbacks: scores() returned None on a failure (diagnostics)
-        # Исход последнего scores(): answered / failed: ... / skipped_single / skipped_secret / not_called.
-        # Стампится в строки раннеров; прогон падает на failed (PR #10, фикс-лист 19:07).
+        # The outcome of the last scores(): answered / failed: ... / skipped_single / skipped_secret / not_called.
+        # Stamped into the runner lines; the run fails on failed (PR #10, 19:07 fix list).
         self.last_status = "not_called"
-        # Живой воркер прошлого запроса (п.5 чек-листа 24:10): после join(timeout) нить живёт,
-        # пока сервер шлёт ответ; при истёкшей паузе следующий вызов раньше стартовал ВТОРОЙ
-        # запрос. Страховка наравне с embeddings._abandoned/_reap_locked.
+        # The live worker of the previous request (point 5 of the 24:10 checklist): after join(timeout) the thread
+        # lives while the server is still sending the answer; with the pause expired the next call used to start a
+        # SECOND request. The same guard as embeddings._abandoned/_reap_locked.
         self._worker: threading.Thread | None = None
 
     def unavailable(self) -> str:
@@ -190,9 +190,9 @@ class Rescorer:
         return self.status() == "ready"
 
     def note_failure(self, why: str) -> None:
-        """Сбой ВНЕ scores() — исключение в маппинге/окне реранк-стадии у провайдера (п.3
-        чек-листа мейнтейнера 24:10): тот же результат, что у неудачного вызова — пауза
-        эндпоинта, счётчик failures и failed в last_status, чтобы fail-fast прогона это видел."""
+        """A failure OUTSIDE scores() — an exception in the mapping/window of the rerank stage at the provider (point 3
+        of the maintainer's 24:10 checklist): the same result as a failed call — the endpoint is
+        paused, failures counted and failed in last_status, so the run's fail-fast sees it."""
         self.last_status = f"failed: {why}"
         self._failed(why)
 
@@ -214,10 +214,10 @@ class Rescorer:
             # a failure for the run's zero-failed-calls budget, not a neutral skip.
             self.last_status = f"failed: {self.status()}"
             return None
-        # Экран гоняет ВЕСЬ запрос, не срез: ключ, начинающийся перед 2000-м символом, в [:2000]
-        # попадал обрывком («pas»), проходил экран, а первые буквы уходили на эндпоинт — отправка
-        # остаётся срезанной, а проверка больше нет (майнтейнер 24:10, п.2; тот же баг в main —
-        # их PR #21).
+        # The screen runs the WHOLE query, not the cut: a key starting before the 2000th character in [:2000]
+        # landed as a fragment ("pas"), passed the screen, while the first letters went to the endpoint — the send
+        # stays truncated while the check is gone (maintainer 24:10, point 2; the same bug in main —
+        # their PR #21).
         if self._secret and self._secret(query or ""):
             self.last_status = "skipped_secret"
             return None  # no call at all: what recall must not inject is never sent
@@ -247,11 +247,11 @@ class Rescorer:
 
         def send():
             try:
-                # Воркер режет САМ: тело, которое капает, обрывается здесь, на СВОЁМ потоке,
-                # по своему дедлайну; `with` закрывает соединение на этом же потоке. Caller-side
-                # close() ждал воркер в read() — реальный медленный сервер отдавал 21 байт за
-                # 2.0 с и 101 байт за 10.1 с при rerank_timeout 0.5, лок держался весь ход
-                # (ревью 19:39, п.1) — поэтому close у caller убран, остаётся только join(timeout).
+                # The worker cuts off ITSELF: a body that runs over the cap is aborted here, on ITS OWN thread,
+                # by its own deadline; `with` closes the connection on that same thread. A caller-side
+                # close() waited for the worker in read() — a really slow server sent 21 bytes in
+                # 2.0 s and 101 bytes in 10.1 s at rerank_timeout 0.5, and the lock was held the whole turn
+                # (19:39 review, point 1) — so close() from the caller is gone, only join(timeout) remains.
                 deadline = time.monotonic() + timeout
                 with _OPENER.open(request, timeout=timeout) as response:
                     chunks, size = [], 0
@@ -278,15 +278,15 @@ class Rescorer:
             if self._paused_until > time.monotonic():
                 return None
             if self._worker is not None and self._worker.is_alive():
-                # п.5: прежний воркер ещё не закончил — новый запрос НЕ стартует, и это
-                # отказ (пауза растёт, как от таймаута), пока нить не дочитает ответ.
+                # point 5: the earlier worker has not finished — the new request does NOT start, and that counts
+                # as a failure (the pause grows as with a timeout) until the thread finishes reading the answer.
                 noted = self._fail_locked("no answer (an earlier request is still running)")
             else:
-                # smaller (ревью 19:39): проверка «жив ли прежний», присвоение и старт нового —
-                # ОДНА критическая секция (раньше были две, а assign без start читался бы как
-                # мёртвый воркер): Rescorer должен быть безопасен при конкурентных вызовах сам
-                # по себе, а не только потому, что входы провайдера сегодня сериализованы.
-                self._worker = worker  # отслеживается, пока жив (п.5)
+                # smaller (19:39 review): checking whether the earlier one is alive, the assignment and the start of
+                # the new one — ONE critical section (there were two before, and an assign without a start would read
+                # as a dead worker): Rescorer must be safe under concurrent calls on its own, not only because the
+                # provider's inputs happen to be serialised today.
+                self._worker = worker  # tracked while it lives (point 5)
                 noted = None
                 epoch = self._epoch
                 self.calls += 1
@@ -300,15 +300,15 @@ class Rescorer:
         timed_out = alive or isinstance(error, TimeoutError) or (
             isinstance(error, urllib.error.URLError) and isinstance(error.reason, TimeoutError))
         if timed_out:
-            # Close() снаружи НЕ делаем (ревью 19:39, п.1): он ждёт воркер в read() и сам
-            # растягивает ход до тела сервера. Воркер закрывает соединение сам (read1 + with
-            # на своём потоке), а здесь остаётся только guard — пока воркер жив, второй
-            # запрос не стартует (п.5).
+            # We do NOT Close() from outside (19:39 review, point 1): it waits for the worker in read() and itself
+            # stretches the turn out to the server's body. The worker closes the connection itself (read1 + with
+            # on its own thread), and here only the guard remains — while the worker is alive a
+            # second request does not start (point 5).
             with self._lock:
-                # Both cases pause the endpoint: join() вышел по таймауту (alive) ИЛИ сам воркер закончился
-                # TimeoutError — сокетный таймаут должен ставить паузу и расти failures, иначе медленный
-                # сервер опрашивается каждый turn (PR #10, п.2).
-                noted = self._fail_locked("no answer (timeout)")  # и живой join, и свой дедлайн воркера
+                # Both cases pause the endpoint: join() timed out (alive) OR the worker itself ended with
+                # TimeoutError — a socket timeout must set the pause and raise failures, otherwise a slow
+                # server is polled every turn (PR #10, point 2).
+                noted = self._fail_locked("no answer (timeout)")  # both a live join and the worker's own deadline
             self._log_failure(*noted)
             return None
         try:
@@ -355,12 +355,12 @@ class Rescorer:
             "holographic: rerank endpoint failed (%s); keeping the current order for %d s", why, int(pause))
 
     def normalized(self, pairs: list[tuple[int, float]]) -> list[float]:
-        """Счётчики для окна в [0,1] — шкала задана явно (`rerank_scale`, дефолт
-        "logit" под llama-server). П.3 ревью 13:06 убрал пробу: она могла залатчить
-        неверно, решалась без лока (гонка с конкурентным запросом) и добавляла турну
-        второй запрос до 2 × rerank_timeout.
+        """Counts for the window in [0,1] — the scale is set explicitly (`rerank_scale`, default
+        "logit" for llama-server). Point 3 of the 13:06 review dropped the probing: it could latch
+        wrongly, was decided without the lock (a race with a concurrent request) and added a second
+        request of up to 2 × rerank_timeout to the turn.
 
-        Пул из одного кандидата не нормируется: окно сохранит его при любой шкале.
+        A one-candidate pool is not normalised: the window keeps it whatever the scale is.
         """
         if len(pairs) < 2:
             return [s for _, s in pairs]
@@ -373,7 +373,7 @@ class Rescorer:
 
 
 def _sigmoid(x: float) -> float:
-    """σ(x) в (0,1), численно устойчивый на обеих сторонах нуля."""
+    """σ(x) maps into (0,1), numerically stable on both sides of zero."""
     if x >= 0.0:
         z = math.exp(-x)
         return 1.0 / (1.0 + z)
@@ -382,15 +382,15 @@ def _sigmoid(x: float) -> float:
 
 
 def normalized(pairs: list[tuple[int, float]], scale: str = "logit") -> list[float]:
-    """Счётчики в [0,1] для окна: sigmoid, когда шкала "logit"; "unit" — как есть.
-    Шкала — СВОЙСТВО ЭНДПОИНТА и настройка пользователя (п.3 ревью 13:06): явная,
-    дефолт "logit" (llama-server отдаёт сырые логиты), проба и латч удалены —
-    Rescorer передаёт `settings.scale`, прямые вызовы по умолчанию тоже logit.
+    """Counts in [0,1] for the window: sigmoid when the scale is "logit"; "unit" as is.
+    The scale is the ENDPOINT's property and the user's setting (point 3 of the 13:06 review): explicit,
+    default "logit" (llama-server returns raw logits), probing and latching removed —
+    Rescorer passes `settings.scale`, direct calls default to logit too.
 
-    δ окна измеряется в единицах [0,1]: на сырых логитах тот же δ соответствует другому зазору, чем на
-    шкале [0,1], поэтому шкалу приводят явно (`rerank_scale`, п.6/п.3 ревью). sigmoid монотонен — порядок
-    не меняется, сжимаются только зазоры; margin-гейт, для которого тут объяснялась достижимость отношения,
-    удалён в п.6.
+    δ of the window is measured in [0,1] units: on raw logits the same δ means a different gap than on the
+    [0,1] scale, so the scale is brought over explicitly (`rerank_scale`, points 6/3 of the reviews). sigmoid is monotonic — the order
+    does not change, only the gaps are compressed; the margin gate, for which the reachability of the ratio was explained
+    here, was removed in point 6.
     """
     scores = [s for _, s in pairs]
     if scale == "logit":
@@ -414,22 +414,22 @@ def _ranked(payload, count: int) -> list[tuple[int, float]]:
         score = item.get("relevance_score") if isinstance(item, dict) else None
         if isinstance(score, bool) or not isinstance(score, (int, float)):
             raise ValueError("a relevance_score in the answer is not a finite number")
-        # math.isfinite(10**400) бросает OverflowError (валидный JSON, гигантский int) — такой
-        # ответ миновал бы except ValueError в _request и не стал бы failed (pre-merge-чек-лист
-        # мейнтейнера, п.1): ловим как неравный конечному числу до вызова isfinite.
+        # math.isfinite(10**400) raises OverflowError (valid JSON, a giant int) — such an
+        # answer would have slipped past except ValueError in _request and never become failed (the
+        # maintainer's pre-merge checklist, point 1): catch it as not equal to a finite number before calling isfinite.
         if (isinstance(score, int) and abs(score) > 1e308) or not math.isfinite(score):
             raise ValueError("a relevance_score in the answer is not a finite number")
         ranked.append((index, float(score)))
-    # Порядок ответа НЕ доверяем: llama-server, TEI и Cohere отдают отсортированное, но ничего
-    # не мешает отдать перепутанное — сортировка по счёту (стабильная, равные — серверный
-    # порядок) закрывает кейс (майнтейнер 24:10, smaller).
+    # The answer's order is NOT trusted: llama-server, TEI and Cohere return it sorted, but nothing
+    # stops an implementation from returning it shuffled — sorting by score (stable, ties keep the
+    # server's order) closes the case (maintainer 24:10, smaller).
     ranked.sort(key=lambda pair: -pair[1])
     if len({i for i, _ in ranked}) != len(ranked):
         raise ValueError("the answer has duplicate indexes")
-    # Счёт частичного ответа (п.4(3) ревью 10:34): докстринг уже обещал ошибку на «другое
-    # число индексов» — теперь это и есть проверка. Меньше индексов, чем документов в запросе,
-    # — сервер ответил не на всё: ошибка, а не «пул поменьше» (второе по счёту не пройдёт —
-    # индекс out of range, — но короткий ответ валидными индексами тоже отбрасываем).
+    # Counting a partial answer (point 4(3) of the 10:34 review): the docstring already promised an error on "a
+    # different number of indexes" — this is that check. Fewer indexes than documents in the request
+    # means the server did not answer for all of them: an error, not "a smaller pool" (the second case would not pass
+    # anyway — an index out of range, — but a short answer with valid indexes is dropped too).
     if len(ranked) != count:
         raise ValueError(f"the answer covers {len(ranked)} of {count} documents")
     return ranked

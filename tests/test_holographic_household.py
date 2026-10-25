@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""П.9: сет household заморожен и самосогласован (рецепт майнтейнера PR #10,
-2026-10-22: один дом ~200 фактов, en/ru/zh, dev/test, лейблы на каждый вопрос).
+"""Item 9: the household set is frozen and self-consistent (the maintainer's recipe in PR #10,
+2026-10-22: one house ~200 facts, en/ru/zh, dev/test, a label for every question).
 
-self_check внутри household.py — полная проверка (цели существуют, срезы и
-счётчики, nooverlap без общих слов). Здесь — пиннинг заморозки: изменение
-данных без пересогласования должно быть видно в тесте.
+self_check inside household.py is the full check (the targets exist, the slices and
+counters, nooverlap without shared words). Here — freeze pinning: a change to the
+data without re-consensus must be visible in the test.
 """
 import importlib.util
 from pathlib import Path
@@ -21,12 +21,12 @@ def _load():
 
 
 def test_self_check_passes():
-    _load().self_check()  # SystemExit = нарушен инвариант данных
+    _load().self_check()  # SystemExit = a data invariant is violated
 
 
 def test_counts_are_frozen():
     m = _load()
-    assert len(m.FACTS) == 199            # ~200 фактов (рецепт)
+    assert len(m.FACTS) == 199            # ~200 facts (the recipe)
     assert len(m.QUERIES) == 70           # dev 40 + test 30
     assert len(m.CHITCHAT) == 45          # dev 30 + test 15
     assert m.LANGS == ("en", "ru", "zh")
@@ -40,7 +40,7 @@ def test_every_labelled_target_exists_and_noanswer_is_empty():
 
 
 def test_translations_share_the_split():
-    # сплит один на весь id — переводы вопроса всегда в одном сплите (рецепт)
+    # one split for the whole id — question translations always live in the same split (the recipe)
     m = _load()
     for qid, q in m.QUERIES.items():
         assert set(q) >= {"split", "slice", "targets", "en", "ru", "zh"}, qid
@@ -48,8 +48,8 @@ def test_translations_share_the_split():
 
 
 def test_confused_labels_static_and_disjoint_from_targets():
-    # фикс-лист майнтейнера (PR #10, 10:05): лейбл неправильного ответа —
-    # статический ключ факта, существует и не пересекается с целями
+    # the maintainer's fix list (PR #10, 10:05): the wrong-answer label is —
+    # a static fact key, it exists and does not intersect the targets
     m = _load()
     for qid, q in m.QUERIES.items():
         conf = set(q.get("confused", []))
@@ -60,8 +60,8 @@ def test_confused_labels_static_and_disjoint_from_targets():
 
 
 def test_confusion_and_named_extra():
-    # запрос про Олю: чужой факт в топ-5 => confusion 1; правильный ответ про
-    # Олю входит в named_extra, чужой «Lena» — нет (имя не упомянуто)
+    # a query about Olya: a foreign fact in the top-5 => confusion 1; the correct answer about
+    # Olya lands in named_extra, the foreign «Lena» does not (the name is not mentioned)
     m = _load()
     q = m.QUERIES["q002"]
     assert m.confusion(q, ["olga_job", "lena_job"]) == ["lena_job"]
@@ -69,7 +69,7 @@ def test_confusion_and_named_extra():
     assert m.named_extra(
         "en", q["en"], ["olga_job", "olya_coffee", "lena_job"], {"olga_job"}
     ) == ["olya_coffee"]
-    # тёзки: Сергей Иванович против Сергея Петровича
+    # namesakes: Sergey Ivanovich against Sergey Petrovich
     q46 = m.QUERIES["q046"]
     assert m.confusion(q46, ["sergey_g_retired", "sergey_colleague"]) == ["sergey_colleague"]
     assert m.named_extra(
@@ -78,7 +78,7 @@ def test_confusion_and_named_extra():
 
 
 def test_q023_names_the_neighbour():
-    # вопрос называет соседку: оба её факта — цели, тёзка-тренер — лейбл
+    # the question names the neighbour: both of her facts are targets, the same-name coach is the label
     m = _load()
     q = m.QUERIES["q023"]
     assert q["targets"] == ["marina_flat", "walk_dog_neighbour"]

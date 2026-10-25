@@ -53,12 +53,12 @@ new run is deliberate — it is closer to the small servers people run this on.
 `--threads 4` on this machine (Ryzen 7 2700), both models **Q4_K_M**, protocol `--warmup 1
 --repeats 5` (warmup passes excluded from every statistic, 620 measured calls per model),
 `git_sha 19d7ced`. Raw rows: `results/bench_cpu_gate.jsonl` (bge),
-`results/bench_cpu_gate_jina.jsonl` (jina) — каждый саммари уже содержит свои per-call строки:
+`results/bench_cpu_gate_jina.jsonl` (jina) — each summary already carries its own per-call rows:
 
 | model (CPU, t4) | prefetch p50 ms | prefetch p95 ms | p95 < 300 ms |
 |---|---|---|---|
-| bge-reranker-v2-m3 Q4_K_M (`:1240`) | 343 | **448** | нет |
-| jina-reranker-v2-base-multilingual Q4_K_M (`:1239`) | 121 | 152 | да |
+| bge-reranker-v2-m3 Q4_K_M (`:1240`) | 343 | **448** | no |
+| jina-reranker-v2-base-multilingual Q4_K_M (`:1239`) | 121 | 152 | yes |
 
 Quality held in every mode on both: recall@5 100%, hit5 60/60, wrong-entity 0, noise 0%.
 The 393–413 ms conflict noted above is confirmed at 448 ms p95 on the gate protocol; jina CPU

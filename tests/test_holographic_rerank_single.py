@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
-"""PR #10, п.9: один отправляемый кандидат — вызова нет, вывод совпадает
-с ранжированным путём (майнтейнер, 2026-10-23):
+"""PR #10, item 9: one sendable candidate — no call, the output matches
+the reranked path (maintainer, 2026-10-23):
 
     "No call for a single candidate: with one sendable document there is nothing
     to reorder, and the window cannot drop the only one. Please add it with a test
@@ -20,7 +20,7 @@ FACT = "The nightly backup runs from the OES box at 2 am."
 QUERY = "when does the backup run?"
 
 
-# -- fake endpoint (паттерн tests/..._rerank_review; conftest — follow-up после мержа) --------
+# -- fake endpoint (pattern from tests/..._rerank_review; conftest — a follow-up after the merge) --------
 
 
 class _Response:
@@ -47,7 +47,7 @@ class FakeRerank:
     def __init__(self):
         self.requests: list[dict] = []
         self.fail = None
-        self.score = None  # задан -> сервер отвечает этим логитом (для одного дока)
+        self.score = None  # set -> the server answers with this logit (for a single doc)
 
     def open(self, request, timeout=None):
         body = json.loads(request.data)
@@ -76,7 +76,7 @@ def _rescorer():
     return rerank.Rescorer(settings)
 
 
-# -- единственный кандидат: вызова нет -------------------------------------------------------
+# -- a single candidate: no call -------------------------------------------------------
 
 
 def test_single_candidate_scores_make_no_call(endpoint):
@@ -94,25 +94,25 @@ def test_two_candidates_still_call_the_endpoint(endpoint):
     assert len(endpoint.requests) == 1, "the shortcut must not swallow real pools"
 
 
-# -- вывод совпадает с ранжированным путём ---------------------------------------------------
+# -- the output matches the reranked path ---------------------------------------------------
 
 
 def _build(tmp_path, name, **config):
     p = HolographicMemoryProvider(config={"db_path": str(tmp_path / name), "hrr_dim": 64, **config})
     p.initialize(session_id="s1")
-    p._store.add_fact(FACT)  # ровно один факт => sendable-пул длины 1
+    p._store.add_fact(FACT)  # exactly one fact => a sendable pool of length 1
     p.sync_turn("x", "y")
     return p
 
 
 @pytest.mark.parametrize("extra", [
-    {"rerank_weight": "0.0", "rerank_window": "0.05"},  # gate-режим: ранг + окно
+    {"rerank_weight": "0.0", "rerank_window": "0.05"},  # gate mode: rank + window
     {"rerank_weight": "0.5"},                          # blend
-    {"rerank_weight": "0.0", "rerank_window": "0.0"},  # порядок без среза
+    {"rerank_weight": "0.0", "rerank_window": "0.0"},  # order without a cut
 ])
 def test_single_candidate_output_matches_the_ranked_path(tmp_path, endpoint, extra, monkeypatch):
-    # путь А = ранжированный путь, как ДО фикса: вызов сделан, сервер отвечает
-    # любым логитом (–2.5: вне [0,1], sigmoid-нормализация включается)
+    # path A = the reranked path, as BEFORE the fix: the call is made, the server answers
+    # with any logit (–2.5: outside [0,1], sigmoid normalization kicks in)
     def endpoint_path_scores(self, query, documents):
         if not documents or not self.usable():
             return None
@@ -131,7 +131,7 @@ def test_single_candidate_output_matches_the_ranked_path(tmp_path, endpoint, ext
     assert len(endpoint.requests) == 1, "sanity: the ranked path really calls"
     ranked_provider.shutdown()
 
-    # путь Б: шорткат включён, вызов запрещён (упадёт, если его не избежать)
+    # path B: the shortcut is on, the call is forbidden (it fails unless it is avoided)
     monkeypatch.setattr(rerank.Rescorer, "scores", original)
     endpoint.requests.clear()
     endpoint.fail = AssertionError("single candidate must not be sent")
