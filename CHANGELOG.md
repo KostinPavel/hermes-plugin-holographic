@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.18.3 — 2026-10-26
+
+A case form of a Russian name the store knows meets its other forms before the turn («Еве» finds «у Евы»), and
+the recall stages can be traced at debug level by fact id (PR #29, KostinPavel). With rerank off, recall changes
+only where a question holds such a form and the store holds the name.
 
 ### Added
 
@@ -12,6 +16,24 @@
   `Rescorer.scores()` instead of `order()`: the same indexes, plus the score the trace needs. Off at the normal
   log level (`logging.level` in `config.yaml`): no new config key, and no work at that level — every trace line
   sits behind an `isEnabledFor(DEBUG)` guard.
+
+### Fixed
+
+- **«Еве» did not meet «Ева» or «Евы».** A family store asked «что Еве нужно взять с собой во вторник и какой чай
+  она любит?» got the fact about Tuesdays and not «Ева любит жасминовый чай…»: the coverage gate cut it at 0.25. In
+  plain Russian text «Ева», «Евы» and «Еве» share only Snowball's stem «ев», which is under `_MIN_STEM` and left out
+  of a word's keys (as a prefix it would find «евро»), so the name's case forms never met, while «Ксюша» and «Ксюше»
+  share «ксюш»; the same for «Оля», «Аня», «Яна», «Ира» and every name whose stem is two letters. The gate now
+  credits a term that is a form of a name the store knows (an entity's name or alias; a one-word name whether
+  declared or guessed) to a fact holding another form of it, by the key the two share with the name, and counts
+  such a term's document frequency over the texts, which the FTS index cannot. Nothing else reads these keys: not
+  `Word.keys`, the FTS index, the duplicate and conflict checks at write time or entity linking; words that are not
+  names («ель» / «ели», «уха» / «ухо», «рой» / «рою») stay apart; a store that does not hold the name recalls as
+  before; a Latin name matches as written. Measured with rerank and embeddings off on the Russian contrast set (30
+  questions, 45 of chit-chat), the household set (210 questions in three languages, 135 of chit-chat) and the
+  multilingual set (ru): hits, noise and confusion unchanged, no target lost; one household question («Во сколько
+  начинается смена Оли в аптеке?») now brings two more facts about Olya's pharmacy, as its English and Chinese
+  versions did.
 
 ## 0.18.2 — 2026-10-25
 
