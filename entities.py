@@ -612,6 +612,7 @@ class EntityMixin:
             if cached is None or cached[0] != version:
                 index: dict[str, list[tuple[int, tuple]]] = {}
                 names: dict[int, list[str]] = {}
+                forms: set[str] = set()
                 if self._keyed():
                     for row in self._conn.execute("SELECT ea.entity_id, ea.alias FROM entity_aliases ea "
                                                   "JOIN entities e ON e.entity_id = ea.entity_id"):
@@ -623,14 +624,25 @@ class EntityMixin:
                             index.setdefault(".", []).append((int(row["entity_id"]), name.strip().lower()))
                             continue
                         key = name_keys(name)
+                        forms.update(k for word_forms, exact in key if not exact for k in word_forms)
                         if len(key) > 1 or (key and row["entity_type"] == "declared"):
                             for first in key[0][0]:
                                 index.setdefault(first, []).append((int(row["entity_id"]), key))
                         glued = name.strip().lower()
                         if UNSEGMENTED.search(glued) and len(glued) >= 2 and (len(key) > 1 or row["entity_type"] == "declared"):
                             index.setdefault("", []).append((int(row["entity_id"]), glued))  # "" = substring names
-                cached = self._entry["entities"] = (version, index)
+                cached = self._entry["entities"] = (version, index, frozenset(forms))
             return cached[1]
+
+    def known_name_forms(self) -> frozenset:
+        """Keys of the words of every entity's name and aliases read as names (name_forms): «ев» and «ева» of «Ева»
+        or of «Ева Гавриленко». One-word names count whether declared or guessed, unlike the index above: a key of
+        this set only lets a case form of a name stand in for the word in recall's coverage (FactRetriever.relevant),
+        it links nothing to the entity. Names in Latin script give no key (they match as written). Cached with the
+        index."""
+        with self._lock:
+            self._known_entities()
+            return self._entry["entities"][2]
 
     def mentioned_entity_ids(self, text: str) -> set[int]:
         """Known entities whose name (or alias) occurs in *text* as a run of words: a Latin-script name as written
