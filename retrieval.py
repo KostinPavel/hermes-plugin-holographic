@@ -124,15 +124,22 @@ class _Corpus:
 
 # Versions that may have held on a date (as_of): corrected ones never did. Trust: the fact's while the version is
 # current, else the snapshot taken when it was closed.
-_AS_OF_SOURCE = (
+_AS_OF_TEMPLATE = (
     "(SELECT v.version_id, v.fact_id, v.seq, v.content, v.category, v.tags, v.status, v.valid_from, v.valid_to, "
     "v.valid_to_exact, v.recorded_on, v.recorded_at AS created_at, COALESCE(v.closed_at, v.recorded_at) AS updated_at, "
-    "COALESCE(c.trust_score, v.trust_score, ?) AS trust_score, 0 AS retrieval_count, NULL AS hrr_vector "
-    "FROM fact_versions v LEFT JOIN facts c ON c.fact_id = v.fact_id AND v.status = 'current' "
+    "COALESCE(c.trust_score, v.trust_score, ?) AS trust_score, 0 AS retrieval_count, NULL AS hrr_vector{merged} "
+    "FROM fact_versions v LEFT JOIN facts c ON c.fact_id = v.fact_id AND v.status = 'current' {join}"
     "WHERE v.status != 'corrected' AND (v.valid_from IS NULL OR v.valid_from <= ?) AND (v.valid_to IS NULL OR v.valid_to > ?))")
+# A merged version (0.19.0) carries its merge row: the day it was merged clips it (HistoryMixin.clip_merged). A file
+# no writer of 0.19.0 has opened has no fact_merges table: a reader of it takes the source without the join.
+_AS_OF_SOURCE = _AS_OF_TEMPLATE.format(
+    merged=", m.merged_at, m.into_fact_id AS merged_into",
+    join="LEFT JOIN fact_merges m ON m.from_fact_id = v.fact_id AND v.status = 'merged' ")
+_AS_OF_SOURCE_PLAIN = _AS_OF_TEMPLATE.format(merged="", join="")
 # Every column a candidate read may return: the facts table's, the as_of source's extras and the FTS rank. Anything
 # else in a row (a column left by another program) is not ours and never reaches a result (_fact_row).
-_AS_OF_EXTRA = ("version_id", "seq", "status", "valid_from", "valid_to", "valid_to_exact", "recorded_on")
+_AS_OF_EXTRA = ("version_id", "seq", "status", "valid_from", "valid_to", "valid_to_exact", "recorded_on", "merged_at",
+                "merged_into")
 _ROW_KEYS = frozenset([c.strip() for c in _FACT_COLUMNS.split(",")] + ["hrr_vector", "fts_rank_raw", *_AS_OF_EXTRA])
 
 
@@ -163,7 +170,8 @@ class FactRetriever:
         self._vectors: VectorIndex | None = None  # search by meaning, built on first use
 
     def _as_of(self, day: str) -> _Corpus:
-        return _Corpus(_AS_OF_SOURCE, (self.store.default_trust, day, day), "fact_versions_fts", "version_id",
+        source = _AS_OF_SOURCE if self.store._merges_ready() else _AS_OF_SOURCE_PLAIN
+        return _Corpus(source, (self.store.default_trust, day, day), "fact_versions_fts", "version_id",
                        self._version_cache)
 
     def _atom(self, word: str):
@@ -255,13 +263,18 @@ class FactRetriever:
         held, maybe = [], {}
         # A wide pool: FTS5 picks candidates by its global rank, which knows nothing of the date; the corpus rank
         # (_corpus_rank) then orders them by the versions of that date only.
-        for v in self.search(query, category=category, min_trust=min_trust, limit=max(limit * 10, 100),
-                             corpus=self._as_of(day)):
+        for found in self.search(query, category=category, min_trust=min_trust, limit=max(limit * 10, 100),
+                                 corpus=self._as_of(day)):
+            v = self.store.clip_merged(found)  # a merged version (0.19.0) holds until the day of the merge
+            if v is None:
+                continue
             state, why = version_state(v, day)
             entry = {"fact_id": v["fact_id"], "version": v["seq"], "content": v["content"], "category": v["category"],
                      "valid_from": v["valid_from"] or "unknown",
                      "valid_to": v["valid_to"] if not v["valid_to"] or v["valid_to_exact"] else f"before {v['valid_to']}",
                      "status": v["status"], "score": round(v["score"], 4)}
+            if v["status"] == "merged":
+                entry["merged_into"] = v["merged_into"]
             if state == "holds" and all(h["fact_id"] != v["fact_id"] for h in held):
                 held.append(entry)
             elif state == "undetermined":
@@ -896,27 +909,38 @@ class FactRetriever:
 
     def _past_versions(self, fact_id: int, content: str, own_keys, limit: int) -> list[dict]:
         """Closed versions (changed / ended, never corrected) of other facts that say nearly the same: "a fact that
-        came back" is a new version of that fact (change), not a fact of its own."""
+        came back" is a new version of that fact (change), not a fact of its own. A merged version (0.19.0) says
+        which current fact it is part of now (`merged_into`): that fact is the one to change or confirm."""
         expression = self._sanitize_fts_query(content)
         if not expression or not self.store.history_ready():
             return []
-        marks = ",".join("?" * len(CLOSED))
+        statuses = (*CLOSED, "merged") if self.store._merges_ready() else CLOSED
+        marks = ",".join("?" * len(statuses))
         try:
             rows = self.store.read(
                 "SELECT v.fact_id, v.seq, v.content, v.status, v.valid_to, v.valid_to_exact FROM fact_versions_fts "
                 "JOIN fact_versions v ON v.version_id = fact_versions_fts.rowid WHERE fact_versions_fts MATCH ? "
                 f"AND v.status IN ({marks}) AND v.fact_id != ? ORDER BY fact_versions_fts.rank LIMIT 20",
-                (expression, *CLOSED, fact_id))
+                (expression, *statuses, fact_id))
         except Exception as exc:  # noqa: BLE001 - a damaged index: the hint is advisory
             logger.warning("holographic: history search failed (%s)", error_kind(exc))
             return []
         out: dict[int, dict] = {}
         for r in rows:
             overlap = soft_jaccard(own_keys, content_keys(r["content"]))
-            if overlap >= 0.7 and r["fact_id"] not in out:
-                until = r["valid_to"] if r["valid_to_exact"] else f"before {r['valid_to']}"
-                out[r["fact_id"]] = {"fact_id": r["fact_id"], "content": r["content"], "status": r["status"],
-                                     "until": until, "word_overlap": round(overlap, 2)}
+            if overlap < 0.7 or r["fact_id"] in out:
+                continue
+            entry = {"fact_id": r["fact_id"], "content": r["content"], "status": r["status"],
+                     "word_overlap": round(overlap, 2)}
+            if r["status"] == "merged":
+                target = self.store.merge_target(r["fact_id"])
+                if target is None or int(target["into_fact_id"]) == fact_id or not self.store.read(
+                        "SELECT 1 FROM facts WHERE fact_id = ?", (target["into_fact_id"],)):
+                    continue  # merged into this very fact, or into one that is gone: nothing to point at
+                entry["merged_into"] = int(target["into_fact_id"])
+            else:
+                entry["until"] = r["valid_to"] if r["valid_to_exact"] else f"before {r['valid_to']}"
+            out[r["fact_id"]] = entry
         return sorted(out.values(), key=lambda e: e["word_overlap"], reverse=True)[:limit]
 
     def review(self, limit: int = 20, stale_days: int = 60) -> list[dict]:

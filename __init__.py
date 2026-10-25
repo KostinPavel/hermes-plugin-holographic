@@ -31,7 +31,7 @@ from utils import is_truthy_value
 from . import embeddings
 from . import holographic as hrr
 from . import rerank
-from .history import ORIGINS, HistoryTooNew, NotFound, parse_day
+from .history import ORIGINS, ChangedSince, HistoryTooNew, NotFound, parse_day
 from .store import DuplicateContentError, MemoryStore, unusable_names
 from .retrieval import FactRetriever, _warn_once, error_kind
 from .screen import (_EXTRACT_MAX_CHARS, _RE_QUESTION, _RE_SENTENCE, _extract_floor, _fact_problem, _recall_problem,
@@ -71,6 +71,9 @@ FACT_STORE_SCHEMA = {
         "— it was wrong · revert {fact_id} — undo the last change/correct/end.\n"
         "  forget {fact_id} — the user asks to forget it: deleted for good, history included (remove it from memory "
         "too).\n"
+        "  merge {fact_id: <keep>, from: [<id>, …]} — two facts say the same thing (a duplicate, a retelling): the "
+        "others become part of fact_id; their history and sources are kept under it, search shows one fact. Not for "
+        "something the user wants gone: that is forget.\n"
         "  Dates (YYYY-MM-DD) only when the message gives them; never guess.\n"
         "• history {fact_id} · update {fact_id, keywords/tags/category} · list {as_of?} · stats · export · review "
         "(clean-up candidates) · related · contradict.\n"
@@ -89,9 +92,9 @@ FACT_STORE_SCHEMA = {
         "type": "object",
         "properties": {
             "action": {"type": "string", "enum": ["add", "search", "probe", "related", "reason", "contradict", "update",
-                                                  "change", "end", "correct", "revert", "forget", "history", "remove",
-                                                  "list", "stats", "export", "review", "entities", "alias", "rename",
-                                                  "delete_entity", "split", "rebuild_entities", "enrich"]},
+                                                  "change", "end", "correct", "revert", "forget", "merge", "history",
+                                                  "remove", "list", "stats", "export", "review", "entities", "alias",
+                                                  "rename", "delete_entity", "split", "rebuild_entities", "enrich"]},
             "content": {"type": "string", "description": "Fact text for 'add' / 'change' / 'correct': one short "
                                                          "standalone sentence. 'alias': the other name; 'rename': the "
                                                          "new name."},
@@ -127,7 +130,13 @@ FACT_STORE_SCHEMA = {
                                         "characters; the result lists those kept. 'update' replaces the fact's "
                                         "keywords."},
             "fact_id": {"type": "integer", "description": "Fact ID for update / change / end / correct / revert / forget / "
-                                                          "history."},
+                                                          "history; 'merge': the fact that stays."},
+            "from": {"type": "array", "items": {"type": "integer"},
+                     "description": "'merge': the facts (1-20 ids) that become part of fact_id. 'keywords' with it: "
+                                    "the keywords fact_id keeps (without: its own and theirs, its own first)."},
+            "expect": {"type": "object", "additionalProperties": {"type": "integer"},
+                       "description": "'merge', optional: {\"<fact_id>\": <version_id>} as 'history' shows them; the "
+                                      "merge happens only while each named fact is still at that version."},
             "category": {"type": "string", "enum": ["user_pref", "project", "tool", "general"]},
             "tags": {"type": "string", "description": "Comma-separated tags."},
             "trust_delta": {"type": "number", "description": "Trust adjustment for 'update'."},
@@ -224,8 +233,8 @@ def _results(items: list, key: str = "results") -> str:
 _MAX_LIMIT = 100
 # Agent contexts that may write (contract: skip writes for subagent / cron / flush contexts).
 _WRITER_CONTEXTS = frozenset({"", "primary"})
-_WRITE_ACTIONS = frozenset({"add", "update", "remove", "alias", "change", "end", "correct", "revert", "forget", "rename",
-                            "delete_entity", "split", "rebuild_entities"})
+_WRITE_ACTIONS = frozenset({"add", "update", "remove", "alias", "change", "end", "correct", "revert", "forget", "merge",
+                            "rename", "delete_entity", "split", "rebuild_entities"})
 # Actions whose 'entities' declares names on a fact: a declared name that was only an alias a fact's text gave splits
 # off, and the answer says so ("split", 0.17.0).
 _DECLARING_ACTIONS = frozenset({"add", "update", "change", "correct"})
@@ -1270,6 +1279,10 @@ class HolographicMemoryProvider(MemoryProvider):
         except DuplicateContentError as exc:
             return json.dumps({"updated": False, "duplicate_of": exc.fact_id,
                                "reason": "another fact already says exactly this; remove one of them instead"})
+        except ChangedSince as exc:  # a conditional merge: what the caller saw is not what is there (0.19.0)
+            return tool_error("Not merged: a fact changed since the versions in 'expect' were read; read history "
+                              "again and decide anew. Nothing was changed.",
+                              changed_since={str(f): v for f, v in exc.current.items()})
         except UnicodeError as exc:  # a ValueError, but its text may hold a piece of a fact
             return self._failed(tool_name, args, exc)
         except (ValueError, RuntimeError) as exc:  # the plugin's own refusals, HistoryUnavailable, HistoryTooNew
@@ -1470,6 +1483,9 @@ class HolographicMemoryProvider(MemoryProvider):
                 return json.dumps({"fact_id": gone["fact_id"], "status": "forgotten", "stored": False,
                                    "hint": "The user asked to forget this; a scheduled job does not store it again."})
         if not self._store.read("SELECT 1 FROM facts WHERE content = ?", (content,)):
+            merged = self._store.merged_match(content)
+            if merged is not None:  # the last text of a copy merged into a current fact: that fact says it (0.19.0)
+                return self._exists_merged(a, merged)
             past = self._store.past_version(content)
             if past is not None:  # X -> Y -> X: the same fact again, not a new one
                 until = past["valid_to"] if past["valid_to_exact"] else f"some point before {past['valid_to']}"
@@ -1490,10 +1506,8 @@ class HolographicMemoryProvider(MemoryProvider):
             result = self._with_keyword_report(result, a)
         # The person said it again in a later session: a confirmation (0.15.0). Not the session that stored it: the
         # agent adding the same sentence twice in one conversation is not the person saying it twice.
-        if not created and origin in ("said", "confirmed") \
-                and (self._store.current_sources([fact_id]).get(fact_id) or {}).get("session_id") != self._session_id:
-            confirmed = self._store.record_confirmation(fact_id, self._source("tool", origin=origin))
-            result.update({"confirmations": confirmed["confirmations"], "origin": confirmed["origin"]})
+        if not created:
+            self._confirm_said_again(result, fact_id, origin)
         if created:
             check = self._retriever.write_check(fact_id)
             result.update({k: v for k, v in check.items() if v})
@@ -1501,14 +1515,37 @@ class HolographicMemoryProvider(MemoryProvider):
                 result["hint"] = (f"If one of these changed into the new fact, run forget {{fact_id: {fact_id}}} and change "
                                   "{fact_id: <old id>, content} instead (one history); if the old one was wrong, correct "
                                   "it; if both hold, keep both."
-                                  + (f" If one says the same as the new fact and the person said it, forget {{fact_id: "
-                                     f"{fact_id}}} and confirm the old one: fact_feedback {{action: 'confirmed', fact_id}}."
-                                     if check["similar"] and origin in ("said", "confirmed") else ""))
+                                  + (f" If one says the same as the new fact, merge {{fact_id: <old id>, from: "
+                                     f"[{fact_id}]}}: one fact, both histories kept"
+                                     + (" (the person's word on the new one stays as its confirmation)." if origin in
+                                        ("said", "confirmed") else ".") if check["similar"] else ""))
             gone = self._store.forgotten_match(content)
             if gone is not None:
                 result["forgotten_before"] = {"fact_id": gone["fact_id"], "forgotten_at": gone["forgotten_at"]}
                 result["hint"] = (f"The user asked to forget this (fact #{gone['fact_id']}, {gone['forgotten_at'][:10]}). "
                                   f"Keep it only if they asked to remember it again; otherwise forget {{fact_id: {fact_id}}}.")
+        return json.dumps(result)
+
+    def _confirm_said_again(self, result: dict, fact_id: int, origin) -> None:
+        """An add of a text a current fact already holds, said or confirmed by the person in a later session than
+        the one that stored it, confirms that fact (0.15.0)."""
+        if origin in ("said", "confirmed") \
+                and (self._store.current_sources([fact_id]).get(fact_id) or {}).get("session_id") != self._session_id:
+            confirmed = self._store.record_confirmation(fact_id, self._source("tool", origin=origin))
+            result.update({"confirmations": confirmed["confirmations"], "origin": confirmed["origin"]})
+
+    def _exists_merged(self, a: dict, merged: dict) -> str:
+        """An add of the last text of a fact merged into a current one (0.19.0): the path of an add of a current
+        fact's own text — names declared with it count, the person saying it again confirms it, nothing new is
+        stored — answered under the keep's id."""
+        keep, entities = merged["fact_id"], self._entities(a)
+        if entities:
+            self._store.update_fact(keep, entities=entities, touch=False)
+        result: dict = {"fact_id": keep, "status": "exists", "merged_from": merged["merged_from"],
+                        "hint": f"Fact #{merged['merged_from']} said exactly this and was merged into #{keep}, which "
+                                "holds it now (its text may be worded differently); nothing was stored."}
+        result = self._with_keyword_report(result, a)
+        self._confirm_said_again(result, keep, a.get("origin") or None)
         return json.dumps(result)
 
     @staticmethod
@@ -1621,11 +1658,73 @@ class HolographicMemoryProvider(MemoryProvider):
     def _forget(self, a: dict) -> str:
         def run(fact_id):
             result = self._store.forget_fact(fact_id)
-            self._drop_cached(fact_id)
+            for gone in (fact_id, *result.get("merged_copies", ())):
+                self._drop_cached(gone)
             result["hint"] = ("Deleted from the fact store with its history. If a memory entry (MEMORY.md / USER.md) "
                               "says the same, remove it too.")
+            if result.get("merged_copies"):
+                result["hint"] += (f" The facts merged into it ({', '.join(f'#{c}' for c in result['merged_copies'])}) "
+                                   "were the same fact: deleted with it, a tombstone each.")
+            if result.get("merged_into") is not None:
+                result["hint"] += (f" It had been merged into #{result['merged_into']}, which still says the same; "
+                                   f"forget {{fact_id: {result['merged_into']}}} if that is what the user asked.")
             return json.dumps(result)
         return self._fact_call(a, run)
+
+    def _merge(self, a: dict) -> str:
+        """merge {fact_id: keep, from: [ids], keywords?, expect?} (0.19.0): the facts in 'from' become part of
+        fact_id (history.merge_facts). Keywords: the list given replaces the keep's; none given: the keep's own first,
+        then each copy's, distinct, up to the limit, reported as add reports them; an empty list clears them."""
+        keep = int(a["fact_id"])
+        given = a.get("from")
+        ids = [given] if isinstance(given, int) and not isinstance(given, bool) else given
+        if not isinstance(ids, list) or not ids or not all(
+                isinstance(i, int) and not isinstance(i, bool) for i in ids):
+            return tool_error("merge needs 'from': the ids (integers) of the facts that become part of fact_id.")
+        problem = self._keyword_problem(a)
+        if problem:
+            return tool_error(f"Not merged: {problem}.")
+        expect = a.get("expect")
+        if expect is not None and (not isinstance(expect, dict) or not all(
+                str(k).strip().lstrip("-").isdigit() and isinstance(v, int) and not isinstance(v, bool)
+                for k, v in expect.items())):
+            return tool_error("merge: 'expect' must be an object {\"<fact_id>\": <version_id>}.")
+        if not self._writable:  # cron (cron_writes): only what this very session stored may be merged away
+            sources = self._store.current_sources(ids)
+            foreign = [i for i in ids if self._store.read("SELECT 1 FROM facts WHERE fact_id = ?", (i,))
+                       and (sources.get(i) or {}).get("session_id") != self._session_id]
+            if foreign:
+                return tool_error("Not merged: a scheduled job merges only facts it stored in this session "
+                                  f"({', '.join(f'#{i}' for i in foreign)} were not); the main agent merges the "
+                                  "rest. Nothing was changed.")
+        tags = None
+        if a.get("keywords") is not None:
+            report = _keyword_report(a["keywords"])
+            tags = _join_tags(_split_tags(self._store.fact_tags(keep))[0], report["keywords"])
+        else:  # the union: the keep's keywords first, then each copy's
+            user_tags, own = _split_tags(self._store.fact_tags(keep))
+            candidates = list(own)
+            for fact_id in ids:
+                candidates += _split_tags(self._store.fact_tags(fact_id))[1]
+            report = _keyword_report(candidates) if candidates else {"keywords": []}
+            if candidates:
+                tags = _join_tags(user_tags, report["keywords"])
+        result = self._fact_call(a, lambda fact_id: self._store.merge_facts(fact_id, ids, tags=tags, expect=expect))
+        if isinstance(result, str):  # the error of _fact_call
+            return result
+        for gone in result["merged"]:
+            self._drop_cached(gone)
+        if self._retriever is not None:
+            self._retriever.drop_cached(keep)
+        result.update(report)
+        if not result["merged"]:
+            result["hint"] = (f"These facts were part of #{keep} already; nothing changed. history {{fact_id: {keep}}} "
+                              "shows them under merged_from.")
+        else:
+            result["hint"] = (f"The merged facts are kept under #{keep}: history {{fact_id: {keep}}} shows their "
+                              "versions and sources (merged_from), and their text is not added as a new fact again. "
+                              "To delete a fact for good, forget it.")
+        return json.dumps(result)
 
     def _remove(self, a: dict) -> str:
         """0.7.0 prompts: remove is forget."""
@@ -1807,7 +1906,22 @@ class HolographicMemoryProvider(MemoryProvider):
             lines.append(f"- #{f['fact_id']} [{f['trust_score']:.2f}, {f['category']}] {_one_line(f['content'], 500)}"
                          + (f" — {linked}" if linked else "")
                          + f"\n  _{_source_line(sources.get(f['fact_id']))}_")
-        return json.dumps({"markdown": "\n".join(lines), "count": len(facts)})
+        result = {"markdown": "\n".join(lines), "count": len(facts)}
+        shown = {f["fact_id"] for f in facts}
+        merged = [dict(r) for r in self._store.read(
+            "SELECT m.from_fact_id, m.into_fact_id, m.merged_at, v.content FROM fact_merges m JOIN fact_versions v "
+            "ON v.fact_id = m.from_fact_id AND v.status = 'merged' WHERE m.into_fact_id IN "
+            f"({','.join('?' * len(shown)) or 'NULL'}) ORDER BY m.into_fact_id, m.from_fact_id", sorted(shown))] \
+            if self._store._merges_ready() and shown else []
+        if merged:  # facts merged into the ones shown (0.19.0): what they said, and where it lives now
+            lines += ["", "## Merged into the facts above", ""]
+            for m in merged:
+                lines.append(f"- #{m['from_fact_id']} → #{m['into_fact_id']} ({str(m['merged_at'])[:10]}): "
+                             f"{_one_line(m['content'], 500)}")
+            result["markdown"] = "\n".join(lines)
+            result["merged"] = [{"fact_id": m["from_fact_id"], "into": m["into_fact_id"], "merged_at": m["merged_at"]}
+                                for m in merged]
+        return json.dumps(result)
 
     _TOOL_HANDLERS = {
         "fact_store": _tool_handler({
@@ -1827,6 +1941,7 @@ class HolographicMemoryProvider(MemoryProvider):
             "correct": lambda self, a: self._correct(a),
             "revert": lambda self, a: self._fact_call(a, lambda fact_id: json.dumps(self._store.revert_fact(fact_id))),
             "forget": lambda self, a: self._forget(a),
+            "merge": lambda self, a: self._merge(a),
             "history": lambda self, a: self._fact_call(a, lambda fact_id: json.dumps(self._store.history(fact_id))),
             "remove": lambda self, a: self._remove(a),
             "list": lambda self, a: self._list(a),
@@ -1878,7 +1993,8 @@ class HolographicMemoryProvider(MemoryProvider):
                     if any(p.search(sentence) for p in patterns):
                         try:
                             if store.forgotten_match(sentence) or store.past_version(
-                                    sentence, statuses=("changed", "ended", "corrected")):
+                                    sentence, statuses=("changed", "ended", "corrected")) \
+                                    or store.merged_match(sentence):  # a merged copy's text: the keep says it
                                 break
                             if retriever is not None and retriever.near_duplicate(sentence) is not None:
                                 break
