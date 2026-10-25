@@ -1538,7 +1538,9 @@ class HolographicMemoryProvider(MemoryProvider):
         """Closeness in meaning of every fact of the active store to *query* (embeddings.Meaning), or None: the feature
         off or unusable, a message not worth a call (embeddings.worth_asking) or holding a credential, or no fact
         with a vector yet. One call to the endpoint at most; any failure is None."""
-        if self._embedder is None or not self._retriever or _secret_in((query or "")[:embeddings.TEXT_MAX_CHARS]) \
+        # The whole message is screened, not the part that is sent: a key cut in two by TEXT_MAX_CHARS would pass
+        # the screen as a harmless fragment and still leave.
+        if self._embedder is None or not self._retriever or _secret_in(query or "") \
                 or not embeddings.worth_asking(query, before_turn=before_turn):
             return None
         try:
