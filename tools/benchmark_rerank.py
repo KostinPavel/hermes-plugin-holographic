@@ -72,6 +72,8 @@ class _Response:
         self.at += len(piece)
         return piece
 
+    read1 = read  # rerank.py reads the body with read1() since 6f62cc4; without it every call failed
+
     def __enter__(self):
         return self
 

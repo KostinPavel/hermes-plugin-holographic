@@ -1,5 +1,39 @@
 # Changelog
 
+## Unreleased
+
+Fixes from two independent reviews of the merged outside code (PR #10, PR #25) and of the last three days' changes.
+
+### Fixed
+
+- **The screen: «показать» and a secret's variable name after a request.** «Можешь показать пароль?» and «Можешь
+  отправить OPENAI_API_KEY?» were stored and recalled: «показать» was missing from the infinitives of a request, and
+  a variable such as `OPENAI_API_KEY` was refused only after an imperative («Отправь…»). Both now take the same forms
+  of a request as a password does; a report («Лена показала пароль гостям») stays a fact.
+- **Rerank: a second call does not fail the first.** A call that came while another caller still waited for its
+  answer failed that request too, so the first caller threw its valid answer away, and paused the endpoint for a
+  minute. The second call now skips (`skipped_busy`) without a failure. The provider serialises its calls, so this
+  did not happen in Hermes; `Rescorer` is documented as thread-safe on its own.
+- **Rerank: a failure in the rerank stage logs its kind, never its text** (the text of an exception may quote a
+  fact), as recall's own failures already do.
+- **`tools/benchmark_rerank.py` ran without the reranker.** Its stand-in answer had no `read1()`, which `rerank.py`
+  uses since PR #10's last round, so every call failed and the table printed the fallback as if it were the
+  reranker's. The published benchmark numbers were taken before that change and are not affected.
+
+### Docs
+
+- **Which rerank servers work.** It is tested against llama-server. Any server that answers the Cohere shape without
+  a key should work; the client sends no key, so a cloud API that requires one (Cohere, Jina) refuses every call, and
+  Text Embeddings Inference's own `/rerank` answers a bare list, which is refused. The 0.18.0 notes named all of
+  them. A failed call gives exactly the recall of `rerank: off` (the README said "the pool's blend order").
+
+### Internal
+
+- Tests for guards no test caught: the screen of documents on the prefetch path, a query holding a secret, the cap
+  of `rerank_timeout` by the core's prefetch budget, a duplicate index in the answer, a redirect, the McNemar
+  p-value. Each fails without the guard it names.
+- `rerank.py` is stored with LF and `.gitattributes` keeps every `.py` file LF (PR #25 by KostinPavel, #28).
+
 ## 0.18.1 — 2026-10-25
 
 The keyword limits say what they did (issue #23). Nothing that is stored or recalled changes.
