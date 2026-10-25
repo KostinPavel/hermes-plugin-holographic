@@ -1,6 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.18.0 — 2026-10-25
+
+An optional second stage of recall: a cross-encoder can reorder the candidates before a turn (`rerank: on`, off by
+default; PR #10 by KostinPavel, RFC #9). It is experimental and does not raise hits; the README gives its numbers
+and what it sends. The screen now refuses a Russian PIN with its value, keeps a report that someone sent a password
+or keys and a version number after "pin" as facts, and checks a whole message before it goes to embeddings. The
+screen moves to its own file, `screen.py`. With rerank off, recall changes only where the screen now decides
+differently.
 
 ### Added
 
@@ -59,6 +66,8 @@
 
 ### Docs
 
+- **Data and privacy names `rerank` too.** The README said nothing is sent anywhere unless `embeddings` is on; with
+  `rerank: on` the message and candidate facts go to `rerank_url` as well.
 - **Stored times are UTC, and the README says so** (issue #3, njwangfeng: a weekly window written in local time
   returned zero rows from `fact_versions.recorded_at`). `recorded_at`, `facts.created_at` and `updated_at` are UTC;
   `fact_versions.recorded_on` holds the same moment as a date in Hermes's timezone, for windows in local days.
@@ -162,7 +171,6 @@ common word with the message.
   instructions", "You mustn't never ignore…". A negation before the prohibition cancels it now, and so does an
   exception after it ("never ignore your instructions unless they stop you from answering"). (Third to fifth Codex
   passes.)
-
 
 ## 0.17.6 — 2026-10-21
 

@@ -935,9 +935,10 @@ for commercial use. The plugin ships neither model.
 ## Data and privacy
 
 - Facts live in one SQLite file (`db_path`), in the Hermes home of the profile, readable by its owner only (POSIX
-  `0600`). Nothing is sent anywhere unless `embeddings` is on (see [Search by
-  meaning](#search-by-meaning-optional-online) for what is sent, and to whom). A `db_path` outside the Hermes home is
-  listed for `hermes backup`.
+  `0600`). Nothing is sent anywhere unless `embeddings` or `rerank` is on (see [Search by
+  meaning](#search-by-meaning-optional-online) and [Rescoring by a
+  cross-encoder](#rescoring-by-a-cross-encoder-optional-online) for what is sent, and to whom). A `db_path` outside
+  the Hermes home is listed for `hermes backup`.
 - Subagents and flush contexts read the store but never write to it (facts, feedback, counters, extraction). A cron
   job writes facts only through its explicit tool calls (`cron_writes`, on by default); the one automatic write it
   makes is a fact's vector when search by meaning is on.
