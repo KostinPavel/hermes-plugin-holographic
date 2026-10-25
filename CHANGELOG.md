@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.18.1 — 2026-10-25
+
+The keyword limits say what they did (issue #23). Nothing that is stored or recalled changes.
 
 ### Changed
 
