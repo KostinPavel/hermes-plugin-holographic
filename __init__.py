@@ -7,6 +7,9 @@ prefetch_repeat_turns (6), recall_indicator (true), recall_source (off | short),
 user | chat | thread); search by meaning, online and off by default: embeddings (off | on), embedding_url,
 embedding_model, embedding_key_env, embedding_dimensions, embedding_timeout, embedding_min_score,
 embedding_prefetch_facts, embedding_weight, embedding_space, embedding_catch_up_seconds (embeddings.py, README).
+Rescoring by a cross-encoder (rerank.py, off by default; one mode — the pool is reordered, admission stays
+with coverage): rerank (off | on), rerank_url, rerank_model, rerank_top_k, rerank_weight, rerank_window,
+rerank_scale, rerank_timeout (README).
 Fact history, provenance and forgetting: docs/history.md."""
 
 from __future__ import annotations
@@ -28,6 +31,7 @@ from tools.registry import tool_error
 from utils import is_truthy_value
 from . import embeddings
 from . import holographic as hrr
+from . import rerank
 from .history import ORIGINS, HistoryTooNew, NotFound, parse_day
 from .store import DuplicateContentError, MemoryStore, unusable_names
 from .retrieval import FactRetriever, _warn_once, error_kind
@@ -986,12 +990,21 @@ _TRUE_WORDS, _FALSE_WORDS = frozenset({"1", "true", "yes", "on"}), frozenset({"0
 # person in one store; now it is a problem like a number that is none. (key, allowed, what it must be)
 _CHOICES = (("scope", _SCOPES, "one of profile, user, chat, thread"), ("recall_source", {"off", "short"}, "off or short"),
             ("embeddings", _TRUE_WORDS | _FALSE_WORDS, "on or off"),
+            ("rerank", _TRUE_WORDS | _FALSE_WORDS, "on or off"),
+            # The reranker's scale is the user's own setting (point 2 of the 13:06 review): anything outside the pair is
+            # a named config problem with memory off, like the other 0.17.8 keys
+            # ("scope: users" silently merged every chat into one store), not a silent fallback.
+            ("rerank_scale", {"unit", "logit"}, "unit or logit"),
             *((key, _TRUE_WORDS | _FALSE_WORDS, "true or false")
               for key in ("recall_indicator", "cron_writes", "auto_extract", "mirror_memory_writes")))
 # A separate database per chat (or per forum topic / thread): facts meet in the FTS index, n-gram scan, entities, HRR
 # banks and the write checks, so a chat_id column would need a filter in each of them; a file isolates by construction.
 _CHAT_SCOPES = frozenset({"chat", "thread"})
 _PREFETCH_CANDIDATES, _PREFETCH_FACTS, _ENTITY_FACTS = 15, 5, 2
+# Rescoring (rerank.py, RFC #9): how far the first stage's limit is widened when rerank is on — the cross-encoder
+# receives a pool several times deeper than the final need (rerank_top_k), and the FTS query is cheap while the
+# rerank call is what costs, so widening the candidates is nearly free.
+_RERANK_WIDEN = 4
 _PREFETCH_LINE_CHARS = 300
 _COUNT_FLUSH_AT = 25  # buffered recall counts are written in one go at this many, and at session boundaries
 _MAX_TRACKED_SESSIONS, _MAX_TRACKED_FACTS = 16, 512
@@ -1106,6 +1119,68 @@ def _source_line(src: dict | None) -> str:
     return " · ".join(p for p in parts if p)
 
 
+def _bottom_cut(scores: list[float], window: float) -> list[int] | None:
+    """Which ranked positions to KEEP under `rerank_window` (δ); the cut runs before the top five — coverage has
+    already run (`relevant()`), then the reranker, then the window.
+
+    A per-document cut judged from the BOTTOM of the score list: everything within δ of the best score survives —
+    the top (usually the target fact) always does, a window can't reject the winner — while the low-scoring tail,
+    where partner distractors sit, is trimmed. Measured on the provenance sweep (4 sets, 450 real queries):
+    wrong-entity top-5 28→6 (emb=on) / 25→6 (emb=off) at hit 433→432 / 430→429, noise unchanged. An absolute FLOOR (τ on the score) was rejected
+    instead: sigmoid scores are model/language dependent, τ=0.5 alone lost 54 hits on multi.
+    Returns indices into the reordered pool; [] means every candidate is cut.
+    Only read when rerank_weight == 0: a blend reorders the pool away from the ranked order the scores belong to.
+    δ = 0 (the window off) is handled by the caller: no cut at all.
+    """
+    if not scores:
+        return []
+    top = scores[0]
+    return [i for i, s in enumerate(scores) if top - s <= window]
+
+
+# The window never cuts below that many scored candidates — built into how the cut works (maintainer
+# 13:06: a property of the window itself instead of a rerank_window_min key, one threshold less in the config).
+_WINDOW_MIN = 2
+
+
+def _window_keep(keep: list[int] | None, ranked_len: int, need: int = _WINDOW_MIN) -> list[int] | None:
+    """Top up the cut to at least *need* scored candidates (point 4(1) of the 13:06 review): two facts so that
+    coverage is not left with a single "confidently true" cross-encoder top — window behaviour,
+    with no separate switch (point 1).
+
+    The top-up fills the RANK positions that are missing: keep need not be a prefix —
+    `_window_keep([1], 3)` tops up to [0, 1], not [1, 1] (point 4(4): the old fill
+    from range(len(out)) treated keep as a prefix). The tail beyond top_k is not resurrected: scored is exactly
+    ranked_len. keep=None (window off) and an empty cut are not revived: the variants protect
+    against a partial cut, not against an empty pool. The result is sorted — the order of the
+    reordered pool is preserved."""
+    if not keep:
+        return keep
+    out = set(keep)
+    for i in range(ranked_len):
+        if len(out) >= min(need, ranked_len):
+            break
+        out.add(i)
+    return sorted(out)
+
+
+def blend_union(union: list[dict], ranked: list[tuple[int, float]], weight: float) -> list[dict]:
+    """rerank_weight > 0: the reranker's min-max-normalised score blended with the first score of
+    EVERY pool member (point 4(4) of the 10:34 review): facts the endpoint did not score (beyond
+    top_k) get the full min-max scale (0 = the worst of the scored) instead of staying on the bare
+    first score — otherwise union is sorted on two scales at once. The top_k threshold rarely
+    cuts (pools are small), but the weight test only covered a fully scored pool."""
+    raw = [s for _, s in ranked]
+    lo, hi = min(raw), max(raw)
+    span = (hi - lo) or 1.0
+    norm = {i: (s - lo) / span for i, s in ranked if i < len(union)}
+    for i, fact in enumerate(union):
+        score = fact.get("score") or 0.0
+        fact["score"] = (1.0 - weight) * score + weight * norm.get(i, 0.0)
+    union.sort(key=lambda f: f.get("score") or 0.0, reverse=True)
+    return union
+
+
 class HolographicMemoryProvider(MemoryProvider):
     """Holographic memory with structured facts, entity resolution, and HRR retrieval."""
 
@@ -1141,6 +1216,13 @@ class HolographicMemoryProvider(MemoryProvider):
         if self._embedder and self._embedder.unavailable():
             logger.warning("holographic: search by meaning is on but cannot run (%s); words only",
                            self._embedder.unavailable())
+        # Second-stage rescoring (offline-safe, off by default): the cross-encoder reorders the candidate pool after
+        # the blend. Shared by every store; one synchronous call at recall time, backoff on failure (rerank.py).
+        self._rerank = rerank.settings_from(self._config)
+        self._rescorer = (rerank.Rescorer(self._rerank, secret_check=_secret_in) if self._rerank else None)
+        if self._rescorer and self._rescorer.unavailable():
+            logger.warning("holographic: rerank is on but cannot run (%s); the current order is kept",
+                           self._rescorer.unavailable())
         self._ident: dict[str, str] = {}  # chat / user Hermes named at start (a version's source)
         self._author: dict = {}  # the author of the current turn, when the platform says
         self._writable = self._tool_writable = True
@@ -1261,6 +1343,35 @@ class HolographicMemoryProvider(MemoryProvider):
             {"key": "embedding_prefetch_facts", "description": "Facts recalled before a turn on meaning alone, when "
              "they stand far out (0 = meaning only reorders facts that share words, and fact_store search uses it)",
              "default": current("embedding_prefetch_facts", "1"), "choices": ["0", "1", "2", "3"]},
+            {"key": "rerank", "description": "Second-stage rescoring (OFFLINE-SAFE, local): a cross-encoder reorders "
+             "the candidate pool after the blend, one call to the /v1/rerank endpoint below at recall time. "
+             "Off: the current order is kept exactly",
+             "default": current("rerank", "off"),
+             "choices": ["off", "on"]},
+            {"key": "rerank_window", "description": "δ: the tail below this distance of the best score is cut "
+             "before the top five (coverage runs first; 0 = keep everything; only with rerank_weight 0; "
+             "never below two scored candidates — built into the window, review 13:06)",
+             "default": current("rerank_window", "0.05")},
+            {"key": "rerank_scale", "description": "Score scale of the rerank endpoint — a property of the "
+             "endpoint and a user setting: logit (raw logits, llama-server --rerank; the default) or unit "
+             "([0,1] answers, Cohere-style). A value outside the pair is a config problem naming this key, "
+             "memory off — no silent fallback, no probe",
+             "default": current("rerank_scale", "logit"), "choices": ["unit", "logit"]},
+            {"key": "rerank_url", "description": "Cohere-compatible rerank API (https; plain http only to "
+             "localhost or a private address, e.g. llama-server --reranking)",
+             "default": current("rerank_url", "http://127.0.0.1:8080/v1/rerank")},
+            {"key": "rerank_model", "description": "Rerank model name (the endpoint's --alias)",
+             "default": current("rerank_model", "local-reranker")},
+            {"key": "rerank_top_k", "description": "How deep a pool the cross-encoder sees (the first stage's limit "
+             "is widened to match; several times the final need)",
+             "default": current("rerank_top_k", "40")},
+            {"key": "rerank_weight", "description": "0 = order-only (recommended), >0 = min-max blend of the "
+             "cross-encoder's score with the blend score",
+             "default": current("rerank_weight", "0.0")},
+                        {"key": "rerank_timeout", "description": "Seconds a rerank call may take (recall's only protection; "
+             "a slow local endpoint is the normal case). Capped so embedding_timeout (counted only when "
+             "embeddings are on) + rerank_timeout fit the prefetch budget, like README and CHANGELOG say",
+             "default": current("rerank_timeout", "3.0")},
         ]
 
     def _db_path(self, hermes_home: str) -> str:
@@ -1477,35 +1588,33 @@ class HolographicMemoryProvider(MemoryProvider):
             key = f"{session_id or self._session_id or ''}|{self._scope_key or ''}"
             turn = self._turns[key] = self._turns.get(key, 0) + 1
             meaning = self._meaning_of(query, before_turn=True)
-            candidates = self._retriever.search(query, min_trust=self._min_trust, limit=_PREFETCH_CANDIDATES,
-                                                meaning=meaning)
-            # Recently injected facts are dropped BEFORE the top five are taken, so they leave room for others; so are
-            # facts the write filter would refuse today (_recall_problem).
-            fresh = [f for f in self._retriever.relevant(query, candidates, self._min_coverage)
-                     if self._not_recent(key, f, turn) and self._recallable(f)][:_PREFETCH_FACTS]
-            have, extra = {f["fact_id"] for f in fresh}, 0
-            # Search by meaning: the relevance gate wants the message's own words, which a paraphrase does not have;
-            # a fact that stands far out in meaning gets in on that alone, after the words' facts, at most
-            # embedding_prefetch_facts of them (1), marked so the model knows the match is looser, and only when it
-            # mentions whoever the message names (names_fit).
-            by_meaning: set[int] = set()
-            if meaning is not None and self._embedding.recall_facts:
-                for fact in self._retriever.by_meaning(meaning, exclude=have, min_trust=self._min_trust,
-                                                       limit=self._embedding.recall_facts + 3,
-                                                       margin=embeddings.RECALL_MARGIN,
-                                                       min_score=self._embedding.min_score):
-                    if len(by_meaning) < self._embedding.recall_facts and self._not_recent(key, fact, turn) \
-                            and self._recallable(fact) and self._retriever.names_fit(query, fact):
-                        fresh.append(fact)
-                        have.add(fact["fact_id"])
-                        by_meaning.add(fact["fact_id"])
-            for entity_id in sorted(self._store.mentioned_entity_ids(query)):
-                for fact in self._retriever.entity_facts(entity_id, min_trust=self._min_trust, limit=_ENTITY_FACTS * 3):
-                    if extra < _ENTITY_FACTS and fact["fact_id"] not in have and self._not_recent(key, fact, turn) \
-                            and self._recallable(fact):
-                        fresh.append(fact)
-                        have.add(fact["fact_id"])
-                        extra += 1
+            # Rescoring widens the first stage's pool so the cross-encoder sees several times the final need (a fact
+            # BM25 buried at 20-50 can be lifted to the top, RFC #9). The pool must reach at least rerank_top_k.
+            if self._rescorer:
+                width = max(_PREFETCH_CANDIDATES * _RERANK_WIDEN, int(self._rescorer.settings.top_k))
+            else:
+                width = _PREFETCH_CANDIDATES
+            candidates = self._retriever.search(query, min_trust=self._min_trust, limit=width, meaning=meaning)
+            # The fork: rerank on -> a single stream (block 3); off (rescorer None) -> the old path.
+            # Block 3: coverage admits the lexical, meaning/entity go through the same safety/dedup before the endpoint,
+            # ONE rerank ranks the union, top-5 strictly by rank; the window (rerank_window) and the weight are
+            # the only switches (point 6: override and the modes are gone; the rescorer exists
+            # for one mode only, and it goes through _unified_stream.
+            if self._rescorer is not None:
+                # Safety and de-dup BEFORE the endpoint can see them: a fact recall would refuse
+                # (_recall_problem: a credential, an instruction, hidden markup) or a fact injected within
+                # prefetch_repeat_turns is never sent out for scoring — rerank.py refuses a query holding a
+                # secret, the documents must be refused here for the same reason. Both checks are
+                # order-independent, so filtering here gives the same top-5 as filtering after the gate (the
+                # `fresh` re-check in _unified_stream stays as a backstop). ONLY on the rerank branch: the off path
+                # has no endpoint, and _recallable on ALL candidates would log a "fact #N is not recalled" warning
+                # about facts coverage would have dropped anyway — on main only the survivors were checked
+                # (maintainer 24:10, smaller; the outcome does not change, only the log is fixed).
+                candidates = [f for f in candidates
+                              if self._recallable(f) and self._not_recent(key, f, turn)]
+                fresh, by_meaning = self._unified_stream(query, meaning, candidates, key, turn)
+            else:
+                fresh, by_meaning = self._off_layout(query, meaning, key, turn, candidates)
             for fact in fresh:
                 self._remember(key, fact, turn)
             self._last_recall = len(fresh)
@@ -1523,6 +1632,153 @@ class HolographicMemoryProvider(MemoryProvider):
         except Exception as e:  # noqa: BLE001 - recall never takes the turn down; _recall_failed says why
             self._recall_failed(e)
             return ""
+
+    @staticmethod
+    def _sendable_docs(facts: list[dict]) -> tuple[list[int], list[str]]:
+        """Positions and texts for the endpoint: only facts that may be SENT pass (_sendable).
+        _recallable lets facts whose text looks secret through (OPENAI_API_KEY=..., Authorization: *** and recall
+        may show them — they never go to the endpoint (PR #10, point 1). The indexes answer to positions in
+        facts: the endpoint's answer maps back, the pool composition for recall does not change."""
+        idx = [i for i, f in enumerate(facts) if _sendable(f.get("content") or "")]
+        return idx, [facts[i].get("content") or "" for i in idx]
+
+    @staticmethod
+    def _rescored(ranked, send_idx: list[int]):
+        """The endpoint's answer (indexes into the send list) -> indexes into the original pool."""
+        return [(send_idx[i], score) for i, score in ranked if 0 <= i < len(send_idx)]
+
+    def _stream_extras(self, query: str, meaning, have: set[int], key: str, turn: int):
+        """Streams 2 (meaning) and 3 (entity) on top of what `have` already holds — ONE function for
+        the off path and for BOTH outcomes of _unified_stream (point 4(1) of the 10:34 review): the fallback must
+        exclude exactly those same five that off excludes, otherwise the sixth lexical fact the
+        entity stream would have added to off is lost when the reranker call fails.
+
+        Returns (meaning_facts, entity_facts, by_meaning); `have` is filled in."""
+        if self._retriever is None or self._store is None:
+            # Unreachable at recall (prefetch checks above): the line is for the types, so that
+            # the Optional fields narrow the way they narrow in prefetch. _embedding is NOT checked here:
+            # embeddings off is the normal case, and meaning is None with them off.
+            return [], [], set()
+        by_meaning: set[int] = set()
+        meaning_facts: list[dict] = []
+        # Stream 2: search by meaning — a paraphrase shares no words with the fact, so it enters on the
+        # embedding alone (standout margin, names_fit), at most embedding_prefetch_facts of them, marked
+        # so the model knows the match is looser.
+        if meaning is not None and self._embedding is not None and self._embedding.recall_facts:
+            for fact in self._retriever.by_meaning(meaning, exclude=have, min_trust=self._min_trust,
+                                                   limit=self._embedding.recall_facts + 3,
+                                                   margin=embeddings.RECALL_MARGIN,
+                                                   min_score=self._embedding.min_score):
+                if len(by_meaning) < self._embedding.recall_facts and self._not_recent(key, fact, turn) \
+                        and self._recallable(fact) and self._retriever.names_fit(query, fact):
+                    meaning_facts.append(fact)
+                    have.add(fact["fact_id"])
+                    by_meaning.add(fact["fact_id"])
+        # Stream 3: the top facts of entities the message names — no word overlap needed, but the same
+        # admissibility (safety, de-dup, prefetch_repeat_turns) as everything else, BEFORE the endpoint.
+        entity_facts: list[dict] = []
+        for entity_id in sorted(self._store.mentioned_entity_ids(query)):
+            for fact in self._retriever.entity_facts(entity_id, min_trust=self._min_trust,
+                                                     limit=_ENTITY_FACTS * 3):
+                if len(entity_facts) < _ENTITY_FACTS and fact["fact_id"] not in have \
+                        and self._not_recent(key, fact, turn) and self._recallable(fact):
+                    entity_facts.append(fact)
+                    have.add(fact["fact_id"])
+        return meaning_facts, entity_facts, by_meaning
+
+    def _unified_stream(self, query: str, meaning, candidates: list[dict], key: str,
+                        turn: int) -> tuple[list[dict], set[int]]:
+        """Block 3: one rerank over the union sample of the three streams → top-5 strictly by rank (the modes
+        reorder_before_gate / gate_reads_score).
+
+        - Stream 1 (lexical): coverage admits by words BEFORE the rank — membership is decided by the words, the rerank judges
+          order and the cut only (_bottom_cut). In gate mode this moves coverage before the window (the composition
+          is nearly the same: coverage does not look at rank) — measured by a probe.
+        - Stream 2 (meaning) and 3 (entity): the same safety/dedup check BEFORE the endpoint. They used to be
+          added AFTER the gate, bypassing both coverage and the rerank (provenance: the entity splice — 60% of
+          recall instances with no rank; the top-5 was "lexical first, streams thrown in").
+        - In the document list the streams stand BEFORE the lexical: scores() sends only the first top_k —
+          position in the request does not affect scoring, and this way the small streams are not cut off by the tail
+          of the wide pool.
+        - An empty/failed rerank → the old order (lexical first, streams thrown in), as in off.
+        """
+        rescorer = self._rescorer
+        assert rescorer is not None  # called only when rerank is on
+
+        # Stream 1: membership is decided by the words, before any rank.
+        lexical = self._retriever.relevant(query, candidates, self._min_coverage)
+        have = {f["fact_id"] for f in lexical}
+        # Streams 2 and 3 by the same function: here have = ALL the lexical (union disjoint by construction);
+        # when the endpoint fails the fallback recomputes them with have = only the first five — as in off
+        # (point 4(1) of the 10:34 review).
+        meaning_facts, entity_facts, by_meaning = self._stream_extras(query, meaning, have, key, turn)
+        # Union: disjoint by construction (each stream excluded what the previous one admitted).
+        union = meaning_facts + entity_facts + lexical
+        send_idx, docs = self._sendable_docs(union)  # secret screen (PR #10, point 1)
+        try:
+            ranked = rescorer.scores(query, docs) if docs else None
+            if ranked is not None:
+                ranked = self._rescored(ranked, send_idx)
+            if ranked is not None:
+                order = [i for i, _ in ranked if i < len(union)]
+                w = rescorer.settings.weight
+                if w > 0.0:
+                    # rerank_weight > 0: min-max-normalised cross-encoder score blended into the blend score —
+                    # the order is decided by both (order-only when weight is 0). The whole sample on one scale
+                    # (point 4(4) of the 10:34 review): the blend is built for EVERY pool member, see blend_union.
+                    blend_union(union, ranked, w)
+                else:
+                    # Documents beyond top_k were never sent (scores() sends the first top_k only): they keep
+                    # their blend order behind the ranked ones instead of being dropped.
+                    tail = [i for i in range(len(union)) if i not in set(order)]
+                    union = [union[i] for i in order + tail]
+                fresh = union
+                window = rescorer.settings.window
+                if w == 0.0 and window > 0.0:
+                    # rerank_window (δ): a cut of the LOWER tail after coverage and the reranker, before top-5 (point 6: the
+                    # margin veto is gone, the window remains). Sigmoid normalisation — so δ is the same for raw logits and [0,1].
+                    keep = _bottom_cut(rescorer.normalized(ranked), window)
+                    # Variant (a) is built into the window (maintainer 13:06): never cut below two scored —
+                    # no switch, no variants; (b) is removed along with rerank_window_named.
+                    keep = _window_keep(keep, len(ranked))
+                    # keep — positions in RANKED, while the tail of union (non-sendable facts that recall shows,
+                    # and the positions beyond top_k) is not in ranked. It must survive the window: the pool
+                    # composition for recall does not change (the _sendable_docs docstring). Without this every
+                    # successful call with rerank_window > 0 silently lost the tail, even when the window cut nothing
+                    # (maintainer 24:10, point 1: three proxy facts — off returns 3 lines, on returned 2).
+                    fresh = ([union[i] for i in keep] if keep else []) + union[len(ranked):]
+                return fresh[:_PREFETCH_FACTS], by_meaning
+        except Exception as exc:  # noqa: BLE001 - ANY exception in the stage acts like a failed call (point 3)
+            # Any exception raised by the stage (call, mapping, window — Codex caught a Thread.start()
+            # RuntimeError, the counter overflow came even earlier) used to go to the prefetch handler:
+            # the turn went WITHOUT facts, failures stayed 0, the endpoint was not paused. Now it counts as
+            # a failed call: pause + counter + last_status, and the block returns the off layout
+            # (maintainer 24:10, point 3; "on failure — only the old order", as the README promises).
+            rescorer.note_failure(f"rerank stage: {type(exc).__name__}: {exc}")
+        # A failed call, an empty pool OR an exception in the stage: exactly the off layout (point 4(1) of the
+        # 10:34 review), but WITHOUT candidates (point 3 of the 19:39 review): the fallback searches anew with the
+        # off limit of 15 — otherwise the widened pool (max(15×4, top_k)) and the missing "recent" filter give a
+        # different composition than off (candidates 1–15 shown, the target on the 17th: off empty, the old fallback returned five).
+        return self._off_layout(query, meaning, key, turn)
+
+    def _off_layout(self, query, meaning, key, turn, candidates: list[dict] | None = None) -> tuple[list[dict], set[int]]:
+        """The recall layout with rerank off — and the same one for the fallback of a failed rerank stage
+        (point 3 of the 19:39 review): the first 15 candidates through the coverage gate, then meaning/entity extras.
+
+        The fallback calls it WITHOUT candidates: a fresh search with the off limit, so the widened pool
+        (max(15×4, top_k)) never enters the block — off and the fallback must return one and the same
+        block (maintainer: "move the off branch of prefetch into one method and call it from both")."""
+        if candidates is None:
+            candidates = self._retriever.search(query, min_trust=self._min_trust,
+                                                limit=_PREFETCH_CANDIDATES, meaning=meaning)
+        gate = self._retriever.relevant(query, candidates, self._min_coverage)
+        fresh = [f for f in gate
+                 if self._not_recent(key, f, turn) and self._recallable(f)][:_PREFETCH_FACTS]
+        # Streams 2 and 3 with the same function as the _unified_stream fallback (point 4(1)): here
+        # have = only the five stored lexical facts.
+        meaning_facts, entity_facts, by_meaning = self._stream_extras(
+            query, meaning, {f["fact_id"] for f in fresh}, key, turn)
+        return fresh + meaning_facts + entity_facts, by_meaning
 
     def _recall_failed(self, exc: Exception) -> None:
         """Recall before a turn failed and the turn goes on without facts: a warning once per kind of failure (a
@@ -2077,6 +2333,24 @@ class HolographicMemoryProvider(MemoryProvider):
         results = self._retriever.search(a["query"], category=a.get("category"), min_trust=self._trust_floor(a),
                                          limit=limit, meaning=meaning)
         words = list(results)
+        # Rescoring, after search() and before the by_meaning / beyond_words splice (rerank.py): the pool is
+        # reordered, then the meaning splice fills what is left. Any failure keeps the current order.
+        if self._rescorer and results:
+            # Secret screen: search deliberately shows facts that recall does not inject (credentials
+            # included) — they never go to the endpoint (PR #10, point 1).
+            try:
+                send_idx, docs = self._sendable_docs(results)
+                indexes = self._rescorer.order(a["query"], docs) if docs else None
+                if indexes is not None:
+                    mapped = [send_idx[i] for i in indexes if 0 <= i < len(send_idx)]
+                    # What the reranker did not score (the tail when limit > top_k) keeps its place AFTER the ranked
+                    # ones (PR #10, point 4): before, rebuilding from ≤top_k indexes silently cut the tail.
+                    seen = set(mapped)
+                    reordered = [results[i] for i in mapped + [j for j in range(len(results)) if j not in seen]]
+                    # The new order is assigned ONLY after the list is built (point 4 of the 19:39 review).
+                    results, words = reordered, list(reordered)
+            except Exception as exc:  # noqa: BLE001 - as in _unified_stream: the results stay, the failure is counted
+                self._rescorer.note_failure(f"search: {type(exc).__name__}: {exc}")
         min_score = self._embedding.min_score if self._embedding is not None else None
         if meaning is not None and len(results) < limit:  # by meaning: after every fact that holds the words
             for fact in self._retriever.by_meaning(meaning, exclude={f["fact_id"] for f in results},
