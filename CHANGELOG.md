@@ -50,6 +50,13 @@
   ("pin" with a value after it; …)`, never the value. Before, an agent could not tell which word fired, reworded the
   fact and was refused again.
 
+### Internal
+
+- **The screen lives in `screen.py`.** What may not be stored, recalled or sent (credentials, instructions to the
+  assistant, the sentence rules auto_extract uses) moved out of `__init__.py` byte for byte; the provider imports
+  it and re-exports the names tests read from the package. Behaviour is unchanged. hermes-dreaming vendors part
+  of the screen, takes its copy from this file from now on.
+
 ### Docs
 
 - **Stored times are UTC, and the README says so** (issue #3, njwangfeng: a weekly window written in local time
