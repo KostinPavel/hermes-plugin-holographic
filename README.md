@@ -950,6 +950,11 @@ for commercial use. The plugin ships neither model.
   makes is a fact's vector when search by meaning is on.
 - With `auto_extract` on, user messages matching the preference/decision patterns are stored at session end.
 - `retrieval_count` counts how often a fact was handed to the model; nothing else is tracked.
+- For statistics, `logger.debug` stage traces name fact ids, never their text: `embed` — the fact vectors stored
+  after a turn, the facts the meaning stage admitted before a turn and the meaning matches a tool search returned;
+  `rescore` — the pool and the candidates the cross-encoder would score and its `#id=score` answer, or why no
+  made. Set `logging.level: DEBUG` in `config.yaml` to see them in `logs/agent.log`; at the normal level they are
+  not emitted, and there is no extra switch for them.
 - Each version keeps its source: platform, chat type, chat / thread / session id, the author of the turn (id and
   display name) and, from 0.15.0, its origin (said / confirmed / inferred). Chat names are not kept. Each confirmation
   keeps its time, session id and the person's id, no text. `forget` deletes the source and the confirmations with

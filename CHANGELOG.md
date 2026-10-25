@@ -1,9 +1,21 @@
 # Changelog
 
-## Unreleased
+## 0.18.3 — 2026-10-26
 
-A case form of a Russian name the store knows meets its other forms before the turn. With rerank off, recall changes
+A case form of a Russian name the store knows meets its other forms before the turn («Еве» finds «у Евы»), and
+the recall stages can be traced at debug level by fact id (PR #29, KostinPavel). With rerank off, recall changes
 only where a question holds such a form and the store holds the name.
+
+### Added
+
+- **Stage traces at debug level** — statistics over the pipeline, fact ids only, never fact text (README,
+  "Data and privacy"). `embed`: the fact vectors written after a turn, the facts the meaning stream admitted before
+  a turn, and the meaning matches a tool search returned. `rescore`: the pool and the candidates the cross-encoder
+  would score, and its `#id=score` answer — at both call sites (prefetch and `fact_store search`) — or why no call
+  was made (`skipped_single`, `skipped_secret`, `skipped_busy`, a failure). `fact_store search` now goes through
+  `Rescorer.scores()` instead of `order()`: the same indexes, plus the score the trace needs. Off at the normal
+  log level (`logging.level` in `config.yaml`): no new config key, and no work at that level — every trace line
+  sits behind an `isEnabledFor(DEBUG)` guard.
 
 ### Fixed
 
@@ -18,7 +30,7 @@ only where a question holds such a form and the store holds the name.
   `Word.keys`, the FTS index, the duplicate and conflict checks at write time or entity linking; words that are not
   names («ель» / «ели», «уха» / «ухо», «рой» / «рою») stay apart; a store that does not hold the name recalls as
   before; a Latin name matches as written. Measured with rerank and embeddings off on the Russian contrast set (30
-  questions, 45 of chit-chat), the household set (174 questions in three languages, 135 of chit-chat) and the
+  questions, 45 of chit-chat), the household set (210 questions in three languages, 135 of chit-chat) and the
   multilingual set (ru): hits, noise and confusion unchanged, no target lost; one household question («Во сколько
   начинается смена Оли в аптеке?») now brings two more facts about Olya's pharmacy, as its English and Chinese
   versions did.
