@@ -666,7 +666,7 @@ class HolographicMemoryProvider(MemoryProvider):
              "([0,1] answers, Cohere-style). A value outside the pair is a config problem naming this key, "
              "memory off — no silent fallback, no probe",
              "default": current("rerank_scale", "logit"), "choices": ["unit", "logit"]},
-            {"key": "rerank_url", "description": "Cohere-compatible rerank API (https; plain http only to "
+            {"key": "rerank_url", "description": "Cohere-shaped rerank API, no key sent (https; plain http only to "
              "localhost or a private address, e.g. llama-server --reranking)",
              "default": current("rerank_url", "http://127.0.0.1:8080/v1/rerank")},
             {"key": "rerank_model", "description": "Rerank model name (the endpoint's --alias)",
@@ -1063,7 +1063,7 @@ class HolographicMemoryProvider(MemoryProvider):
             # the turn went WITHOUT facts, failures stayed 0, the endpoint was not paused. Now it counts as
             # a failed call: pause + counter + last_status, and the block returns the off layout
             # (maintainer 24:10, point 3; "on failure — only the old order", as the README promises).
-            rescorer.note_failure(f"rerank stage: {type(exc).__name__}: {exc}")
+            rescorer.note_failure(f"rerank stage: {error_kind(exc)}")  # never the text: it may quote a fact
         # A failed call, an empty pool OR an exception in the stage: exactly the off layout (point 4(1) of the
         # 10:34 review), but WITHOUT candidates (point 3 of the 19:39 review): the fallback searches anew with the
         # off limit of 15 — otherwise the widened pool (max(15×4, top_k)) and the missing "recent" filter give a
@@ -1675,7 +1675,7 @@ class HolographicMemoryProvider(MemoryProvider):
                     # The new order is assigned ONLY after the list is built (point 4 of the 19:39 review).
                     results, words = reordered, list(reordered)
             except Exception as exc:  # noqa: BLE001 - as in _unified_stream: the results stay, the failure is counted
-                self._rescorer.note_failure(f"search: {type(exc).__name__}: {exc}")
+                self._rescorer.note_failure(f"search: {error_kind(exc)}")
         min_score = self._embedding.min_score if self._embedding is not None else None
         if meaning is not None and len(results) < limit:  # by meaning: after every fact that holds the words
             for fact in self._retriever.by_meaning(meaning, exclude={f["fact_id"] for f in results},

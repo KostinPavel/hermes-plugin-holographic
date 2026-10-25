@@ -882,7 +882,13 @@ off), so the reranker never adds a fact the words would not admit. It can still 
 cross-encoder is confidently wrong at the top, a fact the words admitted disappears instead of slipping places.
 The cut never drops below two scored candidates — that minimum is built into the window itself (review of
 2026-10-23), so a confidently wrong top cannot squeeze recall down to a single fact. Meaning- and entity-based
-facts compete in the same rank as the lexical pool. A failed call falls back to the pool's blend order.
+facts compete in the same rank as the lexical pool. A failed call gives exactly the recall of ``rerank: off``.
+
+Which servers work: it is tested against llama-server. Any server that answers the Cohere shape
+(``{"results": [{"index", "relevance_score"}]}``) without a key should work too. The client sends no key, so a
+cloud API that requires one (Cohere, Jina) refuses every call, and Text Embeddings Inference's own ``/rerank``
+answers a bare list, which is refused as malformed. Either way the endpoint is paused and recall stays as with
+rerank off.
 
 Other keys: ``rerank_top_k`` (40: how deep a pool the cross-encoder sees; the first stage's limit is widened to
 match), ``rerank_weight`` (0 = order-only, recommended; >0 = the min-max-normalised cross-encoder score blended into
@@ -890,7 +896,7 @@ the blend score; the window applies to order-only runs), ``rerank_timeout`` (3 s
 the 8 s the core gives a provider's prefetch: with ``embedding_timeout`` at its maximum 6 s the rerank
 timeout clamps to 1.5 s) and ``rerank_scale`` —
 the endpoint's score scale, set explicitly: ``logit`` (raw llama-server logits; the default, no probing) or
-``unit`` ([0,1], Cohere-style). Set ``unit`` for an endpoint that already returns [0, 1] (Cohere, TEI): on the
+``unit`` ([0,1], Cohere-style). Set ``unit`` for an endpoint whose scores are already in [0, 1]: on the
 default ``logit`` the sigmoid runs on scores that were normalised once already, the gaps shrink and the window
 keeps more than it should. A value outside that pair is a config problem that names the key and turns
 memory off for the session, like any other out-of-set value — never a silent fallback.

@@ -2,13 +2,15 @@
 de-facto standard; OpenAI has no rerank API at all) reorders the final candidate pool after the blend. No state of any
 kind — one synchronous HTTP call at recall time.
 
-The endpoint is served natively by llama-server (`--reranking --embedding --pooling rank`), TEI, vLLM, Infinity, Jina,
-Cohere and LiteLLM — one stdlib client covers the local and the cloud case.
+Tested against llama-server (`--reranking --embedding --pooling rank`). Any server that answers the Cohere shape
+(``{"results": [{"index", "relevance_score"}]}``) without a key should work; the client sends no key, so a cloud API
+that requires one (Cohere, Jina) refuses every call, and TEI's own ``/rerank`` answers a bare list, which is refused
+as malformed. Either way the endpoint is paused and recall keeps the off order.
 
 Guardrails (from RFC #9):
 - off by default (``rerank: false``); behaviour and scores exactly 0.13.4's when off;
 - a query holding a secret (``_secret_in``) → no call at all;
-- any failure leaves the list in its current order, one debug line of the error category, the endpoint goes to
+- any failure gives exactly the recall of rerank off, one log line of the error category, the endpoint goes to
   backoff 60 s doubling to 900 s (_PAUSE_FIRST / _PAUSE_MAX);
 - ``rerank_timeout`` defaults to 3.0 (issue #5: a slow local endpoint is the normal case; this is recall's only
   protection, there is no catch-up);
@@ -38,6 +40,7 @@ DEFAULT_TIMEOUT = 3.0  # seconds; 3.0, not 2.0: a slow local endpoint is the nor
 #: The embedding call and the rerank run back to back, so the sum of their clamps has to fit below
 #: it with margin (maintainer 24:10, point 4: defaults 3 + 3 fit, emb 6 + rerank 10 — no).
 _PREFETCH_BUDGET_S = 7.5
+_BUSY = object()  # _request: another caller's request is in flight and that caller still waits for it
 DEFAULT_WINDOW = 0.05  # rerank_window: the share of the tail below which the pool is cut (0 = cut nothing)
 
 
@@ -148,11 +151,9 @@ class Rescorer:
     """The endpoint: (query, documents) in, indexes in descending relevance order out. Shared by every store a
     provider opens; thread-safe. ``order`` returns None on any failure (the caller keeps the current order)."""
 
-    def __init__(self, settings: Settings, secret_check=None, environ=None):
-        import os
+    def __init__(self, settings: Settings, secret_check=None):
         self.settings = settings
         self._secret = secret_check  # callable(text) -> bool, injected to avoid a circular import
-        self._environ = os.environ if environ is None else environ
         self._url, self._local, self._refused = _endpoint(settings.url)
         if self._url is None:  # _endpoint refuses: keep "" so Request() never sees None
             self._url = ""
@@ -162,16 +163,20 @@ class Rescorer:
         self._epoch = 0
         self.calls = 0  # requests sent (stats, tests)
         self.failures = 0  # counted fallbacks: scores() returned None on a failure (diagnostics)
-        # The outcome of the last scores(): answered / failed: ... / skipped_single / skipped_secret / not_called.
+        # The outcome of the last scores(): answered / failed: ... / skipped_single / skipped_secret / skipped_busy /
+        # not_called.
         # Stamped into the runner lines; the run fails on failed (PR #10, 19:07 fix list).
         self.last_status = "not_called"
         # The live worker of the previous request (point 5 of the 24:10 checklist): after join(timeout) the thread
         # lives while the server is still sending the answer; with the pause expired the next call used to start a
         # SECOND request. The same guard as embeddings._abandoned/_reap_locked.
         self._worker: threading.Thread | None = None
+        # True while a caller still waits in join() for that worker: a second call then finds a request in flight, not
+        # an abandoned one, and must neither fail it nor pause the endpoint (independent review, 2026-10-25).
+        self._awaited = False
 
     def unavailable(self) -> str:
-        """Why the endpoint cannot be used at all (\"\" when it can): the address, the key."""
+        """Why the endpoint cannot be used at all (\"\" when it can): a refused address."""
         if self._refused:
             return self._refused
         return ""
@@ -233,6 +238,9 @@ class Rescorer:
                 "documents": [str(d)[:2000] for d in docs],
                 "top_n": limit}
         ranked = self._request(body)
+        if ranked is _BUSY:
+            self.last_status = "skipped_busy"
+            return None
         self.last_status = "answered" if ranked is not None else f"failed: {self._last_error or 'unknown'}"
         return ranked
 
@@ -277,6 +285,10 @@ class Rescorer:
         with self._lock:
             if self._paused_until > time.monotonic():
                 return None
+            if self._worker is not None and self._worker.is_alive() and self._awaited:
+                # Another caller's request is in flight and that caller still waits: not a failure. Failing it here
+                # bumped the epoch, so the first caller threw away its valid answer, and paused the endpoint.
+                return _BUSY
             if self._worker is not None and self._worker.is_alive():
                 # point 5: the earlier worker has not finished — the new request does NOT start, and that counts
                 # as a failure (the pause grows as with a timeout) until the thread finishes reading the answer.
@@ -287,6 +299,7 @@ class Rescorer:
                 # as a dead worker): Rescorer must be safe under concurrent calls on its own, not only because the
                 # provider's inputs happen to be serialised today.
                 self._worker = worker  # tracked while it lives (point 5)
+                self._awaited = True
                 noted = None
                 epoch = self._epoch
                 self.calls += 1
@@ -295,6 +308,8 @@ class Rescorer:
             self._log_failure(*noted)
             return None
         worker.join(timeout)
+        with self._lock:
+            self._awaited = False  # from here on a live worker is an abandoned one
         alive = worker.is_alive()
         error = box.get("error")
         timed_out = alive or isinstance(error, TimeoutError) or (
@@ -420,7 +435,7 @@ def _ranked(payload, count: int) -> list[tuple[int, float]]:
         if (isinstance(score, int) and abs(score) > 1e308) or not math.isfinite(score):
             raise ValueError("a relevance_score in the answer is not a finite number")
         ranked.append((index, float(score)))
-    # The answer's order is NOT trusted: llama-server, TEI and Cohere return it sorted, but nothing
+    # The answer's order is NOT trusted: llama-server and Cohere return it sorted, but nothing
     # stops an implementation from returning it shuffled — sorting by score (stable, ties keep the
     # server's order) closes the case (maintainer 24:10, smaller).
     ranked.sort(key=lambda pair: -pair[1])
