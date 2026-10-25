@@ -453,6 +453,9 @@ def test_slow_body_returns_at_rerank_timeout_not_at_the_body(tmp_path):
         assert r.status().startswith("paused"), "the endpoint pauses"
         if r._worker is not None:
             r._worker.join(3)  # the worker closes the connection itself and dies — no thread is left behind
+            # maintainer 25:10 on #26: the caller's return is checked above, the worker's END is not —
+            # join() alone swallows a worker that outlives it (tools/issue26_worker_lifetime.py)
+            assert not r._worker.is_alive(), "the worker must die with its own deadline, not linger past join(3)"
         p.shutdown()
     finally:
         server.shutdown()
