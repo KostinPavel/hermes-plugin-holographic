@@ -1,0 +1,3 @@
+# Плагин хранит .py в LF (политика upstream); *.py eol=lf не даёт autocrlf↵
+# подмешать CRLF в блоб, как это случилось с rerank.py в 1175978.
+*.py text eol=lf
