@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **The keyword limits say what they did** (issue #23, Praefectus35). At most 12 distinct keywords of up to 40
+  characters are kept; a longer one was dropped and the 13th on were cut without a word, so an `update` with
+  more than 12 quietly lost some. `add`, `change` and `update` now return the `keywords` kept and, when some were
+  not, `keywords_dropped` with their positions in the list given and why (`2 not kept: #3 longer than 40
+  characters; #15 past the limit of 12`), never their text. An `add` of a text that is already stored keeps
+  that fact's keywords and now says so (`keywords_not_set`, with the `update` that sets them). The schema names
+  the limits.
+
 ## 0.18.0 — 2026-10-25
 
 An optional second stage of recall: a cross-encoder can reorder the candidates before a turn (`rerank: on`, off by

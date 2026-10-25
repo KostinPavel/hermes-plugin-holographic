@@ -123,7 +123,8 @@ FACT_STORE_SCHEMA = {
                                         "that are NOT in its text: synonyms, words of another root, broader terms, and "
                                         "the same in the other languages the user writes in (fact 'Mom's birthday is "
                                         "May 3' -> birth date, anniversary, день рождения, cumpleaños). Used only to "
-                                        "find the fact; never shown as part of it. 'update' replaces the fact's "
+                                        "find the fact; never shown as part of it. At most 12, each up to 40 "
+                                        "characters; the result lists those kept. 'update' replaces the fact's "
                                         "keywords."},
             "fact_id": {"type": "integer", "description": "Fact ID for update / change / end / correct / revert / forget / "
                                                           "history."},
@@ -246,6 +247,33 @@ def _keywords(value) -> list[str]:
         if word and len(word) <= _MAX_KEYWORD_CHARS and word.casefold() not in {o.casefold() for o in out}:
             out.append(word)
     return out[:_MAX_KEYWORDS]
+
+
+def _keyword_report(value) -> dict:
+    """What add / change / update kept of the keywords given, for the result (issue #23: the limits were silent): the
+    kept list and, when some were not kept, their positions in the list given and why. Never their text: a keyword
+    too long to keep was never screened."""
+    if value is None:
+        return {}
+    items = value if isinstance(value, list) else str(value).split(",")
+    too_long, past_limit, seen = [], [], set()
+    for position, item in enumerate(items, 1):
+        word = " ".join(item.split()).strip(" ,;") if isinstance(item, str) else ""
+        if not word:
+            continue
+        if len(word) > _MAX_KEYWORD_CHARS:
+            too_long.append(position)
+        elif word.casefold() not in seen:  # a repeat is kept once: nothing of it is lost
+            seen.add(word.casefold())
+            if len(seen) > _MAX_KEYWORDS:
+                past_limit.append(position)
+    report: dict = {"keywords": _keywords(value)}
+    why = [f"{', '.join(f'#{p}' for p in where)} {what}" for where, what in (
+        (too_long, f"longer than {_MAX_KEYWORD_CHARS} characters"), (past_limit, f"past the limit of {_MAX_KEYWORDS}"))
+        if where]
+    if why:
+        report["keywords_dropped"] = f"{len(too_long) + len(past_limit)} not kept: " + "; ".join(why)
+    return report
 
 
 def _split_tags(stored: str | None) -> tuple[str, list[str]]:
@@ -1454,6 +1482,11 @@ class HolographicMemoryProvider(MemoryProvider):
                                                        trust=self._store.start_trust(origin),
                                                        source=self._source("tool", origin=origin))
         result: dict = {"fact_id": fact_id, "status": "added" if created else "exists"}
+        if created:
+            result.update(_keyword_report(a.get("keywords")))
+        elif a.get("keywords") is not None:  # the existing fact keeps its keywords
+            result["keywords_not_set"] = (f"fact #{fact_id} already holds this text and keeps its keywords; "
+                                          f"update {{fact_id: {fact_id}, keywords}} replaces them")
         # The person said it again in a later session: a confirmation (0.15.0). Not the session that stored it: the
         # agent adding the same sentence twice in one conversation is not the person saying it twice.
         if not created and origin in ("said", "confirmed") \
@@ -1558,9 +1591,10 @@ class HolographicMemoryProvider(MemoryProvider):
                           _keywords(a.get("keywords")))
         if stored is None and a.get("tags") is None and a.get("keywords") is None:
             tags = None  # an ended fact resumes with its last version's tags
-        return self._fact_call(a, lambda fact_id: json.dumps(self._store.change_fact(
+        return self._fact_call(a, lambda fact_id: json.dumps({**self._store.change_fact(
             fact_id, a["content"], valid_from=a.get("valid_from"), category=a.get("category"), tags=tags,
-            entities=self._entities(a), source=self._source("tool", origin=a.get("origin") or None))), missing)
+            entities=self._entities(a), source=self._source("tool", origin=a.get("origin") or None)),
+            **_keyword_report(a.get("keywords"))}), missing)
 
     def _correct(self, a: dict) -> str:
         if a.get("content") is None and not a.get("valid_from"):
@@ -1685,10 +1719,11 @@ class HolographicMemoryProvider(MemoryProvider):
         only_keywords = a.get("keywords") is not None and all(
             a.get(k) is None for k in ("content", "tags", "category", "trust_delta", "entities"))
         # A new text through update is a correction (0.7.0 prompts): the old text stays as a corrected version.
-        return json.dumps({"updated": self._store.update_fact(
+        updated = self._store.update_fact(
             int(a["fact_id"]), content=a.get("content"), trust_delta=float(a["trust_delta"]) if "trust_delta" in a else None,
             tags=tags, category=a.get("category"), entities=self._entities(a), touch=not only_keywords,
-            source=self._source("tool", origin=a.get("origin") or None))})
+            source=self._source("tool", origin=a.get("origin") or None))
+        return json.dumps({"updated": updated, **(_keyword_report(a.get("keywords")) if updated else {})})
 
     def _enrich(self, a: dict) -> str:
         """Facts without keywords, the most recalled first: what the agent (or a nightly job) should give keywords."""
