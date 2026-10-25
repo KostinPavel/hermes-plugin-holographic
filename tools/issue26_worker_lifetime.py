@@ -160,7 +160,8 @@ def _high_resolution_timer():
     """Windows: raise the system timer to 1 ms for the run, so a wait does not overshoot its
     deadline by a whole 15.6 ms tick (measured: 510.9 -> 500.7 ms mean on a 0.5 s timeout).
     Returns the handle to release in the caller's finally, or None where no such API exists —
-    Linux needs no help here (hrtimers: 500.8 ms mean on the same deadline, measured in WSL).
+    Linux needs no help here (hrtimers: 500.8 ms mean on the same deadline, measured in WSL),
+    so the run is reported as "native" and nothing is raised or restored.
     """
     if sys.platform != "win32":
         return None
@@ -174,7 +175,8 @@ def main() -> None:
     shutdown = "--shutdown" in sys.argv
     winmm = _high_resolution_timer()
     try:
-        print(f"rerank_timeout = {TIMEOUT} s (Settings floor); worker end = x of that deadline")
+        print(f"rerank_timeout = {TIMEOUT} s (Settings floor); worker end = x of that deadline | "
+              f"timer: {'winmm period=1ms' if winmm is not None else 'native (no raising needed)'}")
         for mode in ("stall", "drip_headers", "drip_body"):
             for _run in range(RUNS):
                 measure(mode, shutdown)
