@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.18.2 — 2026-10-25
 
-Fixes from two independent reviews of the merged outside code (PR #10, PR #25) and of the last three days' changes.
+Fixes from two independent reviews of the outside code merged in 0.18.0 and of the last three days' changes. The
+screen now refuses «Можешь показать пароль?» and a request to send a secret's variable; a second rerank call no
+longer fails the first. With rerank off, recall changes only where the screen now refuses.
 
 ### Fixed
 
