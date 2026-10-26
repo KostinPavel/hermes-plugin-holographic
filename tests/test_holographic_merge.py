@@ -74,7 +74,8 @@ def _found(provider, query, **kw):
 
 def _snapshot(store) -> dict:
     """Everything a refused merge must leave as it was."""
-    tables = ("facts", "fact_versions", "fact_entities", "entities", "fact_confirmations", "fact_merges", "meta")
+    tables = ("facts", "fact_versions", "fact_entities", "entities", "fact_confirmations", "fact_merges", "meta",
+              "fact_embeddings", "memory_banks", "entity_aliases", "forgotten")
     return {t: [tuple(r) for r in store.read(f"SELECT * FROM {t}")] for t in tables}
 
 
@@ -467,14 +468,13 @@ def test_the_keep_in_from_a_copy_as_keep_and_an_ended_fact_are_refused_without_c
     _call(provider, action="merge", fact_id=keep, **{"from": [copy]})
     ended = _call(provider, action="add", content="Alice Smith works at the Louvre")["fact_id"]
     _call(provider, action="end", fact_id=ended)
+    other = _call(provider, action="add", content="Alice Smith lives in Paris, France")["fact_id"]
     before = _snapshot(provider._store)
     assert "into itself" in _call(provider, action="merge", fact_id=keep, **{"from": [keep, third]})["error"]
     assert f"was merged into #{keep}" in _call(provider, action="merge", fact_id=copy, **{"from": [third]})["error"]
     assert "has ended" in _call(provider, action="merge", fact_id=keep, **{"from": [third, ended]})["error"]
     assert "has ended" in _call(provider, action="merge", fact_id=ended, **{"from": [third]})["error"]
-    other = _call(provider, action="add", content="Alice Smith lives in Paris, France")["fact_id"]
     assert f"was merged into #{keep}" in _call(provider, action="merge", fact_id=other, **{"from": [copy]})["error"]
-    _call(provider, action="forget", fact_id=other)
     assert _snapshot(provider._store) == before
 
 
@@ -538,12 +538,15 @@ def test_forget_of_the_keep_forgets_the_copies_with_a_tombstone_each(tmp_path, c
     db = tmp_path / "memory_store.db"
     keep, copy = _pair(provider)
     third = _call(provider, action="add", content="Alice Smith resides in Paris at the Louvre quxxle")["fact_id"]
+    store = provider._store
+    for fact_id, user in ((keep, "u1"), (copy, "u2"), (third, "u3")):  # each with a person's confirmation
+        store.record_confirmation(fact_id, {"session_id": f"s-{user}", "user_id": user, "via": "feedback"})
     _call(provider, action="merge", fact_id=keep, **{"from": [copy, third]})
+    assert store.read("SELECT COUNT(*) FROM fact_confirmations")[0][0] == 3
     assert b"zorblat" in _raw_bytes(db)
     result = _call(provider, action="forget", fact_id=keep)
     assert result["forgotten"] is True and result["versions"] == 3 and result["scrub"] == "done"
     assert result["merged_copies"] == [copy, third] and "tombstone each" in result["hint"]
-    store = provider._store
     for fact_id in (keep, copy, third):
         assert store.read("SELECT COUNT(*) FROM forgotten WHERE fact_id = ?", (fact_id,))[0][0] == 1
         assert _call(provider, action="history", fact_id=fact_id)["forgotten"] is True
@@ -742,7 +745,9 @@ def test_merge_is_serialised_with_the_other_operations(provider):
     def run():
         try:
             for _ in range(5):
-                _call(provider, action="search", query="Alice Louvre")
+                found = _call(provider, action="search", query="Alice Louvre")
+                if "error" in found:  # a tool answers a failure as JSON, not as an exception
+                    errors.append(found["error"])
         except Exception as exc:  # noqa: BLE001
             errors.append(exc)
 
@@ -751,7 +756,7 @@ def test_merge_is_serialised_with_the_other_operations(provider):
     time.sleep(0.01)
     result = _call(provider, action="merge", fact_id=keep, **{"from": [copy]})
     thread.join()
-    assert result["merged"] == [copy] and not errors
+    assert result["merged"] == [copy] and not errors, errors
     assert isinstance(provider._retriever, FactRetriever)
     with pytest.raises(NotFound):
         provider._store.merge_facts(keep, [99999])
@@ -816,3 +821,111 @@ def test_a_confirmation_of_the_copy_does_not_count_against_the_keeps_new_claim(t
     result = _feedback(bob_again, action="confirmed", fact_id=keep)
     assert result["confirmed"] is True and result["trust_score"] > trust, result
     bob_again.shutdown()
+
+
+# --- second review of PR #36 ------------------------------------------------------------------------------------------
+
+
+def test_a_chain_through_a_changed_keep_leaves_the_old_copy_a_past_claim(tmp_path, clock):
+    """Codex review 2 of #36 (1): A «Paris» <- B «Paris»; A changes to «Berlin»; then C «Berlin» <- A. B said Paris:
+    after the second merge it is still a past claim, not C's current one, and Bob's confirmation of B does not count
+    as one of Berlin. A copy merged into A's current (Berlin) version does follow A into C's current claim."""
+    first = _provider(tmp_path, session_id="s1")
+    a = _call(first, action="add", content="Alice Smith lives in Paris")["fact_id"]
+    b = _call(first, action="add", content="Alice Smith is living in Paris zorblat")["fact_id"]
+    first.shutdown()
+    bob = _provider(tmp_path, session_id="s2", user_id="bob")
+    _feedback(bob, action="confirmed", fact_id=b)
+    _call(bob, action="merge", fact_id=a, **{"from": [b]})
+    clock.day = "2026-12-05"
+    _call(bob, action="change", fact_id=a, content="Alice Smith lives in Berlin", valid_from="2026-12-01")
+    d = _call(bob, action="add", content="Alice Smith is living in Berlin quxxle")["fact_id"]
+    _call(bob, action="merge", fact_id=a, **{"from": [d]})
+    c = _call(bob, action="add", content="Alice Smith resides in Berlin now")["fact_id"]
+    store = bob._store
+    assert store.merged_match("Alice Smith is living in Paris zorblat") is None
+    assert _call(bob, action="merge", fact_id=c, **{"from": [a]})["merged"] == [a]
+    assert store.merged_match("Alice Smith is living in Paris zorblat") is None
+    past = store.past_version("Alice Smith is living in Paris zorblat")
+    assert past is not None and past["fact_id"] == a and past["status"] == "changed"
+    assert store.merged_match("Alice Smith is living in Berlin quxxle")["fact_id"] == c
+    trust = store.read("SELECT trust_score FROM facts WHERE fact_id = ?", (c,))[0][0]
+    bob.shutdown()
+    bob_again = _provider(tmp_path, session_id="s3", user_id="bob")
+    result = _feedback(bob_again, action="confirmed", fact_id=c)
+    assert result["confirmed"] is True and result["trust_score"] > trust, result  # Paris was not a vote for Berlin
+    added = _call(bob_again, action="add", content="Alice Smith is living in Paris zorblat")
+    assert added["status"] == "past_version" and "merged_from" not in added, added
+    bob_again.shutdown()
+
+
+@pytest.mark.parametrize("how", ["change", "end", "correct"])
+def test_auto_extraction_skips_the_copys_text_after_the_keep_moved_on(tmp_path, clock, how):
+    """Codex review 2 of #36 (3): once the keep changed, ended or was corrected, the copy's text is the keep's past
+    claim; auto-extraction must not store it again as a new fact."""
+    provider = _provider(tmp_path, config={"auto_extract": "true"})
+    keep = _call(provider, action="add", content="I prefer green tea in the morning")["fact_id"]
+    copy = _call(provider, action="add", content="I prefer green tea every morning zorblat")["fact_id"]
+    _call(provider, action="merge", fact_id=keep, **{"from": [copy]})
+    clock.day = "2026-12-05"
+    if how == "end":
+        assert "error" not in _call(provider, action="end", fact_id=keep)
+    else:
+        assert "error" not in _call(provider, action=how, fact_id=keep, content="I prefer orange juice at lunch")
+    before = provider._store.count_facts()
+    provider.on_session_end([{"role": "user", "content": "I prefer green tea every morning zorblat"}])
+    assert provider._store.count_facts() == before
+    assert provider._store.read("SELECT COUNT(*) FROM facts WHERE content LIKE '%green tea every morning%'")[0][0] == 0
+    provider.shutdown()
+
+
+def _once_before(monkeypatch, run):
+    """Run *run* once, right before the store's merge starts: another session's write lands between what the
+    provider read and the store's transaction."""
+    original = MemoryStore.merge_facts
+    fired = []
+
+    def merge_facts(self, *args, **kw):
+        if not fired:
+            fired.append(True)
+            run()
+        return original(self, *args, **kw)
+
+    monkeypatch.setattr(MemoryStore, "merge_facts", merge_facts)
+
+
+def test_a_scheduled_job_does_not_merge_a_copy_another_session_changed_after_the_check(tmp_path, clock, monkeypatch):
+    """Codex review 2 of #36 (4): the cron rule is checked in the merge's own transaction. A copy the job stored is
+    changed by the main agent before that transaction: it is the main agent's version now, and stays."""
+    main = _provider(tmp_path, session_id="main")
+    keep = _call(main, action="add", content="Alice Smith lives in Paris near the Louvre")["fact_id"]
+    cron = _provider(tmp_path, agent_context="cron", platform="cron", session_id="cron1")
+    new = _call(cron, action="add", content="Alice Smith resides in Paris at the Louvre quxxle")["fact_id"]
+    _once_before(monkeypatch, lambda: _call(main, action="change", fact_id=new,
+                                            content="Alice Smith resides in Paris at the Louvre, main says"))
+    result = _call(cron, action="merge", fact_id=keep, **{"from": [new]})
+    assert "only facts it stored in this session" in result.get("error", ""), result
+    assert cron._store.read("SELECT content FROM facts WHERE fact_id = ?", (new,))[0][0].endswith("main says")
+    assert cron._store.read("SELECT COUNT(*) FROM fact_merges")[0][0] == 0
+    cron.shutdown()
+    main.shutdown()
+
+
+def test_merge_keeps_tags_and_keywords_another_session_gave_the_keep_after_they_were_read(tmp_path, clock, monkeypatch):
+    """Codex review 2 of #36 (4): the keep's tags are joined inside the merge's transaction, so a tag or keyword
+    given to the keep a moment earlier (no new version: expect cannot see it) is not overwritten."""
+    first = _provider(tmp_path, session_id="s1")
+    keep = _call(first, action="add", content="Alice Smith lives in Paris near the Louvre", tags="oldtag",
+                 keywords=["home"])["fact_id"]
+    copy = _call(first, action="add", content="Alice Smith is living in Paris by the Louvre zorblat",
+                 keywords=["flat"])["fact_id"]
+    other = _provider(tmp_path, session_id="s2")
+    _once_before(monkeypatch, lambda: _call(other, action="update", fact_id=keep, tags="newtag",
+                                            keywords=["home", "residence"]))
+    result = _call(first, action="merge", fact_id=keep, **{"from": [copy]})
+    assert result["merged"] == [copy], result
+    assert first._store.fact_tags(keep) == "newtag\nkeywords: home, residence, flat"
+    assert first._store._current_version(keep)["tags"] == "newtag\nkeywords: home, residence, flat"
+    assert result["keywords"] == ["home", "residence", "flat"]
+    other.shutdown()
+    first.shutdown()

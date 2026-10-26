@@ -111,6 +111,7 @@ CREATE INDEX IF NOT EXISTS idx_merges_into ON fact_merges(into_fact_id);
 HISTORY_SCHEMA_VERSION = 2
 _HISTORY_SCHEMA_BASE = 1  # what a file without merges needs
 _MERGE_MAX = 20  # copies one merge takes
+_ERASE_BATCH = 400  # ids per pass of _erase: twice that many parameters stay under SQLite's old limit of 999
 # Who stood behind a version (0.15.0): the person said it, the person confirmed the agent's conclusion, or the agent
 # concluded it. No value: not known (everything stored before 0.15.0, mirrored memory entries).
 ORIGINS = ("said", "confirmed", "inferred")
@@ -144,6 +145,15 @@ class ChangedSince(ValueError):
     def __init__(self, current: dict):
         super().__init__("changed_since: " + ", ".join(f"#{f} is at version id {v}" for f, v in current.items()))
         self.current = current
+
+
+class NotOwned(ValueError):
+    """A merge limited to one session's facts (a scheduled job, cron_writes): the current version of each fact in
+    *ids* was not stored by that session. Checked inside the merge's transaction; nothing was written."""
+
+    def __init__(self, ids):
+        self.ids = [int(i) for i in ids]
+        super().__init__("not stored in this session: " + ", ".join(f"#{i}" for i in self.ids))
 
 
 def normalize(text: str) -> str:
@@ -296,7 +306,9 @@ class HistoryMixin:
             "AND NOT EXISTS (SELECT 1 FROM facts f WHERE f.fact_id = v.fact_id)")]
         for fact_id in gone:  # an older `remove` or `supersedes`: the user wanted it gone, history included
             self._erase([fact_id, *self._merge_group(fact_id)])  # with the facts merged into it (0.19.0)
-        if gone or self._reconcile_merges():
+        # Always, not only when nothing above was gone: both kinds of deletion can wait for the same open (review 2)
+        cascaded = self._reconcile_merges()
+        if gone or cascaded:
             self._set_meta("scrub_pending", "1")
 
     def _reconcile_merges(self) -> bool:
@@ -332,16 +344,10 @@ class HistoryMixin:
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'fact_merges'"))
         return self._entry["merges"]
 
-    def _merge_group(self, keep: int, current_claim: bool = False) -> list[int]:
-        """The ids merged into *keep* (chains are rebound to the root, so one level is the whole group); with
-        *current_claim*, only those merged into the keep's current version: after a change of the keep a copy's
-        confirmations were of the old claim, as the keep's own were (change clears those)."""
+    def _merge_group(self, keep: int) -> list[int]:
+        """The ids merged into *keep* (chains are rebound to the root, so one level is the whole group)."""
         if not self._merges_ready():
             return []
-        if current_claim:
-            return [r[0] for r in self._conn.execute(
-                "SELECT m.from_fact_id FROM fact_merges m JOIN fact_versions k ON k.version_id = m.into_version_id "
-                "WHERE m.into_fact_id = ? AND k.status = 'current' ORDER BY m.from_fact_id", (keep,))]
         return [r[0] for r in self._conn.execute(
             "SELECT from_fact_id FROM fact_merges WHERE into_fact_id = ? ORDER BY from_fact_id", (keep,))]
 
@@ -649,6 +655,8 @@ class HistoryMixin:
         ids = [int(fact_ids)] if isinstance(fact_ids, int) else [int(i) for i in fact_ids]
         if not ids:
             return 0
+        if len(ids) > _ERASE_BATCH:  # a large group: within SQLite's bound-parameter limit (one transaction still)
+            return sum(self._erase(ids[i:i + _ERASE_BATCH]) for i in range(0, len(ids), _ERASE_BATCH))
         marks = ",".join("?" * len(ids))
         texts: dict[int, list[str]] = {i: [] for i in ids}
         for r in self._conn.execute(f"SELECT fact_id, content FROM fact_versions WHERE fact_id IN ({marks})", ids):
@@ -674,6 +682,9 @@ class HistoryMixin:
         versions = self._write(f"DELETE FROM fact_versions WHERE fact_id IN ({marks})", ids).rowcount
         if self._entry.get("migrated"):  # the row may be gone already (another writer): its vector goes regardless
             self._write(f"DELETE FROM fact_embeddings WHERE fact_id IN ({marks})", ids)
+        # Also during the migration (the cascade of _reconcile_merges runs there, after the orphan sweep): who
+        # confirmed a forgotten fact goes with it (review 2 of #36)
+        if self._confirmations_ready():
             self._write(f"DELETE FROM fact_confirmations WHERE fact_id IN ({marks})", ids)
         if self._merges_ready():  # as a copy, and as a keep (its copies are in *ids* when the caller forgets it)
             self._write(f"DELETE FROM fact_merges WHERE from_fact_id IN ({marks}) OR into_fact_id IN ({marks})",
@@ -695,7 +706,8 @@ class HistoryMixin:
 
     # -- merge (0.19.0) --------------------------------------------------------------------------------------------
 
-    def merge_facts(self, keep: int, from_ids, *, tags: str | None = None, expect: dict | None = None) -> dict:
+    def merge_facts(self, keep: int, from_ids, *, tags=None, expect: dict | None = None,
+                    session_only: str | None = None) -> dict:
         """Two or more current facts say the same thing: the others (*from_ids*) become part of *keep*. Each copy's
         current version is closed as `merged` (valid time untouched; as_of clips it at the merge date), a fact_merges
         row says where it went, its entity links move to keep, its row leaves the current projection (with its FTS
@@ -704,7 +716,12 @@ class HistoryMixin:
         union), origin and category untouched. Copies merged earlier into one of the *from_ids* are rebound to
         keep (no chains, no cycles). One transaction: an error on any copy leaves nothing written. *expect*
         ({fact_id: version_id}): the current version of each named participant must be that one (ChangedSince
-        otherwise). The same ids again (all already part of keep) is a success without changes."""
+        otherwise). The same ids again (all already part of keep) is a success without changes. *session_only*: every
+        copy's current version must have been stored by that session (NotOwned otherwise: a scheduled job). *tags* may
+        be a function (keep's tags, [each copy's tags]) -> the keep's new tags or None: it runs inside the transaction,
+        after reconciliation, so a tag or keyword another writer gave keep a moment earlier is part of what it joins.
+        Copies merged into keep's current version follow keep's new current one; copies merged into an earlier
+        version of the fact merged now keep that link (they said its claim of then: past_version, review 2)."""
         keep = int(keep)
         ids = [int(i) for i in (from_ids or ())]
         if not ids:
@@ -739,6 +756,14 @@ class HistoryMixin:
                     raise ValueError(f"fact #{fact_id} was merged into #{target['into_fact_id']} already; forget it "
                                      "there, or merge that fact")
                 self._refuse_absent(fact_id, "merge")
+            if session_only is not None and copies:
+                sources = self.current_sources([r["fact_id"] for r in copies])
+                foreign = [int(r["fact_id"]) for r in copies
+                           if (sources.get(int(r["fact_id"])) or {}).get("session_id") != session_only]
+                if foreign:
+                    raise NotOwned(foreign)
+            if callable(tags):  # read here, in the transaction: what is there now, not what the caller read before
+                tags = tags(fact["tags"] or "", [r["tags"] or "" for r in copies])
             versions = {int(r["fact_id"]): self._current_version(r["fact_id"]) for r in (fact, *copies)}
             if expect:
                 seen = {int(f): (None if v is None else int(v)) for f, v in expect.items()}
@@ -753,8 +778,14 @@ class HistoryMixin:
                         "merged_confirmations": self._merged_confirmations(keep)}
             now = self._now()
             marks = ",".join("?" * len(copies))
-            self._write(f"UPDATE fact_merges SET into_fact_id = ?, into_version_id = ? WHERE into_fact_id IN ({marks})",
-                        (keep, int(versions[keep]["version_id"]), *[r["fact_id"] for r in copies]))
+            # Facts merged earlier into a copy now belong to keep. Those merged into the copy's current version said
+            # its current claim, which is keep's now; those merged into an earlier version (the copy changed since)
+            # said a past claim and keep pointing at it — rebound, they would confirm keep's claim by old words.
+            heads = [int(versions[int(r["fact_id"])]["version_id"]) for r in copies if versions[int(r["fact_id"])]]
+            self._write(f"UPDATE fact_merges SET into_fact_id = ?, into_version_id = CASE WHEN into_version_id IN "
+                        f"({','.join('?' * len(heads))}) THEN ? ELSE into_version_id END "
+                        f"WHERE into_fact_id IN ({marks})",
+                        (keep, *heads, int(versions[keep]["version_id"]), *[r["fact_id"] for r in copies]))
             retrieval = helpful = 0
             moved: list[int] = []  # the copies' names, to be keep's
             for row in copies:
@@ -810,11 +841,10 @@ class HistoryMixin:
 
     def _merged_confirmations(self, keep: int) -> int:
         """How many confirmations the copies merged into *keep* hold (they stay under the copies' ids)."""
-        copies = self._merge_group(keep)
-        if not copies or not self._confirmations_ready():
+        if not self._merges_ready() or not self._confirmations_ready():
             return 0
-        return int(self._one(f"SELECT COUNT(*) FROM fact_confirmations WHERE fact_id IN "
-                             f"({','.join('?' * len(copies))})", copies)[0])
+        return int(self._one("SELECT COUNT(*) FROM fact_confirmations WHERE fact_id IN (SELECT from_fact_id FROM "
+                             "fact_merges WHERE into_fact_id = ?)", (keep,))[0])
 
     def _merged_head(self, content: str, fact_id: int | None = None):
         """{fact_id} of the current fact a copy that said exactly *content* was merged into (a row with fact_id), or
@@ -887,10 +917,10 @@ class HistoryMixin:
                         ((text or "").strip(), *statuses))
         if row:
             return dict(row[0])
-        if statuses != CLOSED or not self._merges_ready():
+        if not self._merges_ready():
             return None
-        # The last text of a merged copy whose keep has moved on (changed or ended since the merge): it said the keep's
-        # claim of then, so it is that version of the keep (0.19.0).
+        # The last text of a merged copy whose keep has moved on (its version at the merge closed with one of
+        # *statuses*): it said the keep's claim of then, so it is that version of the keep (0.19.0).
         row = self.read(f"SELECT k.fact_id, k.seq, k.status, k.valid_to, k.valid_to_exact, "
                         f"EXISTS (SELECT 1 FROM facts f WHERE f.fact_id = k.fact_id) AS is_current FROM fact_versions v "
                         f"JOIN fact_merges m ON m.from_fact_id = v.fact_id JOIN fact_versions k ON k.version_id = "
@@ -921,10 +951,8 @@ class HistoryMixin:
             out["merged_at"] = target["merged_at"]
         copies = self._merge_group(fact_id)
         if copies:  # a keep: the histories of the facts merged into it, under their own ids
-            marks = ",".join("?" * len(copies))
-            merged_rows = self.read(f"SELECT m.merged_at, v.* FROM fact_merges m JOIN fact_versions v ON v.fact_id = "
-                                    f"m.from_fact_id WHERE m.into_fact_id = ? AND v.fact_id IN ({marks}) "
-                                    "ORDER BY v.fact_id, v.seq", (fact_id, *copies))
+            merged_rows = self.read("SELECT m.merged_at, v.* FROM fact_merges m JOIN fact_versions v ON v.fact_id = "
+                                    "m.from_fact_id WHERE m.into_fact_id = ? ORDER BY v.fact_id, v.seq", (fact_id,))
             by_copy: dict[int, list] = {}
             for r in merged_rows:
                 by_copy.setdefault(int(r["fact_id"]), []).append(r)
@@ -1108,15 +1136,20 @@ class HistoryMixin:
             row = self._one("SELECT trust_score FROM facts WHERE fact_id = ?", (fact_id,))
             if row is None:
                 raise NotFound(f"fact_id {fact_id} not found")
-            # The group (0.19.0): a person who confirmed a copy before it was merged in has confirmed this claim
-            group = [fact_id, *self._merge_group(fact_id, current_claim=True)]
-            marks = ",".join("?" * len(group))
-            again = bool(self._one(f"SELECT 1 FROM fact_confirmations WHERE fact_id IN ({marks}) AND session_id = ?",
-                                   (*group, session)))
+            # The group (0.19.0): a person who confirmed a copy before it was merged in has confirmed this claim —
+            # only copies merged into the keep's current version: after a change of the keep a copy's confirmations
+            # were of the old claim, as the keep's own were (change clears those)
+            group, of = "fact_id = ?", [fact_id]
+            if self._merges_ready():  # a subquery, not a list: a group has no size limit
+                group = ("(fact_id = ? OR fact_id IN (SELECT m.from_fact_id FROM fact_merges m JOIN fact_versions k ON "
+                         "k.version_id = m.into_version_id WHERE m.into_fact_id = ? AND k.status = 'current'))")
+                of = [fact_id, fact_id]
+            again = bool(self._one(f"SELECT 1 FROM fact_confirmations WHERE {group} AND session_id = ?",
+                                   (*of, session)))
             trust = row["trust_score"]
             if not again:
                 known = bool(user) and bool(self._one(
-                    f"SELECT 1 FROM fact_confirmations WHERE fact_id IN ({marks}) AND user_id = ?", (*group, user)))
+                    f"SELECT 1 FROM fact_confirmations WHERE {group} AND user_id = ?", (*of, user)))
                 self._write("INSERT INTO fact_confirmations (fact_id, confirmed_at, session_id, user_id, via) "
                             "VALUES (?, ?, ?, ?, ?)", (fact_id, self._now(), session, user or None,
                                                        str(src.get("via") or "") or None))
@@ -1145,5 +1178,5 @@ class HistoryMixin:
         return out
 
 
-__all__ = ["HISTORY_SCHEMA", "HistoryMixin", "HistoryUnavailable", "HistoryTooNew", "ChangedSince", "NotFound", "CLOSED",
-           "ORIGINS", "SOURCE_FIELDS", "normalize", "parse_day", "version_state", "source_of"]
+__all__ = ["HISTORY_SCHEMA", "HistoryMixin", "HistoryUnavailable", "HistoryTooNew", "ChangedSince", "NotOwned",
+           "NotFound", "CLOSED", "ORIGINS", "SOURCE_FIELDS", "normalize", "parse_day", "version_state", "source_of"]

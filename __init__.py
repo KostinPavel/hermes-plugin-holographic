@@ -31,7 +31,7 @@ from utils import is_truthy_value
 from . import embeddings
 from . import holographic as hrr
 from . import rerank
-from .history import ORIGINS, ChangedSince, HistoryTooNew, NotFound, parse_day
+from .history import ORIGINS, ChangedSince, HistoryTooNew, NotFound, NotOwned, parse_day
 from .store import DuplicateContentError, MemoryStore, unusable_names
 from .retrieval import FactRetriever, _warn_once, error_kind
 from .screen import (_EXTRACT_MAX_CHARS, _RE_QUESTION, _RE_SENTENCE, _extract_floor, _fact_problem, _recall_problem,
@@ -1721,27 +1721,30 @@ class HolographicMemoryProvider(MemoryProvider):
                 str(k).strip().lstrip("-").isdigit() and isinstance(v, int) and not isinstance(v, bool)
                 for k, v in expect.items())):
             return tool_error("merge: 'expect' must be an object {\"<fact_id>\": <version_id>}.")
-        if not self._writable:  # cron (cron_writes): only what this very session stored may be merged away
-            sources = self._store.current_sources(ids)
-            foreign = [i for i in ids if self._store.read("SELECT 1 FROM facts WHERE fact_id = ?", (i,))
-                       and (sources.get(i) or {}).get("session_id") != self._session_id]
-            if foreign:
-                return tool_error("Not merged: a scheduled job merges only facts it stored in this session "
-                                  f"({', '.join(f'#{i}' for i in foreign)} were not); the main agent merges the "
-                                  "rest. Nothing was changed.")
-        tags = None
-        if a.get("keywords") is not None:
-            report = _keyword_report(a["keywords"])
-            tags = _join_tags(_split_tags(self._store.fact_tags(keep))[0], report["keywords"])
-        else:  # the union: the keep's keywords first, then each copy's
-            user_tags, own = _split_tags(self._store.fact_tags(keep))
-            candidates = list(own)
-            for fact_id in ids:
-                candidates += _split_tags(self._store.fact_tags(fact_id))[1]
-            report = _keyword_report(candidates) if candidates else {"keywords": []}
-            if candidates:
-                tags = _join_tags(user_tags, report["keywords"])
-        result = self._fact_call(a, lambda fact_id: self._store.merge_facts(fact_id, ids, tags=tags, expect=expect))
+        report: dict = {}
+
+        def joined(keep_tags: str, copy_tags: list) -> str | None:
+            """The keep's tags after the merge, from what the store holds inside its transaction (review 2 of #36)."""
+            user_tags, own = _split_tags(keep_tags)
+            if a.get("keywords") is not None:
+                report.update(_keyword_report(a["keywords"]))
+                return _join_tags(user_tags, report["keywords"])
+            candidates = list(own)  # the union: the keep's keywords first, then each copy's
+            for tags in copy_tags:
+                candidates += _split_tags(tags)[1]
+            report.update(_keyword_report(candidates) if candidates else {"keywords": []})
+            return _join_tags(user_tags, report["keywords"]) if candidates else None
+
+        # cron (cron_writes): only what this very session stored may be merged away — checked by the store in the
+        # merge's transaction, so a copy another session changed a moment earlier is not taken (review 2 of #36)
+        only = None if self._writable else self._session_id
+        try:
+            result = self._fact_call(a, lambda fact_id: self._store.merge_facts(
+                fact_id, ids, tags=joined, expect=expect, session_only=only))
+        except NotOwned as exc:
+            return tool_error("Not merged: a scheduled job merges only facts it stored in this session "
+                              f"({', '.join(f'#{i}' for i in exc.ids)} were not); the main agent merges the rest. "
+                              "Nothing was changed.")
         if isinstance(result, str):  # the error of _fact_call
             return result
         for gone in result["merged"]:

@@ -209,6 +209,62 @@ def test_an_old_writer_open_before_the_merge_forgets_the_keep_and_the_next_open_
     MemoryStore._shared.clear()
 
 
+def _old_writer_forgets_the_keep(tmp_path, old, *, confirm_copy=False):
+    """0.18.2 open before the merge (another process); 0.19.0 merges; the old writer then forgets the keep."""
+    db = tmp_path / "memory_store.db"
+    store = MemoryStore(str(db), hrr_dim=DIM)
+    keep = store.add_fact(KEEP_TEXT)
+    copy = store.add_fact(COPY_TEXT)
+    if confirm_copy:
+        store.record_confirmation(copy, {"session_id": "s9", "user_id": "u2", "via": "feedback"})
+    store.close()
+    MemoryStore._shared.clear()
+    old.store.MemoryStore._shared.clear()
+    writer = old.store.MemoryStore(str(db), hrr_dim=DIM)
+    store = MemoryStore(str(db), hrr_dim=DIM)
+    store.merge_facts(keep, [copy])
+    store.close()
+    MemoryStore._shared.clear()
+    assert writer.forget_fact(keep)["forgotten"] is True
+    return db, writer, keep, copy
+
+
+def test_the_cascade_on_open_also_drops_the_confirmations_of_the_erased_copy(tmp_path, old):
+    """Codex review 2 of #36 (5): the copy erased on the next open of 0.19.0 takes its confirmations with it
+    (who confirmed a forgotten fact is part of it)."""
+    db, writer, keep, copy = _old_writer_forgets_the_keep(tmp_path, old, confirm_copy=True)
+    assert writer.read("SELECT COUNT(*) FROM fact_confirmations WHERE fact_id = ?", (copy,))[0][0] == 1
+    writer.close()
+    old.store.MemoryStore._shared.clear()
+    store = MemoryStore(str(db), hrr_dim=DIM)
+    assert store.read("SELECT COUNT(*) FROM fact_versions")[0][0] == 0
+    assert store.read("SELECT COUNT(*) FROM fact_confirmations")[0][0] == 0
+    store.close()
+    MemoryStore._shared.clear()
+
+
+def test_the_cascade_on_open_runs_also_when_an_older_release_removed_another_fact(tmp_path, old):
+    """Codex review 2 of #36 (2): one open finds both — a fact whose row an older release removed (its versions are
+    left) and a keep the old writer forgot. The copy of that keep is erased on this open too, a tombstone for it."""
+    db, writer, keep, copy = _old_writer_forgets_the_keep(tmp_path, old)
+    other = writer.add_fact("Bob Brown lives in Rome")
+    writer.close()
+    old.store.MemoryStore._shared.clear()
+    raw = sqlite3.connect(str(db))  # a release without history removes the row only (its remove)
+    raw.execute("DELETE FROM fact_entities WHERE fact_id = ?", (other,))
+    raw.execute("DELETE FROM facts WHERE fact_id = ?", (other,))
+    raw.commit()
+    raw.close()
+    store = MemoryStore(str(db), hrr_dim=DIM)
+    assert {r[0] for r in store.read("SELECT fact_id FROM forgotten")} == {keep, copy, other}
+    assert store.read("SELECT COUNT(*) FROM fact_versions")[0][0] == 0
+    assert store.read("SELECT COUNT(*) FROM fact_merges")[0][0] == 0
+    assert store.forgotten_match(COPY_TEXT) is not None
+    assert b"zorblat" not in _raw_bytes(db)
+    store.close()
+    MemoryStore._shared.clear()
+
+
 def test_a_merge_row_whose_copy_an_old_writer_forgot_is_dropped_without_a_word(tmp_path, old):
     db = tmp_path / "memory_store.db"
     store = MemoryStore(str(db), hrr_dim=DIM)
