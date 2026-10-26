@@ -376,12 +376,14 @@ def test_after_the_handshake_the_cut_reaches_the_wrapped_socket():
     the holder must be refreshed to the wrapped socket: keeping the pre-handshake object would mean fd=-1 there
     and cut() would silently find nothing — in the very phase #26 is about, the header read after the handshake.
 
-    The drip is sized so the cut lands INSIDE the status line: an EOF there is an unfinished line, so
-    _read_status raises (RemoteDisconnected / BadStatusLine) on every platform. An EOF after the status line
-    would not — _read_headers ends on b'' as happily as on the blank line, http.client reports a headerless
-    bodyless success, and whether the reader sees EPIPE or that EOF decides the outcome (measured: ubuntu CI
-    got the success, linux locally the BrokenPipeError). The status line ends at 0.85 s with this drip, the
-    cut comes at 0.5 s."""
+    What the cut leaves is asserted as a bounded END, never as a parser outcome (the maintainer, #42): the outcome
+    is a detail of how many bytes arrived before the shutdown. An EOF after a COMPLETE status line is not an error
+    to http.client at all — _read_headers ends on b'' as happily as on the blank line, HTTPResponse even accepts
+    b'HTTP/1.1 200' without CRLF, and a bodyless success records box['ok'] (ubuntu CI saw exactly that); an EOF
+    mid-line raises RemoteDisconnected / BadStatusLine, a shutdown the reader observes raises OSError (BrokenPipe
+    locally). Any of the three passes the outcome check below; only a record outside them would be a surprise.
+    The drip is sized so the cut comes at 0.5 s while the status line (17 bytes, ending at 0.85 s with this drip)
+    is still coming — the read can only end because the cut ended it."""
     server = _TLSServer("drip", drip=0.05)
     try:
         t0 = time.perf_counter()
@@ -405,6 +407,8 @@ def test_after_the_handshake_the_cut_reaches_the_wrapped_socket():
                  f"{f'+{server.drip_start - t0:.2f}s' if server.drip_start else 'never'}, "
                  f"stop={server.stop.is_set()}, note={server.note!r}")
         assert not t.is_alive(), f"the cut must reach the wrapped socket; {state}"
-        assert isinstance(box.get("error"), _BROKEN), f"got {box.get('error')!r}; box={box}; {state}"
+        # The END is the property (the maintainer's #42 note): which of the three records comes out is a detail of
+        # timing and OS — an EOF can be a valid bodyless success here, and requiring an exception made this flaky.
+        assert box.get("ok") or isinstance(box.get("error"), _BROKEN), f"unexpected outcome: box={box!r}; {state}"
     finally:
         server.close()
