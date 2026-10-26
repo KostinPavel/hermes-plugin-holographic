@@ -8,13 +8,16 @@ The caller's side is measured by ``test_slow_body_returns_at_rerank_timeout_not_
 the caller's wait ends, the request's socket is shut down from the caller's side, so the worker dies with the
 caller. Three local servers, ``rerank_timeout`` 0.5 (the Settings floor), one real ``Rescorer`` per run:
 
-    stall         accepts and never answers        -> the socket timeout bounds it
-    drip_headers  1 byte of the status line / 0.2 s -> bounded ONLY by the shutdown (104x without it here)
-    drip_body     headers at once, 8 body bytes / 0.2 s -> the worker's own deadline loop bounds it
+    stall         accepts and never answers            -> the socket timeout bounds it: 1.0x either way
+    drip_headers  1 byte / 0.2 s (#33's response, byte for byte)
+                                                  -> 28.0x without the cut, 1.0x with it
+    drip_body     headers at once, 8 body bytes / 0.2 s -> the worker's own deadline loop: 1.2x / 1.0x
 
 ``--no-cut`` disables the shutdown (the pre-PR behaviour) for the comparison row: the drip-headers number is the
-measured window of #26. The read a shutdown ends raises RemoteDisconnected / BadStatusLine where it reads as EOF,
-ConnectionAbortedError on Windows — all recorded in the worker and none escaping the turn.
+measured window of #26 — 28.0x here on Linux, 28.1x in #33's Windows/WSL runs on this same fixture, so the two
+tables are comparable. The read a shutdown ends raises RemoteDisconnected / BadStatusLine where it reads as EOF,
+ConnectionAbortedError on Windows — all recorded in the worker and none escaping the turn; what the server side
+sees of the same cut is printed as ``server saw:``, not swallowed.
 
 Windows only: the run raises the system timer to 1 ms (``timeBeginPeriod``) and releases it after, so a wait does
 not overshoot by a whole 15.6 ms tick (measured 510.9 -> 500.7 ms mean on a 0.5 s timeout; Linux needs no such
@@ -53,14 +56,16 @@ DRIP = 0.2  # seconds between dripped bytes: under the socket timeout, over noth
 RUNS = 2
 
 
-def _server(mode: str, stop: threading.Event) -> tuple[int, threading.Thread]:
-    """A one-shot-connection server; returns the port and its thread. Writes the response as the mode dictates;
+def _server(mode: str, stop: threading.Event) -> tuple[int, threading.Thread, dict]:
+    """A one-shot-connection server; returns the port, its thread and the ``note`` dict the server side writes
+    what it saw into (measure() prints it — nothing is swallowed here). Writes the response as the mode dictates;
     every wait is stop.wait(), so setting *stop* ends it within one drip and the caller can join it."""
     srv = socket.socket()
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind(("127.0.0.1", 0))
     srv.listen(1)
     port = srv.getsockname()[1]
+    note: dict = {}
 
     def run() -> None:
         while not stop.is_set():
@@ -90,8 +95,9 @@ def _server(mode: str, stop: threading.Event) -> tuple[int, threading.Thread]:
                 if mode == "stall":
                     stop.wait(60)  # never answers (until the run ends)
                 elif mode == "drip_headers":
-                    answer = b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nX-Slow: ' + b"a" * 200 + \
-                             b'\r\n\r\n{"results":[]}'
+                    # #33's fixture, byte for byte: the numbers below are meant to be comparable with its table
+                    answer = (b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n'
+                              b'Content-Length: 14\r\n\r\n{"results":[]}')
                     for byte in answer:
                         conn.sendall(bytes([byte]))
                         if stop.wait(DRIP):
@@ -103,15 +109,15 @@ def _server(mode: str, stop: threading.Event) -> tuple[int, threading.Thread]:
                         conn.sendall(payload[i:i + 8])
                         if stop.wait(DRIP):
                             break
-            except OSError:
-                pass  # the shutdown (or the worker's own deadline) closes the connection: expected
+            except OSError as exc:
+                note["error"] = exc  # the shutdown (or the worker's own deadline) closes the connection: expected
             finally:
                 conn.close()
         srv.close()
 
     thread = threading.Thread(target=run, daemon=True)
     thread.start()
-    return port, thread
+    return port, thread, note
 
 
 def measure(mode: str, cut: bool) -> None:
@@ -121,7 +127,7 @@ def measure(mode: str, cut: bool) -> None:
         net.cut = lambda _holder: None  # the pre-PR behaviour, for the comparison row (--no-cut)
     server = None
     try:
-        port, server = _server(mode, stop)
+        port, server, server_note = _server(mode, stop)
         settings = rerank.Settings({"rerank": "on", "rerank_url": f"http://127.0.0.1:{port}/v1/rerank",
                                     "rerank_timeout": "0.5"})
         rescorer = rerank.Rescorer(settings)
@@ -139,7 +145,8 @@ def measure(mode: str, cut: bool) -> None:
               f"alive_after_call={str(alive):5s} | "
               + (f"worker STILL ALIVE after {total * 1000:7.1f} ms" if lingering
                  else f"worker end {total * 1000:7.1f} ms ({total / TIMEOUT:4.1f}x)")
-              + f" | paused: {error}")
+              + f" | paused: {error}"
+              + (f" | server saw: {server_note['error']!r}" if server_note.get("error") else ""))
     finally:
         net.cut = real_cut
         stop.set()

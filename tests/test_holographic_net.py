@@ -6,29 +6,40 @@ maintainer asked (#26) to accept both ConnectionAbortedError (Windows) and Remot
 a shutdown reads as EOF, and the Windows CI added a fourth — a cut that lands while the request is still going out
 is `URLError(BrokenPipeError(10058))`. Where the shutdown lands and which OS it runs on decides the type; that the
 read ENDS with the caller's deadline is the property. Both tests therefore wait for the server to have the whole
-request (production cuts at its deadline, long after the send) and cut from the read phase only.
+request and cut from the read phase only — not because production always cuts after the send (the maintainer's
+note: the deadline can arrive during a slow send or a handshake; the category above covers that case too), but
+because a cut mid-send measures a different signal than the header read these tests are about. The last three
+tests are the two gaps of the review: cancellation that arrives before the socket, the CONNECT read inside
+super().connect(), and the fd moving into the SSLSocket at the wrap.
 """
 
 from __future__ import annotations
 
 import http.client
 import socket
+import ssl
 import threading
 import time
 import urllib.request
+from pathlib import Path
 
 from hermes_plugin_holographic import net
+
+_CERT = Path(__file__).parent / "fixtures" / "tls_cert.pem"
+_KEY = Path(__file__).parent / "fixtures" / "tls_key.pem"
 
 
 class _Server:
     """One connection per request: reads it, then answers as the mode dictates. ``stall`` never answers, ``drip``
-    sends the response one byte every 0.2 s — each read succeeds on its own (0.2 s < the 2 s socket timeout), so the
-    reader never times out, and at the caller's 0.5 s deadline only a couple of status-line bytes have arrived, so
-    the shutdown reads as an unfinished line (BadStatusLine / RemoteDisconnected), not as a clean EOF. ``answer``
-    replies at once."""
+    sends the response one byte every *drip* seconds — each read succeeds on its own (drip < the socket timeout),
+    so the reader never times out and only a cut ends it; at 0.2 s the status line is still arriving at the 0.5 s
+    deadline, so the shutdown reads as an unfinished line (BadStatusLine / RemoteDisconnected), not as a clean
+    EOF. ``answer`` replies at once."""
 
-    def __init__(self, mode: str):
+    def __init__(self, mode: str, drip: float = 0.2):
         self.mode = mode
+        self.drip = drip
+        self.note: OSError | None = None  # what a cut left on this side: recorded, never swallowed
         self.stop = threading.Event()
         self.received = threading.Event()  # the whole request body is read: the worker is in its read phase now
         self.srv = socket.socket()
@@ -72,15 +83,80 @@ class _Server:
                               b"Content-Length: 13\r\nX-Slow: " + b"a" * 200 + b"\r\n\r\n" + b'{"results":[]}')
                     for byte in answer:
                         conn.sendall(bytes([byte]))
-                        if self.stop.wait(0.2):
+                        if self.stop.wait(self.drip):
                             break
                 elif self.mode == "answer":
                     conn.sendall(b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n'
                                  b'Content-Length: 13\r\n\r\n{"results":[]}')
-            except OSError:
-                pass  # the shutdown ends the connection mid-write: expected
+            except OSError as exc:
+                self.note = exc  # the shutdown ends the connection mid-write: expected, and kept, not swallowed
             finally:
                 conn.close()
+        self.srv.close()
+
+    def close(self):
+        self.stop.set()
+        self.thread.join(5)
+
+
+class _TLSServer:
+    """A local https endpoint for the phases between the TCP connection and the first header byte: it accepts,
+    sits on the handshake for *handshake_delay* seconds (the client is inside ``wrap_socket`` then), reads the
+    request and answers like ``_Server`` — ``drip`` one byte every *drip* seconds."""
+
+    def __init__(self, mode: str = "drip", drip: float = 0.03, handshake_delay: float = 0.0):
+        self.mode = mode
+        self.drip = drip
+        self.handshake_delay = handshake_delay
+        self.note: OSError | None = None
+        self.stop = threading.Event()
+        self.received = threading.Event()
+        self.ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        self.ctx.load_cert_chain(_CERT, _KEY)
+        self.srv = socket.socket()
+        self.srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.srv.bind(("127.0.0.1", 0))
+        self.srv.listen(1)
+        self.port = self.srv.getsockname()[1]
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def _run(self):
+        self.srv.settimeout(0.2)
+        while not self.stop.is_set():
+            try:
+                conn, _ = self.srv.accept()
+            except socket.timeout:
+                continue
+            try:
+                if self.handshake_delay:
+                    self.stop.wait(self.handshake_delay)
+                tls = self.ctx.wrap_socket(conn, server_side=True)
+            except OSError as exc:
+                self.note = exc  # a cut during the handshake ends it here: expected
+                conn.close()
+                continue
+            with tls:
+                try:
+                    tls.settimeout(10)
+                    data = b""
+                    while b"\r\n\r\n" not in data:
+                        chunk = tls.recv(4096)
+                        if not chunk:
+                            break
+                        data += chunk
+                    self.received.set()
+                    answer = (b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                              b"Content-Length: 13\r\nX-Slow: " + b"a" * 200 + b"\r\n\r\n" + b'{"results":[]}')
+                    if self.mode == "drip":
+                        for byte in answer:
+                            tls.sendall(bytes([byte]))
+                            if self.stop.wait(self.drip):
+                                break
+                    else:
+                        tls.sendall(answer)
+                except OSError as exc:
+                    self.note = exc  # the shutdown ends the connection mid-write: expected, and kept
         self.srv.close()
 
     def close(self):
@@ -181,5 +257,133 @@ def test_cut_with_no_socket_or_after_the_worker_ended_is_harmless():
         t.join(2)
         assert box.get("ok") is True, f"the fast server must answer, got {box.get('error')!r}"
         net.cut(held)  # its socket is closed already: must not raise
+    finally:
+        server.close()
+
+
+def _https_request(port: int):
+    return urllib.request.Request(f"https://127.0.0.1:{port}/v1", data=b'{"a":1}',
+                                  headers={"Content-Type": "application/json"}, method="POST")
+
+
+def _https_opener():
+    """``net.opener`` with one difference: a context that trusts the fixture's self-signed certificate —
+    production trusts the system CAs, a localhost test must trust its own. Everything else under test (the
+    handlers, ``_TLSConn``, the holder, ``cut``) is production's; without the trust these tests would pass by
+    failing the handshake instead of by the cut."""
+    ctx = ssl.create_default_context(cafile=_CERT)
+    opener = urllib.request.OpenerDirector()
+    opener.add_handler(net._HTTP())
+    opener.add_handler(net._HTTPS(context=ctx))
+    return opener
+
+
+def test_a_cut_that_precedes_the_socket_still_stops_the_request(monkeypatch):
+    """The cut can arrive BEFORE the socket exists — the maintainer's reproducer: a connection slower than the
+    caller's wait (0.5 s here against a 0.2 s deadline). Cancellation must be retained, not lost with the empty
+    holder: a socket published after the caller's deadline has to be refused, so the request stops instead of
+    starting. Without that the worker goes on into the header phase and lives its whole drip — a second after
+    the cut it is still alive."""
+    server = _Server("drip", drip=0.03)
+    real_create = socket.create_connection  # HTTPConnection.__init__ binds this per instance, at connect time
+
+    def slow_create(*args, **kwargs):
+        time.sleep(0.5)
+        return real_create(*args, **kwargs)
+
+    monkeypatch.setattr(socket, "create_connection", slow_create)
+    try:
+        request = _request(server.port)
+        held = net.wire(request)
+        box = {}
+        t = threading.Thread(target=_read, args=(net.opener(), request, box), daemon=True)
+        t.start()
+        time.sleep(0.2)  # the caller's deadline: the connection is still being made
+        assert "sock" not in held, "no socket exists yet — that is the point of the test"
+        net.cut(held)
+        t.join(1.5)  # the socket arrives at ~0.5 s: it must be refused there, not read from
+        assert not t.is_alive(), "a socket published after the caller's deadline must not be read from (issue #26)"
+        assert isinstance(box.get("error"), _BROKEN), f"the request must stop, got {box.get('error')!r}"
+    finally:
+        server.close()
+
+
+def test_the_connect_response_is_inside_the_cuts_reach():
+    """Through an https proxy the CONNECT response is read INSIDE super().connect() — before connect() returns and
+    before any socket reaches the holder, so a cut during that read used to be lost with it. The socket is
+    published at creation instead, where the TCP connection already exists and the tunnel read has not started."""
+    server = _Server("drip", drip=0.03)
+    try:
+        request = urllib.request.Request("https://example.com/v1", data=b'{"a":1}',
+                                         headers={"Content-Type": "application/json"}, method="POST")
+        held = net.wire(request)
+        conn = net._TLSConn("127.0.0.1", server.port, timeout=0.5, holder=held)
+        conn.set_tunnel("example.com", 443)
+        box = {}
+
+        def tunnel():
+            try:
+                conn.connect()
+                box["connected"] = True
+            except BaseException as exc:  # noqa: BLE001 - a cut ends the connect: we assert on it
+                box["error"] = exc
+            finally:
+                conn.close()
+
+        t = threading.Thread(target=tunnel, daemon=True)
+        t.start()
+        assert server.received.wait(2.0), "the proxy has the CONNECT request"
+        t.join(0.5)  # the caller's deadline: the response is still coming a byte at a time
+        assert t.is_alive(), "the tunnel read is still waiting for the rest of the response"
+        assert "sock" in held, "the TCP socket must be in the holder while the CONNECT response is read"
+        net.cut(held)
+        t.join(1.0)
+        assert not t.is_alive(), "the cut must end the CONNECT read (issue #26)"
+        assert isinstance(box.get("error"), _BROKEN), f"got {box.get('error')!r}"
+    finally:
+        server.close()
+
+
+def test_a_cut_during_the_tls_handshake_stops_the_request():
+    """Between the TCP connection and the finished handshake lies a window in which connect() has not returned and
+    nothing is published yet; a cut there was lost. Publishing at creation makes the socket reachable while the
+    handshake is still running on it."""
+    server = _TLSServer("drip", drip=0.03, handshake_delay=0.5)
+    try:
+        request = _https_request(server.port)
+        held = net.wire(request)
+        box = {}
+        t = threading.Thread(target=_read, args=(_https_opener(), request, box), daemon=True)
+        t.start()
+        time.sleep(0.2)  # the deadline: TCP is up (localhost), the handshake waits on the server
+        assert "sock" in held, "the socket must be reachable while the handshake runs (issue #26)"
+        net.cut(held)
+        t.join(1.0)
+        assert not t.is_alive(), "the cut must end the handshake"
+        assert isinstance(box.get("error"), _BROKEN), f"got {box.get('error')!r}"
+    finally:
+        server.close()
+
+
+def test_after_the_handshake_the_cut_reaches_the_wrapped_socket():
+    """The fd moves into the SSLSocket at wrap_socket (ssl.SSLSocket._create detaches it from the TCP socket), so
+    the holder must be refreshed to the wrapped socket: keeping the pre-handshake object would mean fd=-1 there
+    and cut() would silently find nothing — in the very phase #26 is about, the header read after the handshake."""
+    server = _TLSServer("drip", drip=0.03)
+    try:
+        request = _https_request(server.port)
+        held = net.wire(request)
+        box = {}
+        t = threading.Thread(target=_read, args=(_https_opener(), request, box), daemon=True)
+        t.start()
+        assert server.received.wait(2.0), "the server has the whole request"
+        assert isinstance(held.get("sock"), ssl.SSLSocket), \
+            f"after the wrap the holder must hold the socket the request reads from, got {held.get('sock')!r}"
+        t.join(0.5)  # the deadline: the header phase is dripping
+        assert t.is_alive(), "at the deadline the headers are still coming a byte at a time"
+        net.cut(held)
+        t.join(1.0)
+        assert not t.is_alive(), "the cut must reach the wrapped socket"
+        assert isinstance(box.get("error"), _BROKEN), f"got {box.get('error')!r}"
     finally:
         server.close()

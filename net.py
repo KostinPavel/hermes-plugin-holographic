@@ -7,42 +7,92 @@ writing one over ``open_connection`` is a lot of new code on the path every turn
 on #26, which also refused ``httpx``: one stdlib client, no dependency on whatever the environment happens to
 provide.
 
-So the connection hands its socket to the request's holder as soon as ``connect()`` returns, and when the
-caller's wait ends the caller shuts it down from its own thread. The worker then ends with the caller's deadline
-*because the read under it ends*, not because several defences hold: in the header phase — where ``http.client``
-has no overall deadline and every byte resets the socket timeout — a server dripping one byte per 0.2 s held a
-worker 28x past a 0.5 s ``rerank_timeout``, and 1.2-1.3x with this shutdown (the numbers of #26; the run is
-``tools/issue26_worker_lifetime.py --no-cut`` against ``--shutdown`` off and on, the old way and this one).
+So the connection publishes its socket to the request's holder the moment the socket exists — inside
+``_create_connection``, i.e. before the proxy's CONNECT read and the TLS handshake, both of which happen before
+``connect()`` returns — and when the caller's wait ends, the caller shuts it down from its own thread. The
+publication and :func:`cut` share the holder's lock, so a cut landing before the socket exists is RETAINED: a
+socket that appears afterwards is closed and refused instead of read from, and no request starts after its
+caller gave up. At the TLS wrap the fd moves into the ``SSLSocket`` (``wrap_socket`` detaches it from the TCP
+socket), so ``connect()`` re-publishes and the holder always holds what the request reads from.
+
+The worker then ends with the caller's deadline *because the read under it ends*, not because several defences
+hold: in the header phase — where ``http.client`` has no overall deadline and every byte resets the socket
+timeout — a server dripping one byte per 0.2 s held a worker 28x past a 0.5 s ``rerank_timeout``, and 1.2-1.3x
+with this shutdown (the numbers of #26; the run is ``tools/issue26_worker_lifetime.py``).
 
 Not covered, by construction: DNS. The name is resolved before a socket exists, so nothing here can reach it and
 no timeout of ours applies — the OS resolver bounds it (measured: 22.9 ms for an address that does not exist).
+The exception ends at the lookup: a cut that arrives during it still applies to the socket the lookup produces.
 
 Mechanics: ``AbstractHTTPHandler.do_open`` builds the connection itself and passes any extra keyword straight to
 its constructor, so the handler hands it the holder taken off the request. One holder per request, no global
-state, and nothing left behind when a worker gets its socket after its caller has already given up on it.
+state, and nothing is swallowed silently — :func:`cut` and the publication log what they find (module logger,
+debug level: every branch of theirs is an expected race).
 """
 
 from __future__ import annotations
 
 import http.client
+import logging
 import socket
+import threading
 import urllib.request
+
+logger = logging.getLogger(__name__)
+
+
+def _publish(holder: dict | None, sock: socket.socket | None) -> None:
+    """Hand the request's socket over — the one place where a socket becomes reachable by :func:`cut`.
+
+    Called twice per connection: at creation (the socket exists; the CONNECT read and the TLS handshake have not
+    run yet) and after ``connect()`` returns (the fd then belongs to the wrapped socket). Both calls take the
+    holder's lock — the lock :func:`cut` takes — so no order loses the cancellation: a socket published after
+    the caller's deadline is closed and refused, and the connection stops instead of sending anything.
+    """
+    if holder is None or sock is None:
+        return
+    lock = holder.get("lock")
+    if lock is None:  # not a holder wire() made: nothing can cancel it, publish as plain state
+        holder["sock"] = sock
+        return
+    with lock:
+        if not holder.get("cancelled"):
+            holder["sock"] = sock
+            return
+    logger.debug("net: the socket arrived after the caller's deadline — closing it and stopping the request")
+    try:
+        sock.close()
+    except OSError as exc:
+        logger.debug("net: closing the late socket failed: %r", exc)
+    raise ConnectionAbortedError("the caller's deadline passed before the connection was ready")
 
 
 class _Keeper:
-    """A connection that remembers its socket in the request's holder (the module's whole point)."""
+    """A connection that keeps its socket in the request's holder (the module's whole point)."""
+
+    sock: socket.socket | None  # HTTPConnection's; annotated because this mixin does not inherit from it
 
     def __init__(self, *args, holder: dict | None = None, **kwargs):
         super().__init__(*args, **kwargs)
         self.holder = holder
+        # HTTPConnection.__init__ just set self._create_connection = socket.create_connection ("an instance
+        # variable to allow unit tests to replace it"): wrap it here, so the socket is published the moment it
+        # is connected — before TCP_NODELAY, before a proxy's CONNECT response is read, before the handshake.
+        create = self._create_connection
+
+        def _create(address, timeout, source_address):  # HTTPConnection.connect passes all three, positionally
+            sock = create(address, timeout, source_address)
+            _publish(self.holder, sock)
+            return sock
+
+        self._create_connection = _create
 
     def connect(self):
         super().connect()
-        if self.holder is not None:
-            # As soon as the socket exists — before the first header byte, which is the phase nothing else
-            # bounds. For https this is the wrapped socket: a handshake that hangs is still bounded by the
-            # socket timeout (measured ~1.1x), a header phase is not (28x without the shutdown).
-            self.holder["sock"] = self.sock
+        # Re-publish: at the TLS wrap the fd moved into the SSLSocket (the TCP socket got detached), so the
+        # holder must follow it — cut() on the old object would find fd=-1 and do nothing, in the very phase
+        # #26 is about. For plain http this publishes the same object again.
+        _publish(self.holder, self.sock)
 
 
 class _Conn(_Keeper, http.client.HTTPConnection):
@@ -76,7 +126,7 @@ def opener(*handlers):
 
 def wire(request: urllib.request.Request) -> dict:
     """Give *request* the holder its connection fills with the socket; returned for :func:`cut`."""
-    holder: dict = {}
+    holder: dict = {"lock": threading.Lock(), "cancelled": False}
     request.holder = holder
     return holder
 
@@ -84,9 +134,13 @@ def wire(request: urllib.request.Request) -> dict:
 def cut(holder: dict | None) -> None:
     """The caller's wait is over: end the read the worker is standing in.
 
-    Nothing to do when the holder has no socket yet — the request is still connecting, or still resolving the
-    name (a socket does not exist then; see the module). A socket the worker has already closed raises, and is
-    ignored: it ended on its own between the caller's ``is_alive()`` and this call.
+    A holder with no socket yet is not a no-op: the cancellation is retained (``cancelled``, under the holder's
+    lock), so a socket that appears afterwards — a connection still in progress, a name still being resolved —
+    is refused by :func:`_publish` instead of read from. Only DNS itself stays out of reach: no socket exists
+    there to shut down.
+
+    A socket the worker has already closed raises, and is logged rather than silently ignored: it ended on its
+    own between the caller's ``is_alive()`` and this call.
 
     Platform note, measured (Windows CI of #42): this shutdown does NOT wake a thread blocked in ``recv`` while
     nothing arrives — that read ends at the socket timeout the stage already sets (``rerank_timeout`` /
@@ -94,10 +148,19 @@ def cut(holder: dict | None) -> None:
     the blocked reader at once. So a *stall* is bounded by the socket timeout either way (the 1.0x stall rows of
     #33) — this cut is what bounds a server that keeps dripping, where no single read ever times out (28x).
     """
-    sock = (holder or {}).pop("sock", None)
+    if not holder:
+        return
+    lock = holder.get("lock")
+    if lock is None:  # not a holder wire() made: nothing to retain, only a socket to end
+        sock = holder.pop("sock", None)
+    else:
+        with lock:
+            holder["cancelled"] = True
+            sock = holder.get("sock")
     if sock is None:
+        logger.debug("net: cut with no socket yet — the cancellation is retained for a late one")
         return
     try:
         sock.shutdown(socket.SHUT_RDWR)
-    except OSError:
-        pass
+    except OSError as exc:
+        logger.debug("net: cut found the socket already gone: %r", exc)
