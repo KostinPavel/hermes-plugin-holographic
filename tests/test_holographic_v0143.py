@@ -206,7 +206,7 @@ def test_hidden_characters_are_refused_and_never_recalled(hidden):
 
 
 def test_ordinary_text_with_emoji_and_newlines_is_fine():
-    assert _fact_problem("Eva loves 🐱 and ❤️ cats") is None
+    assert _fact_problem("Irma loves 🐱 and ❤️ cats") is None
     assert _recall_problem("Line one\nline two\twith a tab") is None
 
 

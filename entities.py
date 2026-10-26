@@ -635,8 +635,8 @@ class EntityMixin:
             return cached[1]
 
     def known_name_forms(self) -> frozenset:
-        """Keys of the words of every entity's name and aliases read as names (name_forms): «ев» and «ева» of «Ева»
-        or of «Ева Гавриленко». One-word names count whether declared or guessed, unlike the index above: a key of
+        """Keys of the words of every entity's name and aliases read as names (name_forms): «ян» and «яна» of «Яна»
+        or of «Яна Соколова». One-word names count whether declared or guessed, unlike the index above: a key of
         this set only lets a case form of a name stand in for the word in recall's coverage (FactRetriever.relevant),
         it links nothing to the entity. Names in Latin script give no key (they match as written). Cached with the
         index."""
@@ -646,8 +646,8 @@ class EntityMixin:
 
     def mentioned_entity_ids(self, text: str) -> set[int]:
         """Known entities whose name (or alias) occurs in *text* as a run of words: a Latin-script name as written
-        (or with 's), a name in another script by its keys, so "Маши" and "Машу" mention "Маша" and "لإيفا" mentions
-        "إيفا", while "jeans" does not mention "Jean" and "машина" not "Маша". Looked up by each word's keys, not by
+        (or with 's), a name in another script by its keys, so "Маши" and "Машу" mention "Маша" and "لإيرما" mentions
+        "إيرما", while "jeans" does not mention "Jean" and "машина" not "Маша". Looked up by each word's keys, not by
         scanning names. The text is read in NFKC, as names are indexed, and stretch by stretch between separators
         (0.16.1): the words of one name stand together on one line, never across a line break, a comma or a bracket
         ("Alice\nSmith" and "Alice, Smith" do not mention Alice Smith)."""

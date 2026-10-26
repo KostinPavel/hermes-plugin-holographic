@@ -79,10 +79,10 @@ def test_polish_without_its_stemmer_still_works(monkeypatch):
     _clear_caches()
     monkeypatch.setattr(_text, "_STEMMERS", {k: v for k, v in _text._STEMMERS.items() if k != "pl"})
     try:
-        a = analyze("Eva ma alergię na orzeszki")
+        a = analyze("Irma ma alergię na orzeszki")
         assert a.langs == ("pl",)
-        assert [w.text for w in a.words if not w.stop] == ["eva", "alergie", "orzeszki"]
-        assert _meets("Eva ma alergię na orzeszki", "orzeszki") and _meets("Eva ma alergię na orzeszki", "alergię")
+        assert [w.text for w in a.words if not w.stop] == ["irma", "alergie", "orzeszki"]
+        assert _meets("Irma ma alergię na orzeszki", "orzeszki") and _meets("Irma ma alergię na orzeszki", "alergię")
         assert is_greeting("Dzięki, do jutra!")
     finally:
         monkeypatch.undo()
@@ -108,10 +108,10 @@ def test_turkish_words_typed_with_or_without_their_letters_meet(store):
 
 
 def test_turkish_apostrophe_takes_the_ending_off_a_name():
-    assert words("Ankara'da Ayşe'nin HR24'ün hr-ovh'de 03:00'te") == ["ankara", "ayse", "hr24", "hr-ovh", "03:00"]
+    assert words("Ankara'da Ayşe'nin HR24'ün hr-vps'de 03:00'te") == ["ankara", "ayse", "hr24", "hr-vps", "03:00"]
     assert "ankara'da" in analyze("Ankara'da yaşıyor").bag  # the whole stays for containment
     # not in English text, nor for an ending Turkish does not have
-    assert words("Eva's dentist at 9 o'clock") == ["eva's", "dentist", "at", "9", "o'clock"]
+    assert words("Irma's dentist at 9 o'clock") == ["irma's", "dentist", "at", "9", "o'clock"]
     assert "rock'n'roll" in words("rock'n'roll")
 
 
@@ -126,7 +126,7 @@ def test_turkish_identifier_with_an_ending_is_still_required(provider):
     _call(provider, action="add", content="hr-other her gece yedek alıyor")
     _call(provider, action="add", content="HR24 Copilot mülakatları yazıya döküyor")
     assert provider.prefetch("HR24'ün işi ne?")  # "HR24'ün" is HR24
-    assert "hr-other" not in provider.prefetch("hr-ovh'de ne kadar RAM var?")
+    assert "hr-other" not in provider.prefetch("hr-vps'de ne kadar RAM var?")
 
 
 # -- Italian -----------------------------------------------------------------------------------------------------------
@@ -139,7 +139,7 @@ def test_italian_elision():
 
 
 def test_italian_word_forms_meet():
-    for fact, query in [("Eva è allergica alle arachidi", "allergia"),
+    for fact, query in [("Irma è allergica alle arachidi", "allergia"),
                         ("Le lezioni di nuoto sono il sabato", "lezione"),
                         ("La riunione con i clienti", "riunioni"), ("Il volo per Milano", "voli")]:
         assert _meets(fact, query), (fact, query)
@@ -151,7 +151,7 @@ def test_italian_word_forms_meet():
 @pytest.mark.parametrize("fact,query", [
     ("Dom babci jest duży", "co jest w domu?"), ("Kupili nowy dom", "domem"), ("Córka Anny ma pięć lat", "córki"),
     ("Córka Anny ma pięć lat", "córką"), ("Lekarz przyjmuje w środę", "lekarza"),
-    ("Eva ma alergię na orzeszki", "alergia"), ("Szkoła Zosi jest blisko", "szkole"),
+    ("Irma ma alergię na orzeszki", "alergia"), ("Szkoła Zosi jest blisko", "szkole"),
     ("Szkoła Zosi jest blisko", "szkola"), ("Rodzina planuje przeprowadzkę", "kiedy się przeprowadzamy?")])
 def test_polish_word_forms_meet(fact, query):
     assert _meets(fact, query)
@@ -167,9 +167,9 @@ def test_polish_l_with_stroke_is_searched_as_written_and_as_l(store):
 # -- Dutch -------------------------------------------------------------------------------------------------------------
 
 def test_dutch_s_is_the_word():
-    assert words("Eva is allergisch voor pinda's") == ["eva", "is", "allergisch", "voor", "pinda"]
-    assert _meets("Eva is allergisch voor pinda's", "pinda")
-    assert words("Eva's dentist is on Friday")[0] == "eva's"  # English text keeps it
+    assert words("Irma is allergisch voor pinda's") == ["irma", "is", "allergisch", "voor", "pinda"]
+    assert _meets("Irma is allergisch voor pinda's", "pinda")
+    assert words("Irma's dentist is on Friday")[0] == "irma's"  # English text keeps it
 
 
 def test_dutch_compounds_are_not_taken_apart_by_default():
@@ -178,7 +178,7 @@ def test_dutch_compounds_are_not_taken_apart_by_default():
 
 
 @pytest.mark.parametrize("fact,query", [
-    ("Het gezin gaat naar Chiang Mai", "Heb je zin in pizza?"),
+    ("Het gezin gaat naar Hua Hin", "Heb je zin in pizza?"),
     ("Dit gerecht is erg pittig", "Heeft hij recht op vakantie?"),
     ("Zijn gezicht was rood", "Wat een mooi zicht op zee"), ("We hebben het hotel geboekt", "Welk boek lees je?")])
 def test_dutch_ge_is_part_of_a_noun(fact, query):
@@ -208,7 +208,7 @@ def test_each_language_by_its_function_words(text, langs):
 @pytest.mark.parametrize("text,kept", [
     ("Ana come carne todos los días", ["ana", "come", "carne", "todos", "dias"]),  # Spanish "come", not Italian "how"
     ("Ana no come carne", ["ana", "come", "carne"]),
-    ("Anton met Eva at the door", ["anton", "met", "eva", "door"]),  # English, not Dutch "met", "door"
+    ("Anton met Irma at the door", ["anton", "met", "irma", "door"]),  # English, not Dutch "met", "door"
     ("Mia Moss lives in Rome", ["mia", "moss", "lives", "rome"]),  # a name, not Italian "mia"
     ("Kim Lane lives in Oslo", ["kim", "lane", "lives", "oslo"]),  # not Turkish "kim" (who)
     ("Bo Lin lives in Hue", ["bo", "lin", "lives", "hue"]),  # not Polish "bo" (because)
@@ -223,8 +223,8 @@ def test_weak_words_are_function_words_of_their_language():
     for lang, weak in _text._WEAK.items():
         assert weak <= _text.STOP[lang], lang
     # dropped where Italian alone is best supported, kept where the other words fit French as well ("il")
-    terms = [t.word for t in query_terms("Come sono le lezioni di Eva e dove si tengono?")]
-    assert terms == ["lezioni", "eva", "tengono"]
+    terms = [t.word for t in query_terms("Come sono le lezioni di Irma e dove si tengono?")]
+    assert terms == ["lezioni", "irma", "tengono"]
     assert [t.word for t in query_terms("Come prende il caffè Anton?")] == ["come", "prende", "caffe", "anton"]
 
 
@@ -239,7 +239,7 @@ def test_courtesy_in_the_four_languages(message):
     assert is_greeting(message)
 
 
-@pytest.mark.parametrize("message", ["Ciao Eva, quando hai nuoto?", "Merhaba, toplantı ne zaman?", "oggi?",
+@pytest.mark.parametrize("message", ["Ciao Irma, quando hai nuoto?", "Merhaba, toplantı ne zaman?", "oggi?",
                                      "Cześć, gdzie są klucze?", "Hoi, waar is de sleutel?"])
 def test_a_question_after_a_greeting_is_a_question(message):
     assert not is_greeting(message)
@@ -249,7 +249,7 @@ def test_a_question_after_a_greeting_is_a_question(message):
     (["Il giorno della riunione è il lunedì alle nove", "La sera Anton va in palestra"], "Buongiorno, buona serata!"),
     (["Toplantı her gün sabah dokuzda", "Akşam yemeği saat yedide"], "Günaydın, iyi akşamlar!"),
     (["Spotkanie jest w każdy dzień roboczy", "Wieczór filmowy w piątek"], "Dzień dobry, dobry wieczór!"),
-    (["De vergadering is elke dag om negen uur", "Morgen gaat Eva naar de tandarts"], "Goedemorgen, tot morgen!"),
+    (["De vergadering is elke dag om negen uur", "Morgen gaat Irma naar de tandarts"], "Goedemorgen, tot morgen!"),
     (["La riunione è il lunedì alle nove"], "Qual è la capitale dell'Australia?"),
     (["Toplantı her pazartesi saat dokuzda"], "Avustralya'nın başkenti neresi?"),
     (["Spotkanie jest w każdy poniedziałek"], "Jaka jest stolica Australii?"),

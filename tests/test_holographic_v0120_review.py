@@ -70,18 +70,18 @@ def test_a_name_with_dotless_i_or_l_is_searched_as_written_in_any_language():
     assert a.langs == ("en",)
     isik = next(w for w in a.words if w.text == "isik")
     assert "isık" in isik.keys  # as unicode61 indexes "Işık": I lower-cased to i, ş without its mark, ı kept
-    lukasz = next(w for w in analyze("Łukasz teaches Eva").words if w.text == "lukasz")
+    lukasz = next(w for w in analyze("Łukasz teaches Irma").words if w.text == "lukasz")
     assert "łukasz" in lukasz.keys
     assert "łukasz" in next(w for w in analyze("Где живёт Łukasz").words if w.text == "lukasz").keys
 
 
 def test_a_name_with_dotless_i_or_l_is_found_from_english_text(store):
-    for fact in ("Işık is Eva's teacher", "Isik is Eva's teacher", "Łukasz is Eva's teacher"):
+    for fact in ("Işık is Irma's teacher", "Isik is Irma's teacher", "Łukasz is Irma's teacher"):
         store.add_fact(fact)
-    assert set(_found(store, "Who is Işık?")) == {"Işık is Eva's teacher", "Isik is Eva's teacher"}
-    assert _found(store, "Who is Łukasz?") == ["Łukasz is Eva's teacher"]
+    assert set(_found(store, "Who is Işık?")) == {"Işık is Irma's teacher", "Isik is Irma's teacher"}
+    assert _found(store, "Who is Łukasz?") == ["Łukasz is Irma's teacher"]
     # typed without the stroke it is still out of the index's reach from English text (Polish text scans the facts)
-    assert _found(store, "Gdzie mieszka Lukasz?") == ["Łukasz is Eva's teacher"]
+    assert _found(store, "Gdzie mieszka Lukasz?") == ["Łukasz is Irma's teacher"]
 
 
 # -- stems of text with no determined language -------------------------------------------------------------------
@@ -122,10 +122,10 @@ def test_other_compounds_are_still_split():
 
 
 def test_the_end_of_a_lexicalised_compound_does_not_recall_it(store):
-    for fact in ("Die Hochzeit ist im Juni", "Eva hat Freizeit am Samstag", "Weihnachten feiern wir in Pattaya",
-                 "Das Frühstück gibt es um acht", "Eva nimmt morgens eine Tablette"):
+    for fact in ("Die Hochzeit ist im Juni", "Irma hat Freizeit am Samstag", "Weihnachten feiern wir in Pattaya",
+                 "Das Frühstück gibt es um acht", "Irma nimmt morgens eine Tablette"):
         store.add_fact(fact)
-    assert _recalled(store, "Wann hast du Zeit?") == ["Eva hat Freizeit am Samstag"]
+    assert _recalled(store, "Wann hast du Zeit?") == ["Irma hat Freizeit am Samstag"]
     assert _recalled(store, "Welche Nacht ist frei?") == []
     assert _recalled(store, "Gibt es ein Stück?") == []
     assert _recalled(store, "Wo ist der Tab?") == []
@@ -165,11 +165,11 @@ def test_a_japanese_question_does_not_meet_a_chinese_fact_through_rewritten_kanj
 # -- Spanish "va" tells the language ------------------------------------------------------------------------------
 
 def test_spanish_forms_of_ir_tell_the_language_and_stay_words():
-    """"va" is a function word of French and Italian here, not of Spanish: "Eva va a la escuela" was French or
+    """"va" is a function word of French and Italian here, not of Spanish: "Irma va a la escuela" was French or
     Italian, with no Spanish stems and no verb forms. The forms vote for Spanish but are not dropped, so a question
     "¿Cómo va Javier?" still meets "fue" through the verb's forms (test_holographic_de_es)."""
     _clear_caches()
-    a = analyze("Eva va a la escuela")
+    a = analyze("Irma va a la escuela")
     assert a.determined and "es" in a.langs
     assert next(w for w in a.words if w.text == "escuela").form_lang == "es"
     assert analyze("Ana va al mercado").langs == ("es", "it")  # "al" is Spanish and Italian

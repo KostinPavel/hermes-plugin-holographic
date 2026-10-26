@@ -286,7 +286,7 @@ A word matches another when they share its plain form or its stem in the languag
 - **Stems**: Snowball for English, Russian, Spanish, French, Portuguese, Indonesian, German, Hindi, Italian, Turkish,
   Polish and Dutch, with two plural rules it lacks (Portuguese `ação` / `ações`, Spanish `lápiz` / `lápices`); for
   Arabic, Larkey's light stemmer (the one Lucene ships) next to Snowball's, plus the word without a glued conjunction or
-  preposition before an alef (`لإيفا`, "for Eva"; `ولإيفا`, "and for Eva"); for Bengali, a light suffix stripper
+  preposition before an alef (`لإيرما`, "for Irma"; `ولإيرما`, "and for Irma"); for Bengali, a light suffix stripper
   (Snowball has none) that leaves at least three letters, so `মাটি` (soil) is not `মা` (mother). Italian, Turkish,
   Polish and Dutch words (0.11.0) are stemmed as written and folded: Snowball's Turkish and Polish read the letters
   folding drops (`çocuğun` is `çocuk`, `domów` is `dom`), and a word typed without its marks still meets one typed with
@@ -323,16 +323,16 @@ A word matches another when they share its plain form or its stem in the languag
   `уберу`, of `убрать`), and a short one is searched by its forms as whole words, so `бот` does not bring in
   `ботинки`. Words two languages share by meaning, not spelling (`password` / `пароль`), are not listed: that is what
   keywords are for.
-- **Hyphens**: French elision and inversion (`d'Eva`, `prend-il`, `est-ce`) and Portuguese enclisis (`chama-se`) are
+- **Hyphens**: French elision and inversion (`d'Irma`, `prend-il`, `est-ce`) and Portuguese enclisis (`chama-se`) are
   taken apart in text of that language, reduplication (`anak-anak`) in any; a hyphen between scripts splits
-  (`hr-ovh-এর`). A letters-only hyphenated token is an identifier in English text or text of no determined language
-  (`hr-ovh`, `carry-on`): a message naming it is about that one, and a fact about `hr-other` is not recalled for it.
+  (`hr-vps-এর`). A letters-only hyphenated token is an identifier in English text or text of no determined language
+  (`hr-vps`, `carry-on`): a message naming it is about that one, and a fact about `hr-other` is not recalled for it.
   In Spanish, French, Portuguese, Indonesian and German text it is a compound word (`week-end`, `sexta-feira`,
   `IT-Treffen`), so a host name in a question in those languages is matched like any word, not enforced.
 - **Apostrophes**: Italian elision as French (`dell'anno`, `l'ospedale`, `quest'anno`, `dov'è`, `anch'io`; not before
   a lone `s`, so English `dev's` stays). A Turkish case ending after a name comes off in text that may be Turkish
-  (`Ankara'da`, `Ayşe'nin`, `HR24'ün`, `hr-ovh'de` are Ankara, Ayşe, HR24, hr-ovh), so the name is mentioned and an
-  identifier stays required; only Turkish endings, so `Eva's`, `o'clock` and `rock'n'roll` are left alone. In Dutch
+  (`Ankara'da`, `Ayşe'nin`, `HR24'ün`, `hr-vps'de` are Ankara, Ayşe, HR24, hr-vps), so the name is mentioned and an
+  identifier stays required; only Turkish endings, so `Irma's`, `o'clock` and `rock'n'roll` are left alone. In Dutch
   text the plural and possessive `'s` comes off (`pinda's`).
 - **German compounds** (0.11.0): in text determined as German, a compound is split by a dictionary of German lexemes
   from Wikidata (CC0): parts of three letters or more joined by German linking elements (`-s-`, `-es-`, `-n-`, `-en-`,
@@ -400,7 +400,7 @@ A word matches another when they share its plain form or its stem in the languag
   at word boundaries; padding alone ("fine?", "сегодня?") is a question. Russian question words (`какой`, `который`,
   `сколько`, `почему` …) are left out of a query's terms, like English `what` / `which` / `how`, but kept in facts.
 - **Names** in Latin script are matched as written (and with an English `'s`): `Jean` is not mentioned by `jeans`.
-  Names in other scripts carry their inflections (`Маши` mentions `Маша`, `لإيفا` mentions `إيفا`).
+  Names in other scripts carry their inflections (`Маши` mentions `Маша`, `لإيرما` mentions `إيرما`).
 - **Chinese, Japanese, Korean, Thai** (no spaces between words): character n-grams, bigrams for Chinese, Japanese and
   Korean, trigrams for Thai. Grammar weighs less: Chinese function characters (的 是 了), Japanese particles (は が を
   に の), Thai function words (ของ ที่ และ); a message that is only a filler (はい, 네, โอเค) recalls nothing. Chinese
@@ -503,7 +503,7 @@ How the numbers were obtained, honestly:
   mornings), and the quiet column includes that fix. Spanish to Indonesian: first run before the review fixes below,
   with the same found and recalled numbers. Japanese, Korean, Thai, German: run once; nothing changed after.
 - **An independent review (Codex CLI) of 0.4.2 and 0.5.0** found regressions the sets did not: a lone "son" dropped as
-  a Spanish function word, `hr-ovh` no longer enforced, `ação` / `ações` apart, "with" / "without" sugar no longer a
+  a Spanish function word, `hr-vps` no longer enforced, `ação` / `ações` apart, "with" / "without" sugar no longer a
   conflict, `Jean` mentioned by `jeans`, and others. Each is fixed with a test, and every set was run again. One of
   those fixes made French `est-ce` a required identifier, which the unseen set showed (French recalled 88 %); the
   remedy (compound words in Romance-language text, a hyphenated word votes for a language with its first part) was
@@ -589,7 +589,7 @@ How the numbers were obtained, honestly:
     sets are unchanged.
 - **Review of 0.11.0 (Codex CLI)**, each fixed with a test (`tests/test_holographic_v0110_review.py`): Polish stems in
   text of no determined language joined English words (`army` / `arm`; now only with Polish letters); a host name in a
-  Turkish, Italian or Dutch question was no longer required (`hr-ovh'de`); a hiragana variant was replaced inside
+  Turkish, Italian or Dutch question was no longer required (`hr-vps'de`); a hiragana variant was replaced inside
   another word (`かいちょう`); English links of a rare sense were applied to the common one (`butter` / `butt`, `tower`
   / `tow`, `pear` / `pearl`); a Chinese one-character word recalled an idiom (`猫` / `猫腻`; now it needs a pair of the
   question or a second character); a kanji-only Japanese question missed a fact whose kana folded its spelling (a
@@ -597,7 +597,7 @@ How the numbers were obtained, honestly:
   "Günaydın canlarım!" recalled facts about Can; a damaged data file broke recall instead of being skipped. A second
   review (of German and Spanish, and of these fixes) found verb forms recalling facts alone (`tuviese` / `contiene`,
   `gelegt` / `liegt`, `Lucía` / `luce`, `fue` / `va`: now 0.6, never alone), a three-letter compound head doing the
-  same (`Alltag` / `Tag`), a host name lost in a Dutch tie with Spanish (`De server hr-ovh`: compounds only when every
+  same (`Alltag` / `Tag`), a host name lost in a Dutch tie with Spanish (`De server hr-vps`: compounds only when every
   tied language writes them), and a malformed compound row raising instead of being skipped; each has a test. The
   German set gives the same numbers after these fixes, quiet 8 of 10 again; every other set is unchanged.
 - **Not measured**: other languages (exact words, no stems, no function-word list): among them Vietnamese, Ukrainian
@@ -619,7 +619,7 @@ nightly (`keywords.enabled`).
 Measured on a third set per language: 8 questions that share no word with their fact except a name ("Where are we
 relocating?", "What breed is our pet?", "Can my office computer handle AI models?"), written after the keywords. The
 keywords came from a separate agent that saw only the facts and the description of `keywords`, not the questions; a
-first batch was thrown away because the description's example then was the store's own "we move to Chiang Mai".
+first batch was thrown away because the description's example then was the store's own "we move to Hua Hin".
 
 | | Without keywords: found / recalled | With keywords: found / recalled |
 |---|---|---|
@@ -639,7 +639,7 @@ first batch was thrown away because the description's example then was the store
 | German | 25 % / 38 % | 62 % / 75 % |
 | **All 112** | **42 / 33** | **94 / 88** |
 
-Without keywords, what is found comes through the name in three of the eight questions (Eva, Anton). With them, the
+Without keywords, what is found comes through the name in three of the eight questions (Irma, Anton). With them, the
 main sets lose nothing (280 / 280 found and recalled), one more extra fact comes per ten questions, and one chit-chat
 line of 70 recalls a fact ("Apa ibu kota Australia?" shares "kota", city, with a keyword "ganti kota"). The misses
 left are words the keywords did not include ("перебираемся" against "переселение", "morar" against "moradia"):

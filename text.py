@@ -1,7 +1,7 @@
 """Text normalisation shared by search, the prefetch gate, entity matching and duplicate checks.
 
 Every word gets comparison keys: its folded form plus its stem in the language of the text, and two words match when
-their keys meet, so "Маши" finds "Маша", "kucingnya" finds "kucing" and "لإيفا" finds "إيفا". The language comes from
+their keys meet, so "Маши" finds "Маша", "kucingnya" finds "kucing" and "لإيرما" finds "إيرما". The language comes from
 the script (Cyrillic: Russian; Arabic script: Arabic; Devanagari: Hindi; Bengali script: Bengali) and, for Latin
 script, from the function words the text uses ("the", "el", "le", "o", "yang", "der", "il", "bir", "się", "het":
 English, Spanish, French, Portuguese, Indonesian, German, Italian, Turkish, Polish, Dutch); Latin text with none of them
@@ -304,7 +304,7 @@ STOPWORDS = frozenset().union(*STOP.values())
 # Function words of a new language that are also content words, names or abbreviations of another ("come" and "dove"
 # in English, Spanish "come"; Turkish "kim", "ben"; Polish "bo", single "u", "w", "z"; Dutch "door", "met", "van", the
 # Thai "wat"): they do not vote for their language, and are dropped only in text that language alone is best
-# supported in, so "Ana come carne" stays Spanish and "Anton met Eva at the door" English.
+# supported in, so "Ana come carne" stays Spanish and "Anton met Irma at the door" English.
 _WEAK = {
     "it": _folded("per come dove ci vi io lei ed chi fra sei col"),
     "tr": _folded("kim ben ki var bile sen beni yani daha az sana ama"),
@@ -312,7 +312,7 @@ _WEAK = {
     "nl": _folded("door met van wat heel ben dank"),
 }
 # The other way round: words that tell the language but stay words. The Spanish forms of "ir" ("va", "van", "vas",
-# "voy") are function words of French and Italian here, and without them "Eva va a la escuela" was French or Italian
+# "voy") are function words of French and Italian here, and without them "Irma va a la escuela" was French or Italian
 # (no Spanish stems, no verb forms); as function words they would be dropped from a question, and "¿Cómo va Javier?"
 # meets "fue" through them (see word_lemmas).
 _VOTE_ONLY = {"es": _folded("va van vas voy")}
@@ -330,7 +330,7 @@ NEGATORS = _folded("""nicht kein keine keinen keinem keiner nie niemals nichts
     couldn't shouldn't haven't hasn't dont doesnt didnt isnt cant wont не нет никогда ни nunca jamás tampoco nadie
     ningún ninguna ninguno ne pas jamais aucun aucune non não nem nenhum nenhuma tidak tak bukan belum jangan لا لم لن
     ليس ليست नहीं न मत না নয় নেই নি nessuno nessuna niente nulla değil yok hiç asla hayır nigdy nic żaden żadna żadne
-    nikt niet geen nooit niets niemand""")  # not Italian "mai" (never): "Chiang Mai", French "mai"
+    nikt niet geen nooit niets niemand""")  # not Italian "mai" (never): French "mai" (May)
 
 
 # Function words a claim still needs ("with sugar" / "without sugar"), and conjunctions after which a negation belongs
@@ -503,7 +503,7 @@ def is_greeting(text: str) -> bool:
 
 
 def is_identifier(token: str) -> bool:
-    """'pve-01', 'v0.21.6', 'gpt-4o', 'host:22', '/etc/hosts', 'hr-ovh': kept exact, never stemmed or dropped, and a
+    """'pve-01', 'v0.21.6', 'gpt-4o', 'host:22', '/etc/hosts', 'hr-vps': kept exact, never stemmed or dropped, and a
     message naming one is about that one. A hyphenated word with a letter outside ASCII is a word ("кто-то",
     "peut-être"), and so is any letters-only hyphenated word in Spanish, French, Portuguese or Indonesian text (see
     analyze); French inversion, Portuguese enclisis and reduplication are taken apart before this is asked."""
@@ -576,7 +576,7 @@ def _snowball(stemmer, word: str, lang: str) -> str:
 
 
 # A conjunction (و ف) and/or a preposition (ب ك ل) glued to a word that starts with alef, as names and the article
-# do: "لإيفا" is "for Eva", "ولإيفا" "and for Eva". A lexical first letter ("كتاب") is left alone.
+# do: "لإيرما" is "for Irma", "ولإيرما" "and for Irma". A lexical first letter ("كتاب") is left alone.
 _AR_CLITICS = re.compile(r"^[وف]?[بكل]?(?=ا)")
 
 
@@ -1198,14 +1198,14 @@ def word_lemmas(word: str, lang: str) -> tuple:
 
 # -- tokenisation --------------------------------------------------------------------------------------------------
 
-# French/Italian elision: "d'Eva", "l'offre", "qu'on" are Eva, offre, on; Italian "quest'anno", "dov'è", "com'è",
+# French/Italian elision: "d'Irma", "l'offre", "qu'on" are Irma, offre, on; Italian "quest'anno", "dov'è", "com'è",
 # "cos'è", "anch'io", "nessun'altra" are anno, è, è, è, io, altra (not before a lone s: English "dev's", "Bell's").
 _ELISION = re.compile(r"^(?:l|d|j|m|n|s|t|c|qu|jusqu|lorsqu|puisqu|quoiqu|dell|all|nell|sull|dall|un)'(?=[^\W\d_])"
                       r"|^(?:quest|quell|dov|com|cos|anch|nessun|tutt|sant|senz|bell|buon|quant|quand|qual|dev)'"
                       r"(?=[^\W\d_])(?!s$)")
-# Turkish writes the case ending of a name after an apostrophe ("Ankara'da", "Ayşe'nin", "HR24'ün", "hr-ovh'de"): in
+# Turkish writes the case ending of a name after an apostrophe ("Ankara'da", "Ayşe'nin", "HR24'ün", "hr-vps'de"): in
 # text that may be Turkish the name is the word, and the whole stays in the bag. These endings only (folded), so
-# "Eva's", "o'clock" and "rock'n'roll" are left alone.
+# "Irma's", "o'clock" and "rock'n'roll" are left alone.
 _TR_ENDINGS = _folded("""a e ı i u ü ya ye yı yi yu yü na ne nı ni nu nü da de ta te nda nde dan den tan ten ndan nden
     ın in un ün nın nin nun nün yın yin yun yün la le yla yle lar ler lara lere larda lerde lardan lerden ların lerin
     ları leri sı si su sü sına sine sında sinde sından sinden sının sinin daki deki taki teki ndaki ndeki dır dir dur
@@ -1232,7 +1232,7 @@ def _strip_edges(token: str) -> str:
 
 
 def _script_split(token: str) -> list[str]:
-    """A hyphenated token split where the script changes: "hr-ovh-এর" is hr-ovh + এর, "IT-тусовка" is it +
+    """A hyphenated token split where the script changes: "hr-vps-এর" is hr-vps + এর, "IT-тусовка" is it +
     тусовка, "03:00-এ" is 03:00 + এ (digits and symbols go with Latin)."""
     if "-" not in token or UNSEGMENTED.search(token):
         return [token]
@@ -1274,7 +1274,7 @@ def _resolve_hyphen(group: str, langs: tuple, determined: bool) -> tuple[str, li
 
 def _apostrophe(group: str, langs: tuple, determined: bool) -> tuple[str, list[str]]:
     """(the word, extra bag entries) of a word with an apostrophe inside: a Turkish ending off a name ("ankara'da" is
-    ankara) in text that may be Turkish; the Dutch plural and possessive 's ("pinda's", "eva's") in Dutch text."""
+    ankara) in text that may be Turkish; the Dutch plural and possessive 's ("pinda's", "irma's") in Dutch text."""
     head, _, tail = group.partition("'")
     if not head or not tail:
         return group, []
@@ -1360,8 +1360,8 @@ def analyze(text: str) -> Analysis:
         langs, determined = tuple(lang for lang in LATIN if lang not in _EVIDENCE or (
             _EVIDENCE[lang] is not None and _EVIDENCE[lang].search(lowered))), False
     # Spanish, French, Portuguese, Indonesian and German write compound words with a hyphen; English text, text of the
-    # newer languages and text of no determined language keep letters-only hyphenated tokens as identifiers ("hr-ovh",
-    # also in "hr-ovh'de")
+    # newer languages and text of no determined language keep letters-only hyphenated tokens as identifiers ("hr-vps",
+    # also in "hr-vps'de")
     compounds = determined and _HYPHEN_COMPOUNDS.issuperset(langs)  # every tied language ("de" is es/fr/pt/nl)
     english = determined and "en" in langs  # a tie ("on" is English and French) still includes English
     # Cyrillic is Russian for roots unless the text has letters Russian does not (Ukrainian, Belarusian): the Russian
@@ -1447,9 +1447,9 @@ def _primary_stem(word: str, lang: str, written: str) -> str:
 
 
 def name_forms(word: str) -> frozenset:
-    """The keys of a folded word read as a name: the word and every stem, the short ones too. «Ева», «Евы» and «Еве»
-    share «ев», which the words of a plain Russian text do not carry: _keys keeps a stem under _MIN_STEM only in text
-    whose language is determined, and that is told by Latin function words ("the Ева" has «ев», «Ева любит чай»
+    """The keys of a folded word read as a name: the word and every stem, the short ones too. «Яна», «Яны» and «Яне»
+    share «ян», which the words of a plain Russian text do not carry: _keys keeps a stem under _MIN_STEM only in text
+    whose language is determined, and that is told by Latin function words ("the Яна" has «ян», «Яна любит чай»
     has not). frozenset() for a word of a script whose names are not inflected (a Latin name matches as written)
     or an unsegmented run; the callers leave identifiers out."""
     script = word_script(word)
@@ -1461,7 +1461,7 @@ def name_forms(word: str) -> frozenset:
 def name_keys(name: str) -> tuple[tuple[frozenset, bool], ...]:
     """(forms, exact?) of each word of an entity name. Latin-script names are not inflected, so they match only
     themselves (and the English possessive): "Jean" is not mentioned by "jeans", "Rose" not by "roses". Names in
-    other scripts match by their keys, which carry their inflections ("Маши" mentions "Маша", "لإيفا" "إيفا")."""
+    other scripts match by their keys, which carry their inflections ("Маши" mentions "Маша", "لإيرما" "إيرما")."""
     out = []
     for word in analyze(name).words:
         forms = name_forms(word.text) if not word.identifier else frozenset()
@@ -1969,7 +1969,7 @@ def _plain_grams(run: str) -> list[tuple[str, float]]:
 
 def query_grams(text: str) -> list[tuple[str, float]]:
     """Weighted substrings to look for when *text* contains unsegmented script: its content n-grams, plus the Latin
-    words and identifiers written into it ("HR24", "hr-ovh", "Python"), which the tokenizer glues to the
+    words and identifiers written into it ("HR24", "hr-vps", "Python"), which the tokenizer glues to the
     neighbouring characters. Lower-cased; weight-0 grams dropped; [] for text without unsegmented script."""
     lowered = _fold_text((text or "").lower())
     if not UNSEGMENTED.search(lowered):
@@ -2131,8 +2131,8 @@ class Term:
 
     @cached_property
     def _bounded(self) -> re.Pattern:
-        # An ASCII identifier is bounded by ASCII word characters only: in Chinese text "hr-ovh" is glued to the
-        # characters around it ("服务器hr-ovh运行").
+        # An ASCII identifier is bounded by ASCII word characters only: in Chinese text "hr-vps" is glued to the
+        # characters around it ("服务器hr-vps运行").
         edge = r"A-Za-z0-9_\-" if self.word.isascii() else r"\w\-"
         return re.compile(rf"(?<![{edge}])" + re.escape(self.word) + rf"(?![{edge}])")
 

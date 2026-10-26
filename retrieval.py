@@ -71,7 +71,7 @@ def _inner_capitals(query: str) -> list[str]:
 
 def _name_forms(analysis) -> frozenset:
     """Keys of a fact's words read as names (text.name_forms): the short stems a plain text drops, by which a case
-    form of a known name is found in it («Евы» holds «ев»). Not its function words: «и» is no form of «Ия»."""
+    form of a known name is found in it («Яны» holds «ян»). Not its function words: «и» is no form of «Ия»."""
     return frozenset().union(*(name_forms(w.text) for w in analysis.words if not w.stop and not w.identifier))
 
 
@@ -685,9 +685,9 @@ class FactRetriever:
 
     def _named_terms(self, terms) -> dict:
         """term -> the keys it shares with a name the store knows (an entity's name or alias) and not with its own
-        forms. «Еве», «Евы» and «Ева» share the stem «ев», which plain Russian text keeps out of a word's keys
-        (_MIN_STEM: "ев"* would find «евро» in the index) but name_keys reads in a name, so a fact that says «у Евы»
-        did not meet a question about «Еве» though «Маши» meets «Маша» (0.18.3). Only by the keys of names the store
+        forms. «Яне», «Яны» and «Яна» share the stem «ян», which plain Russian text keeps out of a word's keys
+        (_MIN_STEM: "ян"* would find «январь» in the index) but name_keys reads in a name, so a fact that says «у Яны»
+        did not meet a question about «Яне» though «Маши» meets «Маша» (0.18.3). Only by the keys of names the store
         holds: «ель» and «ела» share «ел» too, and stay apart. A Latin name matches as written and gives no key."""
         known = self.store.known_name_forms()
         out = {}
@@ -729,7 +729,7 @@ class FactRetriever:
                     gram_kept.append(f)
         terms = [t for t in query_terms(_RE_UNSEGMENTED.sub(" ", query or "")) if t.word]
         identifiers = [t for t in terms if t.identifier]
-        if identifiers:  # "hr-ovh" inside Chinese text: the character overlap must not stand in for the host
+        if identifiers:  # "hr-vps" inside Chinese text: the character overlap must not stand in for the host
             gram_kept = [f for f in gram_kept
                          if any(t.found_in(analyze(_fact_text(f))) for t in identifiers)]
         if not terms or not candidates:
@@ -739,8 +739,8 @@ class FactRetriever:
         named = self._named_terms(terms)
         texts = self._texts() if scan or named else []
         scan_df = {t: sum(1 for _, _, a in texts if t.found_in(a)) for t in scan}
-        # A form of a name the store knows is held by the facts that hold any form of it («Еве» by «у Евы балет»),
-        # which the FTS index cannot count (it finds "еве"*, not "евы"); counted over the texts, as a scan term is.
+        # A form of a name the store knows is held by the facts that hold any form of it («Яне» by «у Яны балет»),
+        # which the FTS index cannot count (it finds "яне"*, not "яны"); counted over the texts, as a scan term is.
         scan_df.update({t: sum(1 for _, _, a in texts if t.found_in(a) or not probe.isdisjoint(_name_forms(a)))
                         for t, probe in named.items()})
         weights, unknown, freq = {}, [], {}
@@ -760,7 +760,7 @@ class FactRetriever:
         held: dict = {}  # term -> facts that hold the word itself (the FTS count also takes "carpet" for "car")
 
         def by_name(term, analysis) -> bool:
-            """A form of a name the store knows, in a fact holding another form of it: «Еве» in «у Евы балет»."""
+            """A form of a name the store knows, in a fact holding another form of it: «Яне» in «у Яны балет»."""
             return term in named and not named[term].isdisjoint(_name_forms(analysis))
 
         def held_by_others(term) -> bool:
@@ -774,7 +774,7 @@ class FactRetriever:
             if identifiers and not any(t.found_in(analysis) for t in identifiers):
                 continue  # a message naming pve-01 or v0.21.6 is about that, not about pve-010
             strength = {t: t.match(analysis) for t in weights}  # 1.0 the word itself, _DERIV_WEIGHT its root
-            for t in named:  # the name's other case form is the word itself: «Ева» and «Евы» are «Еве»
+            for t in named:  # the name's other case form is the word itself: «Яна» and «Яны» are «Яне»
                 if t in strength and strength[t] < 1.0 and by_name(t, analysis):
                     strength[t] = 1.0
             # A root alone never recalls: suffix rules cannot tell a derivation from a look-alike ("войной" / "вой",

@@ -1,9 +1,9 @@
 """A case form of a known name meets its other forms in the coverage gate (0.18.3).
 
-A family store, 0.18.2: «что Еве нужно взять с собой во вторник и какой чай она любит?» brought the fact about
-Tuesdays («у Евы балет…») and cut «Ева любит жасминовый чай…» at coverage 0.25. In plain Russian text «Ева», «Евы»
-and «Еве» have no key in common: Snowball's stem «ев» is under _MIN_STEM and dropped (as a prefix it would find
-«евро»), while «Ксюша» and «Ксюше» share «ксюш». The store knew the name all along: name_keys reads «ев» in an
+A family store, 0.18.2: «что Яне нужно взять с собой во вторник и какой чай она любит?» brought the fact about
+Tuesdays («у Яны балет…») and cut «Яна любит жасминовый чай…» at coverage 0.25. In plain Russian text «Яна», «Яны»
+and «Яне» have no key in common: Snowball's stem «ян» is under _MIN_STEM and dropped (as a prefix it would find
+«январь»), while «Ксюша» and «Ксюше» share «ксюш». The store knew the name all along: name_keys reads «ян» in an
 entity's name. The gate now credits a term that is a form of a name the store knows to a fact holding another form
 of it. Nothing else changes: not Word.keys, not the FTS index, not the duplicate and conflict checks at write time,
 not entity linking, not a store that does not hold the name, not Latin names. The facts are synthetic, modelled on
@@ -24,8 +24,8 @@ from hermes_plugin_holographic.text import query_terms
 
 # key -> text; the words of the questions below are spread over the fillers, so that IDF is that of a household store
 FACTS = {
-    "ballet": "По вторникам у Евы балет; во вторник напоминать взять балетную форму.",
-    "tea": "Ева любит жасминовый чай.",
+    "ballet": "По вторникам у Яны балет; во вторник напоминать взять балетную форму.",
+    "tea": "Яна любит жасминовый чай.",
     "anton_coffee": "Антон пьёт чёрный кофе без сахара.",
     "ksu_tea": "Ксюша любит зелёный чай с мятой.",
     "dima_pool": "Дима ходит в бассейн по вторникам и четвергам.",
@@ -51,9 +51,9 @@ FACTS = {
     "bees": "Пчелиный рой улетел в сад.",
 }
 
-TWO_TOPICS = "что Еве нужно взять с собой во вторник и какой чай она любит?"
+TWO_TOPICS = "что Яне нужно взять с собой во вторник и какой чай она любит?"
 
-# How a store comes to hold «Ева»: declared with a fact (entities=[...]); guessed from a two-word name in a text;
+# How a store comes to hold «Яна»: declared with a fact (entities=[...]); guessed from a two-word name in a text;
 # given an alias (the alias action creates the entity, entity_type stays 'unknown'); left by an older version as a
 # one-word guessed name no fact is linked to (entity_type 'unknown', the case's store). None: the store never heard
 # the name.
@@ -67,16 +67,16 @@ def _store(tmp_path, how: str | None):
     for key, text in FACTS.items():
         args = {"action": "add", "content": text}
         if how == "declared" and key == "tea":
-            args["entities"] = ["Ева"]
+            args["entities"] = ["Яна"]
         back[json.loads(provider.handle_tool_call("fact_store", args))["fact_id"]] = key
     if how == "phrase":
-        result = provider.handle_tool_call("fact_store", {"action": "add", "content": "Ева Гавриленко записана в школу балета."})
-        back[json.loads(result)["fact_id"]] = "eva_full"
+        result = provider.handle_tool_call("fact_store", {"action": "add", "content": "Яна Соколова записана в школу балета."})
+        back[json.loads(result)["fact_id"]] = "kid_full"
     elif how == "alias":
-        assert "error" not in provider.handle_tool_call("fact_store", {"action": "alias", "entity": "Ева", "content": "Евочка"})
+        assert "error" not in provider.handle_tool_call("fact_store", {"action": "alias", "entity": "Яна", "content": "Яночка"})
     elif how == "legacy":
         conn = sqlite3.connect(str(tmp_path / "names.db"))  # another connection: the index sees the change
-        conn.execute("INSERT INTO entities (name, name_key) VALUES ('Ева', 'ева')")
+        conn.execute("INSERT INTO entities (name, name_key) VALUES ('Яна', 'яна')")
         conn.commit()
         conn.close()
     return provider, back
@@ -124,11 +124,11 @@ def test_a_question_of_two_topics_brings_both_facts_about_the_name(tmp_path, how
 
 
 @pytest.mark.parametrize("query, wanted", [
-    ("Какой чай нравится Еве?", "tea"),
-    ("Что любит Еве?", "tea"),
-    ("Чем угостить Еву: какой чай?", "tea"),
-    ("Какой чай купить для Евы?", "tea"),
-    ("Ева по вторникам занята?", "ballet"),  # the other way round: the question in the nominative, the fact «у Евы»
+    ("Какой чай нравится Яне?", "tea"),
+    ("Что любит Яне?", "tea"),
+    ("Чем угостить Яну: какой чай?", "tea"),
+    ("Какой чай купить для Яны?", "tea"),
+    ("Яна по вторникам занята?", "ballet"),  # the other way round: the question in the nominative, the fact «у Яны»
 ])
 def test_a_case_form_of_the_name_meets_its_other_forms(known, query, wanted):
     provider, back = known
@@ -139,16 +139,16 @@ def test_a_case_form_of_the_name_meets_its_other_forms(known, query, wanted):
 def test_the_gate_credits_the_name_by_the_key_its_forms_share(known):
     provider, back = known
     tea, = _rows(provider, back, "tea")
-    assert {"ев", "ева"} <= provider._store.known_name_forms()
-    named = provider._retriever._named_terms(query_terms("Какой чай нравится Еве?"))
-    assert {t.word: sorted(probe) for t, probe in named.items()} == {"еве": ["ев"]}
-    assert _gate(provider, "Какой чай нравится Еве?", [tea]) == [tea["fact_id"]]
+    assert {"ян", "яна"} <= provider._store.known_name_forms()
+    named = provider._retriever._named_terms(query_terms("Какой чай нравится Яне?"))
+    assert {t.word: sorted(probe) for t, probe in named.items()} == {"яне": ["ян"]}
+    assert _gate(provider, "Какой чай нравится Яне?", [tea]) == [tea["fact_id"]]
 
 
 def test_an_alias_gives_its_forms_too(known):
     provider, back = known
-    provider.handle_tool_call("fact_store", {"action": "alias", "entity": "Ева", "content": "Евочка"})
-    assert {"ев", "евочк"} <= provider._store.known_name_forms()
+    provider.handle_tool_call("fact_store", {"action": "alias", "entity": "Яна", "content": "Яночка"})
+    assert {"ян", "яночк"} <= provider._store.known_name_forms()
 
 
 # -- what stays as it was ------------------------------------------------------------------------------------------
@@ -159,7 +159,7 @@ def test_an_alias_gives_its_forms_too(known):
     ("Я рою грядку?", "bees"),  # «рою» (I dig) and «рой» (a swarm) share «ро»
 ])
 def test_words_sharing_a_short_stem_stay_apart_when_neither_is_a_name(known, query, key):
-    provider, back = known  # the store knows a name («Ева»), not these words
+    provider, back = known  # the store knows a name («Яна»), not these words
     row, = _rows(provider, back, key)
     assert _gate(provider, query, [row]) == []
 
@@ -167,7 +167,7 @@ def test_words_sharing_a_short_stem_stay_apart_when_neither_is_a_name(known, que
 def test_a_name_the_store_does_not_know_is_read_as_before(unknown):
     provider, back = unknown  # «Кот Барсик», guessed from its fact, is the store's only name
     tea, = _rows(provider, back, "tea")
-    assert _gate(provider, "Какой чай нравится Еве?", [tea]) == []
+    assert _gate(provider, "Какой чай нравится Яне?", [tea]) == []
     assert "tea" not in _recalled(provider, back, TWO_TOPICS)
 
 
@@ -190,12 +190,12 @@ def test_the_checks_at_write_time_read_the_texts_as_before(known):
     provider, _ = known
     add = lambda text: json.loads(provider.handle_tool_call("fact_store", {"action": "add", "content": text}))  # noqa: E731
     conflicts = lambda result: [c["content"] for c in result.get("possible_conflicts", ())]  # noqa: E731
-    assert not {"similar", "possible_conflicts", "duplicate_of"} & set(add("Еве нравится жасминовый чай."))
-    assert conflicts(add("Ева не любит жасминовый чай.")) == ["Ева любит жасминовый чай."]
-    # the same name in another case: the negation meets the text of that form only, not «Ева любит…»
-    assert conflicts(add("Еве не нравится жасминовый чай.")) == ["Еве нравится жасминовый чай."]
+    assert not {"similar", "possible_conflicts", "duplicate_of"} & set(add("Яне нравится жасминовый чай."))
+    assert conflicts(add("Яна не любит жасминовый чай.")) == ["Яна любит жасминовый чай."]
+    # the same name in another case: the negation meets the text of that form only, not «Яна любит…»
+    assert conflicts(add("Яне не нравится жасминовый чай.")) == ["Яне нравится жасминовый чай."]
 
 
 def test_chit_chat_naming_the_person_recalls_nothing(known):
     provider, back = known
-    assert _recalled(provider, back, "Передай Еве привет, скажи, что я задержусь, чай выпью на работе") == set()
+    assert _recalled(provider, back, "Передай Яне привет, скажи, что я задержусь, чай выпью на работе") == set()

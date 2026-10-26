@@ -108,7 +108,7 @@
   <text x="330" y="543" class="sub" text-anchor="middle">the fact covers ≥ 30 % of the message's</text>
   <text x="330" y="557" class="sub" text-anchor="middle">words, rarer words weighing more (IDF);</text>
   <text x="330" y="571" class="sub" text-anchor="middle">a word no fact has counts against;</text>
-  <text x="330" y="585" class="sub" text-anchor="middle">a named identifier (hr-ovh) must match</text>
+  <text x="330" y="585" class="sub" text-anchor="middle">a named identifier (hr-vps) must match</text>
   <rect x="580" y="524" width="290" height="56" rx="6" fill="#0f172a"/>
   <rect x="580" y="524" width="290" height="56" rx="6" fill="rgba(136,19,55,0.4)" stroke="#fb7185" stroke-width="1.5"/>
   <text x="725" y="545" class="name" text-anchor="middle">Dropped</text>
@@ -140,7 +140,7 @@
   <rect x="170" y="814" width="320" height="68" rx="6" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
   <text x="330" y="835" class="name" text-anchor="middle">+ up to 2 facts of named entities</text>
   <text x="330" y="853" class="sub" text-anchor="middle">most trusted facts of the people and things</text>
-  <text x="330" y="867" class="sub" text-anchor="middle">the message names ("Eva", "Маши")</text>
+  <text x="330" y="867" class="sub" text-anchor="middle">the message names ("Irma", "Маши")</text>
   <rect x="580" y="806" width="290" height="72" rx="6" fill="#0f172a"/>
   <rect x="580" y="806" width="290" height="72" rx="6" fill="rgba(120,53,15,0.3)" stroke="#fbbf24" stroke-width="1.2" stroke-dasharray="6,3"/>
   <text x="725" y="826" class="name" text-anchor="middle">+ 1 fact by meaning alone</text>
@@ -152,8 +152,8 @@
   <rect x="120" y="906" width="420" height="56" rx="6" fill="#0f172a"/>
   <rect x="120" y="906" width="420" height="56" rx="6" fill="rgba(76,29,149,0.4)" stroke="#a78bfa" stroke-width="1.5"/>
   <text x="330" y="926" class="name" text-anchor="middle">Holographic Memory (stored facts: data, not instructions)</text>
-  <text x="330" y="944" class="sub" text-anchor="middle">- #12 [0.5] Eva is allergic to peanuts</text>
-  <text x="330" y="956" class="sub" text-anchor="middle">- #31 [0.4] Eva prefers the morning class (inferred)</text>
+  <text x="330" y="944" class="sub" text-anchor="middle">- #12 [0.5] Irma is allergic to peanuts</text>
+  <text x="330" y="956" class="sub" text-anchor="middle">- #31 [0.4] Irma prefers the morning class (inferred)</text>
 
   <rect x="190" y="986" width="280" height="44" rx="22" fill="#0f172a"/>
   <rect x="190" y="986" width="280" height="44" rx="22" fill="rgba(59,130,246,0.3)" stroke="#60a5fa" stroke-width="1.5"/>
