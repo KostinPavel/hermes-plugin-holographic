@@ -36,6 +36,7 @@ try:
 except ImportError:  # pragma: no cover - optional, as for HRR: without it the feature stays off
     np = None
 
+from . import net  # the socket of the in-flight request, for the caller to end the read (issue #26)
 from .text import UNSEGMENTED, is_greeting, query_terms
 
 logger = logging.getLogger(__name__)
@@ -209,7 +210,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-_OPENER = urllib.request.build_opener(_NoRedirect)
+_OPENER = net.opener(_NoRedirect)
 
 
 def _vectors(payload, count: int, dimensions: int | None = None) -> list:
@@ -574,6 +575,7 @@ class Embedder:
             headers["Authorization"] = f"Bearer {key}"
         request = urllib.request.Request(self._url, data=json.dumps(body).encode("utf-8"), headers=headers,
                                          method="POST")
+        held = net.wire(request)  # the request's socket, for the caller to end the read on its deadline (issue #26)
         with self._lock:
             if self._paused_until > _now():  # another caller's failure came while this one waited
                 return None
@@ -606,10 +608,16 @@ class Embedder:
         if timing is not None:
             timing["took"] = time.perf_counter() - sent
         alive = worker.is_alive()
+        error = box.get("error")
+        # issue #26: the caller's wait is over, so the read it was waiting for ends with it — the socket is shut
+        # down from here and the worker dies with the caller instead of reading on (nothing else bounds the header
+        # phase). The snapshot above is taken first: every judgement below must describe the wait, not what the
+        # shutdown makes the worker raise a moment later.
+        if alive:
+            net.cut(held)
         # urllib's own timeout may end the request at the same moment: a read times out bare, waiting for the headers
         # comes wrapped in URLError (review 0.16.3), as does a connection that timed out (_MAX_CUTS bounds that for
         # facts). A connection refused or reset is a failure.
-        error = box.get("error")
         timed_out = alive or isinstance(error, TimeoutError) or (
             isinstance(error, urllib.error.URLError) and isinstance(error.reason, TimeoutError))
         if timed_out:
