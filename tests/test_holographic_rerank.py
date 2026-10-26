@@ -616,3 +616,79 @@ def test_failed_call_shows_exactly_the_off_block(tmp_path, endpoint):
     assert len(re.findall(r"- #\d+", off_block)) == 6  # five lexical ones + the sixth from the entity stream
     off.shutdown()
     down.shutdown()
+
+
+# -- a query or a fact too long for the model (Mia 2026-10-26) ---------------------------------------------------
+# llama-server answered 500 for the whole request when a query-document pair ran past its batch (643-732 tokens at 512)
+# and 400 past the model's 1024-token context: 36 failed calls in a week on Mia's night jobs, whose prompts are long.
+# A message over RERANK_MAX_QUERY_CHARS is not rescored (its order stays the rerank-off order, not a failure) and each
+# document is cut to what the message leaves of RERANK_PAIR_CHARS, a bound that holds in tokens (rerank.py).
+
+LONG = "when does the backup run? " + "Context of the nightly job, step by step. " * 40
+
+
+def test_a_long_message_keeps_the_rerank_off_block_and_does_not_pause(tmp_path, endpoint):
+    assert len(LONG.strip()) > rerank.RERANK_MAX_QUERY_CHARS
+    off = _provider(tmp_path, "off.db")
+    _fill(off)
+    on = _provider(tmp_path, "on.db", **RANK)
+    _fill(on)
+    off_block, on_block = _block(off, LONG), _block(on, LONG)
+    assert endpoint.requests == [], "a message too long for the model must not be sent"
+    assert on_block and on_block == off_block, "the block is exactly what a disabled rerank shows"
+    r = on._rescorer
+    assert r.last_status == "skipped_long"
+    assert r.failures == 0 and not r.status().startswith("paused"), "a skip is not a failure"
+    off.shutdown()
+    on.shutdown()
+
+
+def test_a_long_message_while_paused_is_a_skip_not_a_failure(tmp_path, endpoint):
+    """Codex review of #38: the pause was checked first, so a long message during a pause said `failed`, which the
+    benchmark runner treats as a failed call and stops on."""
+    p = _provider(tmp_path, **RANK)
+    _fill(p)
+    endpoint.fail = ConnectionRefusedError("refused")
+    _block(p, "when does the backup run?")
+    endpoint.fail = None
+    assert p._rescorer.status().startswith("paused")
+    assert p._rescorer.scores(LONG, ["a first fact", "a second fact"]) is None
+    assert p._rescorer.last_status == "skipped_long"
+    p.shutdown()
+
+
+def test_each_pair_sent_fits_the_pair_budget_and_carries_the_long_fact_cut(tmp_path, endpoint):
+    p = _provider(tmp_path, **RANK)
+    long_fact = "The monthly backup runs from the tape box at 5 am. " + "Details of the tape rotation. " * 60
+    query = "when does the backup run? " + "Which box and which hour, for the monthly one? " * 9  # under the cap
+    assert len(query.strip()) <= rerank.RERANK_MAX_QUERY_CHARS
+    ranked = p._rescorer.scores(query, ["The nightly backup runs from the OES box at 2 am.", long_fact])
+    assert ranked is not None and endpoint.requests
+    body = endpoint.requests[-1]["body"]
+    budget = rerank.RERANK_PAIR_CHARS - len(body["query"])
+    assert body["documents"][1] == long_fact[:budget], "the long fact goes out as its own first characters"
+    assert all(len(body["query"]) + len(d) <= rerank.RERANK_PAIR_CHARS for d in body["documents"])
+    p.shutdown()
+
+
+def test_dense_text_pairs_stay_within_the_pair_budget(tmp_path, endpoint):
+    """CJK and emoji: one character can be one token of its own, so the budget is counted in characters of the pair."""
+    p = _provider(tmp_path, **RANK)
+    query = "备份什么时候运行" * 60  # 480 characters, no spaces
+    assert len(query) <= rerank.RERANK_MAX_QUERY_CHARS
+    docs = ["夜间备份在凌晨两点运行" * 100, "🙂🙃" * 400]
+    assert p._rescorer.scores(query, docs) is not None
+    body = endpoint.requests[-1]["body"]
+    assert all(len(body["query"]) + len(d) <= rerank.RERANK_PAIR_CHARS for d in body["documents"])
+    p.shutdown()
+
+
+def test_the_length_rule_measures_the_text_that_is_sent(tmp_path, endpoint):
+    """Codex review of #38: the guard measured the stripped message and the request cut the raw one, so a message
+    led by 1,000 blank lines passed the guard and sent only the blank lines. What is checked is what goes out."""
+    p = _provider(tmp_path, **RANK)
+    _fill(p)
+    p.prefetch("\n" * 1000 + "when does the backup run?")
+    assert endpoint.requests, "a short question behind blank lines is still rescored"
+    assert endpoint.requests[-1]["body"]["query"] == "when does the backup run?"
+    p.shutdown()

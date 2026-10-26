@@ -13,6 +13,12 @@
 
 ### Fixed
 
+- **A long message no longer fails the rerank call.** jina-reranker-v2 takes 1,024 tokens per query-document pair, and
+  llama-server refuses the whole request when one pair runs over: on Mia's night jobs, whose prompts are long, that was
+  36 failed calls in a week, each pausing the endpoint. A message over 500 characters is not sent (`skipped_long`,
+  the rerank-off order, not a failure — also while the endpoint is paused), and each fact is cut to what the message
+  leaves of 1,000 characters for the pair (was 2,000 for each): a token of XLM-RoBERTa's tokenizer covers at least one
+  character, so the pair stays under 1,024 tokens for CJK and emoji too.
 - **Three log lines printed a database error's text.** SQLite quotes a column's value in some messages, so the
   text could carry a fact into the log. The deferred recall counts (store and provider) and the prompt block that
   cannot count the facts now log the error's kind (`OperationalError (SQLITE_BUSY)`), as the rerank stage has since
