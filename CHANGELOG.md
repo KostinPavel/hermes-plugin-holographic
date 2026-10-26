@@ -1,6 +1,5 @@
 # Changelog
 
-<<<<<<< HEAD
 ## Unreleased
 
 ### Added
@@ -41,7 +40,7 @@
   Readers of 0.15–0.18 see the keep only, the copy in `as_of` under its own id without the clip, `history` without
   `merged_into`. v0.7.0 and older read `facts` as before; what they add of a copy's text is a second fact that is
   not folded back.
-=======
+
 ## 0.18.3 — 2026-10-26
 
 A case form of a Russian name the store knows meets its other forms before the turn («Еве» finds «у Евы»), and
@@ -76,7 +75,6 @@ only where a question holds such a form and the store holds the name.
   multilingual set (ru): hits, noise and confusion unchanged, no target lost; one household question («Во сколько
   начинается смена Оли в аптеке?») now brings two more facts about Olya's pharmacy, as its English and Chinese
   versions did.
->>>>>>> up/main
 
 ## 0.18.2 — 2026-10-25
 
