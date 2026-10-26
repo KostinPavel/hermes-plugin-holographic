@@ -109,6 +109,9 @@ class _TLSServer:
         self.drip = drip
         self.handshake_delay = handshake_delay
         self.note: OSError | None = None
+        self.sent = 0  # diagnostics for the assertions below: how far the answer got, and when it started
+        self.drip_start: float | None = None
+        self.answer_len = 0
         self.stop = threading.Event()
         self.received = threading.Event()
         self.ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -148,9 +151,12 @@ class _TLSServer:
                     self.received.set()
                     answer = (b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
                               b"Content-Length: 13\r\nX-Slow: " + b"a" * 200 + b"\r\n\r\n" + b'{"results":[]}')
+                    self.answer_len = len(answer)
                     if self.mode == "drip":
+                        self.drip_start = time.perf_counter()
                         for byte in answer:
                             tls.sendall(bytes([byte]))
+                            self.sent += 1
                             if self.stop.wait(self.drip):
                                 break
                     else:
@@ -371,19 +377,27 @@ def test_after_the_handshake_the_cut_reaches_the_wrapped_socket():
     and cut() would silently find nothing — in the very phase #26 is about, the header read after the handshake."""
     server = _TLSServer("drip", drip=0.03)
     try:
+        t0 = time.perf_counter()
         request = _https_request(server.port)
         held = net.wire(request)
         box = {}
         t = threading.Thread(target=_read, args=(_https_opener(), request, box), daemon=True)
         t.start()
         assert server.received.wait(2.0), "the server has the whole request"
+        t_rcv = time.perf_counter()
         assert isinstance(held.get("sock"), ssl.SSLSocket), \
             f"after the wrap the holder must hold the socket the request reads from, got {held.get('sock')!r}"
         t.join(0.5)  # the deadline: the header phase is dripping
         assert t.is_alive(), "at the deadline the headers are still coming a byte at a time"
         net.cut(held)
+        t_cut = time.perf_counter()
         t.join(1.0)
-        assert not t.is_alive(), "the cut must reach the wrapped socket"
-        assert isinstance(box.get("error"), _BROKEN), f"got {box.get('error')!r}"
+        t_end = time.perf_counter()
+        state = (f"rcv=+{t_rcv - t0:.2f}s cut=+{t_cut - t0:.2f}s end=+{t_end - t0:.2f}s | server: "
+                 f"{server.sent}/{server.answer_len} bytes, drip_start="
+                 f"{f'+{server.drip_start - t0:.2f}s' if server.drip_start else 'never'}, "
+                 f"stop={server.stop.is_set()}, note={server.note!r}")
+        assert not t.is_alive(), f"the cut must reach the wrapped socket; {state}"
+        assert isinstance(box.get("error"), _BROKEN), f"got {box.get('error')!r}; box={box}; {state}"
     finally:
         server.close()
