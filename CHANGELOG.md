@@ -11,6 +11,13 @@
   were, and a nightly extraction found it five days later (five such misses in six days in that setup). The block
   stays a fixed text, one line longer.
 
+### Fixed
+
+- **Three log lines printed a database error's text.** SQLite quotes a column's value in some messages, so the
+  text could carry a fact into the log. The deferred recall counts (store and provider) and the prompt block that
+  cannot count the facts now log the error's kind (`OperationalError (SQLITE_BUSY)`), as the rerank stage has since
+  0.18.2. `error_kind` moves to `history.py` so the store can use it; `retrieval.error_kind` still works.
+
 ## 0.18.3 — 2026-10-26
 
 A case form of a Russian name the store knows meets its other forms before the turn («Еве» finds «у Евы»), and
