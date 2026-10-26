@@ -18,6 +18,15 @@ from datetime import date, datetime, timezone
 
 logger = logging.getLogger(__name__)
 
+
+def error_kind(exc: BaseException) -> str:
+    """What failed, for a log line or stats: the exception's type and SQLite's error name (SQLITE_BUSY), never its
+    text. SQLite quotes a column's value in some messages ("Could not decode to UTF-8 column 'content' with text
+    '...'"), so the text could carry a fact or a message past the screen."""
+    name = getattr(exc, "sqlite_errorname", None)
+    return f"{type(exc).__name__} ({name})" if name else type(exc).__name__
+
+
 HISTORY_SCHEMA = """
 CREATE TABLE IF NOT EXISTS fact_versions (
     version_id     INTEGER PRIMARY KEY AUTOINCREMENT,

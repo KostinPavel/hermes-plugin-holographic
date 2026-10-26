@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 from . import holographic as hrr
 from . import text as _text
 from .embeddings import Meaning, VectorIndex
-from .history import CLOSED, version_state
+from .history import CLOSED, error_kind, version_state
 from .text import (CJK_NEGATORS, CLAIM_WORDS, CONTRASTIVE, NEGATORS, UNSEGMENTED, analyze, content_chars,
                    content_keys, content_stems, gram_coverage, is_chinese, is_greeting, is_sea, name_forms,
                    query_grams, query_terms, run_grams, soft_jaccard, soft_overlap, words, zh_char_text)
@@ -85,14 +85,6 @@ _WARNED: set[str] = set()  # failures said once each (a damaged index fails on e
 # from growing it for ever. 64 was reached by the provider's actions alone and hid the next new failure (Codex
 # review of 0.17.8).
 _WARNED_MAX = 4096
-
-
-def error_kind(exc: BaseException) -> str:
-    """What failed, for a log line or stats: the exception's type and SQLite's error name (SQLITE_BUSY), never its
-    text. SQLite quotes a column's value in some messages ("Could not decode to UTF-8 column 'content' with text
-    '...'"), so the text could carry a fact or a message past the screen."""
-    name = getattr(exc, "sqlite_errorname", None)
-    return f"{type(exc).__name__} ({name})" if name else type(exc).__name__
 
 
 def _warn_once(what: str, exc: Exception) -> None:
