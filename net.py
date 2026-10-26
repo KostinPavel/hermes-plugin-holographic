@@ -87,6 +87,12 @@ def cut(holder: dict | None) -> None:
     Nothing to do when the holder has no socket yet — the request is still connecting, or still resolving the
     name (a socket does not exist then; see the module). A socket the worker has already closed raises, and is
     ignored: it ended on its own between the caller's ``is_alive()`` and this call.
+
+    Platform note, measured (Windows CI of #42): this shutdown does NOT wake a thread blocked in ``recv`` while
+    nothing arrives — that read ends at the socket timeout the stage already sets (``rerank_timeout`` /
+    ``embedding_timeout``), and the shutdown is observed at the next byte that does arrive. On Linux it unblocks
+    the blocked reader at once. So a *stall* is bounded by the socket timeout either way (the 1.0x stall rows of
+    #33) — this cut is what bounds a server that keeps dripping, where no single read ever times out (28x).
     """
     sock = (holder or {}).pop("sock", None)
     if sock is None:

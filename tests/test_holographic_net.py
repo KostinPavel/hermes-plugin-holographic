@@ -111,8 +111,15 @@ _BROKEN = (OSError, http.client.HTTPException)
 
 
 def test_the_holder_gets_the_socket_while_the_worker_waits_for_headers_and_cut_ends_it():
-    """The socket must reach the holder while the worker waits — that is the phase nothing else bounds
-    (issue #26) — and the caller's cut must end the read standing in it, as at the caller's deadline."""
+    """The socket must reach the holder while the worker waits for an answer that never comes — the phase nothing
+    else bounds (issue #26) — and the read must then end, woken by the cut or by its own socket timeout.
+
+    WHICH of the two wakes it is a platform detail, and the test does not pin it: Linux's shutdown() unblocks the
+    blocked reader at once; Windows' does not wake a thread sitting in recv while no data arrives — measured here,
+    it ended at the 2 s socket timeout of _read, 1.5 s after the cut — and the reader sees the shutdown at its next
+    byte instead. That is exactly #33's picture: the stall row read 1.0x with and without the shutdown (a socket
+    timeout bounds a stall either way), while the drip row needed the shutdown (28.1x -> 1.2x). The drip test below
+    is where the cut is the ONLY thing that can end the read."""
     server = _Server("stall")
     try:
         request = _request(server.port)
@@ -127,11 +134,9 @@ def test_the_holder_gets_the_socket_while_the_worker_waits_for_headers_and_cut_e
         assert "sock" in held, "connect() must hand the socket over before the first header byte (issue #26)"
         t.join(0.5)  # the caller's deadline
         assert t.is_alive(), "the read is waiting for a status line that never comes"
-        start = time.perf_counter()
         net.cut(held)
-        t.join(2)
-        assert not t.is_alive(), "the shutdown must end the read the caller stopped waiting for"
-        assert time.perf_counter() - start < 1.0
+        t.join(3)  # dead by the cut or by _read's 2 s socket timeout — never past both
+        assert not t.is_alive(), "the read must end: woken by the cut or bounded by its socket timeout"
         assert isinstance(box["error"], _BROKEN), f"a cut must break the read, got {box.get('error')!r}"
     finally:
         server.close()
