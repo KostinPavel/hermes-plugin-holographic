@@ -374,8 +374,15 @@ def test_a_cut_during_the_tls_handshake_stops_the_request():
 def test_after_the_handshake_the_cut_reaches_the_wrapped_socket():
     """The fd moves into the SSLSocket at wrap_socket (ssl.SSLSocket._create detaches it from the TCP socket), so
     the holder must be refreshed to the wrapped socket: keeping the pre-handshake object would mean fd=-1 there
-    and cut() would silently find nothing — in the very phase #26 is about, the header read after the handshake."""
-    server = _TLSServer("drip", drip=0.03)
+    and cut() would silently find nothing — in the very phase #26 is about, the header read after the handshake.
+
+    The drip is sized so the cut lands INSIDE the status line: an EOF there is an unfinished line, so
+    _read_status raises (RemoteDisconnected / BadStatusLine) on every platform. An EOF after the status line
+    would not — _read_headers ends on b'' as happily as on the blank line, http.client reports a headerless
+    bodyless success, and whether the reader sees EPIPE or that EOF decides the outcome (measured: ubuntu CI
+    got the success, linux locally the BrokenPipeError). The status line ends at 0.85 s with this drip, the
+    cut comes at 0.5 s."""
+    server = _TLSServer("drip", drip=0.05)
     try:
         t0 = time.perf_counter()
         request = _https_request(server.port)
