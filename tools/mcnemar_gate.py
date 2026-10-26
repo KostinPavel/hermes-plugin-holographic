@@ -146,13 +146,18 @@ def _confused(r: dict) -> bool:
     foreign key below the fifth position is not confusion — counting it anyway inflates the default side
     and hides a rise (the reviewer's reproduction of PR #31: top-five confusion 0 -> 1, reported 1 -> 1,
     gate passes)."""
-    if "confused" in r:  # household
-        return bool(r["confused"])
-    if "wrong5" in r:  # multi: the top five only
-        return bool(r["wrong5"])
-    if "wrong" in r:  # contrast: the boolean already covers the top five
-        return bool(r["wrong"])
-    raise SystemExit(f"unknown row shape — no confusion field among {sorted(r)}")
+    row_set = r.get("set")
+    if row_set == "household":
+        field = "confused"
+    elif row_set == "multi":
+        field = "wrong5"
+    elif row_set in ("contrast_ru", "contrast_en", "contrast_zh"):
+        field = "wrong"
+    else:
+        raise SystemExit(f"unknown row shape — unsupported set {row_set!r}")
+    if field not in r:
+        raise SystemExit(f"unknown row shape — {row_set} requires {field}")
+    return bool(r[field])
 
 
 def _noise(r: dict) -> bool:

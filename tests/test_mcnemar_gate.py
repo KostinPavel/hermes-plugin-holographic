@@ -282,3 +282,34 @@ def test_the_confusion_field_comes_from_the_rows_own_shape():
     assert not mcnemar._confused({"set": "contrast_en", "wrong": False})
     with pytest.raises(SystemExit, match="unknown row shape"):
         mcnemar._confused({"set": "multi"})
+
+
+def test_a_multi_row_without_wrong5_cannot_pass_via_wrong(tmp_path):
+    """An incomplete top-five measurement must be refused, never inferred from the whole output."""
+    hi, lo = _rescued()
+    hi[-1].pop("wrong5")
+    with pytest.raises(SystemExit, match="wrong5"):
+        mcnemar.report_margins(_pair(hi, lo, tmp_path))
+
+
+@pytest.mark.parametrize("row,field", [
+    ({"set": "multi", "wrong": ["x"]}, "wrong5"),
+    ({"set": "household", "wrong5": ["x"]}, "confused"),
+    ({"set": "contrast_en", "confused": ["x"]}, "wrong"),
+])
+def test_a_shape_requires_its_own_confusion_field(row, field):
+    with pytest.raises(SystemExit, match=field):
+        mcnemar._confused(row)
+
+
+def test_other_shapes_fields_do_not_override_a_multi_measurement():
+    assert not mcnemar._confused({"set": "multi", "wrong5": [], "confused": ["x"]})
+
+
+def test_other_shapes_fields_do_not_hide_a_contrast_measurement():
+    assert mcnemar._confused({"set": "contrast_en", "wrong": True, "wrong5": []})
+
+
+def test_an_unknown_set_does_not_borrow_a_known_confusion_field():
+    with pytest.raises(SystemExit, match="unknown row shape"):
+        mcnemar._confused({"set": "unrecognized", "wrong": True})
