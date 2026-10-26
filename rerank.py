@@ -219,6 +219,13 @@ class Rescorer:
             self.last_status = "not_called"
             return None
         query = (query or "").strip()  # what is measured below is what is sent
+        # The screen runs the WHOLE query, not the cut: a key starting before the 2000th character in [:2000]
+        # landed as a fragment ("pas"), passed the screen, while the first letters went to the endpoint — the send
+        # stays truncated while the check is gone (maintainer 24:10, point 2; the same bug in main —
+        # their PR #21).
+        if self._secret and self._secret(query):
+            self.last_status = "skipped_secret"
+            return None  # no call at all: what recall must not inject is never sent
         if len(query) > RERANK_MAX_QUERY_CHARS:
             # A message this long (a night job's prompt, a pasted log) would not fit the model with a fact beside it.
             # Not a failure, and not one while the endpoint is paused either: the rerank-off order stays.
@@ -229,13 +236,6 @@ class Rescorer:
             # a failure for the run's zero-failed-calls budget, not a neutral skip.
             self.last_status = f"failed: {self.status()}"
             return None
-        # The screen runs the WHOLE query, not the cut: a key starting before the 2000th character in [:2000]
-        # landed as a fragment ("pas"), passed the screen, while the first letters went to the endpoint — the send
-        # stays truncated while the check is gone (maintainer 24:10, point 2; the same bug in main —
-        # their PR #21).
-        if self._secret and self._secret(query):
-            self.last_status = "skipped_secret"
-            return None  # no call at all: what recall must not inject is never sent
         if len(documents) == 1:
             # One sendable document: nothing to reorder, the window cannot drop the only candidate
             # (a cut judged from the top always keeps the top) and the blend of a single score is
