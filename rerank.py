@@ -29,6 +29,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from . import net  # the socket of the in-flight request, for the caller to end the read (issue #26)
+
 logger = logging.getLogger(__name__)
 
 PAUSE_FIRST, PAUSE_MAX = 60.0, 900.0  # seconds the endpoint is left alone after a failure, doubling
@@ -154,7 +156,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-_OPENER = urllib.request.build_opener(_NoRedirect)
+_OPENER = net.opener(_NoRedirect)
 
 
 class Rescorer:
@@ -261,6 +263,7 @@ class Rescorer:
                    "User-Agent": "hermes-plugin-holographic"}
         request = urllib.request.Request(self._url or "", data=json.dumps(body).encode("utf-8"), headers=headers,
                                          method="POST")
+        held = net.wire(request)  # the request's socket, for the caller to end the read on its deadline (issue #26)
         box: dict = {}
 
         def send():
@@ -322,6 +325,12 @@ class Rescorer:
             self._awaited = False  # from here on a live worker is an abandoned one
         alive = worker.is_alive()
         error = box.get("error")
+        # issue #26: the caller's wait is over, so the read it was waiting for ends with it — the socket is shut
+        # down from here and the worker dies with the caller instead of reading on (nothing else bounds the header
+        # phase). The snapshot above is taken first: every judgement below must describe the wait, not what the
+        # shutdown makes the worker raise a moment later.
+        if alive:
+            net.cut(held)
         timed_out = alive or isinstance(error, TimeoutError) or (
             isinstance(error, urllib.error.URLError) and isinstance(error.reason, TimeoutError))
         if timed_out:

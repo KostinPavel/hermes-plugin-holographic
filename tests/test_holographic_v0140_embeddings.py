@@ -841,6 +841,13 @@ def test_a_request_never_outlives_its_timeout(mode):
         assert e.embed(["x"]) is None
         assert time.monotonic() - t < 0.5 + 0.3
         assert e.status().startswith("paused after an error (no answer")
+        # issue #26: the request the caller gave up on must actually end — without the caller's shutdown the
+        # header-drip mode leaves its worker reading for ~7 s, past the join(3) below. The shutdown ends the read
+        # with ConnectionAbortedError / RemoteDisconnected / BadStatusLine; the endpoint already paused above.
+        for given in e._abandoned:
+            given.worker.join(3)
+            assert not given.worker.is_alive(), \
+                "a request given up on must end with the caller's deadline, not read on (issue #26)"
     finally:
         server.shutdown()
 

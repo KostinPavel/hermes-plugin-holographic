@@ -1,52 +1,71 @@
 #!/usr/bin/env python3
-"""Issue #26: how long does the rerank worker really live past ``rerank_timeout``? Run by hand.
+"""Issue #26: how long does the rerank worker live past ``rerank_timeout``? Run by hand.
 
-    python tools/issue26_worker_lifetime.py [--shutdown]
+    python tools/issue26_worker_lifetime.py [--no-cut]
 
-The caller's side is already measured by ``test_slow_body_returns_at_rerank_timeout_not_at_the_body``
-(it returns at ~rerank_timeout). What is NOT measured is the worker's own end, which is what #26 is about.
-Three local servers, ``rerank_timeout`` 0.5 (the Settings floor), one real ``Rescorer`` per run:
+The caller's side is measured by ``test_slow_body_returns_at_rerank_timeout_not_at_the_body`` (it returns at
+~rerank_timeout). The worker's own end is what #26 is about, and it now has an answer in production (net.py): when
+the caller's wait ends, the request's socket is shut down from the caller's side, so the worker dies with the
+caller. Three local servers, ``rerank_timeout`` 0.5 (the Settings floor), one real ``Rescorer`` per run:
 
-    stall         accepts and never answers      -> the socket timeout should bound it
-    drip_headers  1 byte of the status line / 0.2 s -> no overall deadline inside http.client
-    drip_body     headers at once, 8 body bytes / 0.2 s -> the worker's own deadline loop bounds it
+    stall         accepts and never answers            -> the socket timeout bounds it: 1.0x either way
+    drip_headers  1 byte / 0.2 s (#33's response, byte for byte)
+                                                  -> 28.0x without the cut, 1.0x with it
+    drip_body     headers at once, 8 body bytes / 0.2 s -> the worker's own deadline loop: 1.2x / 1.0x
 
-Each read succeeds on its own (0.2 s < 0.5 s timeout), so only a check on the whole operation can stop
-the worker. ``--shutdown`` shows the candidate fix from #26: the caller does ``sock.shutdown(SHUT_RDWR)``
-at its deadline — the missing cancellation primitive, in sync code, without an HTTP layer of our own.
+``--no-cut`` disables the shutdown (the pre-PR behaviour) for the comparison row: the drip-headers number is the
+measured window of #26 — 28.0x here on Linux, 28.1x in #33's Windows/WSL runs on this same fixture, so the two
+tables are comparable. The read a shutdown ends raises RemoteDisconnected / BadStatusLine where it reads as EOF,
+ConnectionAbortedError on Windows — all recorded in the worker and none escaping the turn; what the server side
+sees of the same cut is printed as ``server saw:``, not swallowed.
 
-Windows only: the run raises the system timer to 1 ms (``timeBeginPeriod``) and releases it after, so a
-wait does not overshoot by a whole 15.6 ms tick (measured 510.9 -> 500.7 ms mean on a 0.5 s timeout;
-Linux needs no such help — 500.8 ms mean in WSL). The numbers posted in #26 were taken WITHOUT it, at
-the default granularity: expect the stall/body rows ~10 ms (0.1x) tighter here, nothing else changes.
+Windows only: the run raises the system timer to 1 ms (``timeBeginPeriod``) and releases it after, so a wait does
+not overshoot by a whole 15.6 ms tick (measured 510.9 -> 500.7 ms mean on a 0.5 s timeout; Linux needs no such
+help — 500.8 ms mean in WSL).
 """
 from __future__ import annotations
 
-import http.client
+import importlib.util
+import os
 import socket
 import sys
 import threading
 import time
-import urllib.request
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# The package tree loads as hermes_plugin_holographic from the checkout (the CI's directory name rule: a valid
+# Python identifier). hermes-agent's checkout goes on sys.path first (its `agent`, `tools`, `hermes_cli`).
+_REPO = Path(__file__).resolve().parent.parent
+_AGENT = Path(os.environ.get("HERMES_AGENT_REPO") or Path.home() / ".hermes" / "hermes-agent").expanduser()
+for _p in (str(_AGENT), str(_REPO.parent)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
-import rerank  # the module under test, after the path above
+_spec = importlib.util.spec_from_file_location(
+    "hermes_plugin_holographic", _REPO / "__init__.py", submodule_search_locations=[str(_REPO)])
+assert _spec and _spec.loader
+if "hermes_plugin_holographic" not in sys.modules:
+    _mod = importlib.util.module_from_spec(_spec)
+    sys.modules["hermes_plugin_holographic"] = _mod
+    _spec.loader.exec_module(_mod)
+
+from hermes_plugin_holographic import net, rerank  # noqa: E402
 
 TIMEOUT = 0.5  # rerank_timeout floor (Settings)
 DRIP = 0.2  # seconds between dripped bytes: under the socket timeout, over nothing else
 RUNS = 2
 
 
-def _server(mode: str, stop: threading.Event) -> tuple[int, threading.Thread]:
-    """A one-shot-connection server; returns the port and its thread. Writes the response as the mode dictates;
+def _server(mode: str, stop: threading.Event) -> tuple[int, threading.Thread, dict]:
+    """A one-shot-connection server; returns the port, its thread and the ``note`` dict the server side writes
+    what it saw into (measure() prints it — nothing is swallowed here). Writes the response as the mode dictates;
     every wait is stop.wait(), so setting *stop* ends it within one drip and the caller can join it."""
     srv = socket.socket()
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind(("127.0.0.1", 0))
     srv.listen(1)
     port = srv.getsockname()[1]
+    note: dict = {}
 
     def run() -> None:
         while not stop.is_set():
@@ -76,7 +95,9 @@ def _server(mode: str, stop: threading.Event) -> tuple[int, threading.Thread]:
                 if mode == "stall":
                     stop.wait(60)  # never answers (until the run ends)
                 elif mode == "drip_headers":
-                    answer = b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 14\r\n\r\n{"results":[]}'
+                    # #33's fixture, byte for byte: the numbers below are meant to be comparable with its table
+                    answer = (b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n'
+                              b'Content-Length: 14\r\n\r\n{"results":[]}')
                     for byte in answer:
                         conn.sendall(bytes([byte]))
                         if stop.wait(DRIP):
@@ -88,94 +109,56 @@ def _server(mode: str, stop: threading.Event) -> tuple[int, threading.Thread]:
                         conn.sendall(payload[i:i + 8])
                         if stop.wait(DRIP):
                             break
-            except OSError:
-                pass  # the worker's deadline closes the connection: expected
+            except OSError as exc:
+                note["error"] = exc  # the shutdown (or the worker's own deadline) closes the connection: expected
             finally:
                 conn.close()
         srv.close()
 
     thread = threading.Thread(target=run, daemon=True)
     thread.start()
-    return port, thread
+    return port, thread, note
 
 
-def _recording_opener(sock_box: dict) -> urllib.request.OpenerDirector:
-    """The real opener + one hook: remember the socket as soon as it exists (after connect).
-
-    Enough to hand the caller a handle for shutdown(); without it the socket only appears
-    once the response object exists — far too late for the header phase, where it matters most.
-    """
-    class _Recorder(urllib.request.HTTPHandler):
-        def http_open(self, req):
-            class Conn(http.client.HTTPConnection):
-                def connect(self):
-                    super().connect()
-                    sock_box["sock"] = self.sock
-
-            try:
-                return self.do_open(Conn, req)  # AbstractHTTPHandler.do_open passes req.timeout along
-            except BaseException as exc:  # the failure the worker itself records (connect / header phase)
-                sock_box["error"] = f"{type(exc).__name__}: {exc}"
-                raise
-
-    return urllib.request.build_opener(_Recorder(), rerank._NoRedirect())
-
-
-def measure(mode: str, shutdown: bool) -> None:
+def measure(mode: str, cut: bool) -> None:
     stop = threading.Event()
-    original = rerank._OPENER
+    real_cut = net.cut
+    if not cut:
+        net.cut = lambda _holder: None  # the pre-PR behaviour, for the comparison row (--no-cut)
     server = None
     try:
-        port, server = _server(mode, stop)
+        port, server, server_note = _server(mode, stop)
         settings = rerank.Settings({"rerank": "on", "rerank_url": f"http://127.0.0.1:{port}/v1/rerank",
                                     "rerank_timeout": "0.5"})
         rescorer = rerank.Rescorer(settings)
-        sock_box: dict = {}
-        if shutdown:
-            rerank._OPENER = _recording_opener(sock_box)
         start = time.monotonic()
         rescorer.scores("when does the backup run?", ["a first fact", "a second fact"])
         caller = time.monotonic() - start
         worker = rescorer._worker
         alive = worker is not None and worker.is_alive()
-        at = None
-        if shutdown and alive:
-            limit = time.monotonic() + 1.0
-            while "sock" not in sock_box and time.monotonic() < limit:  # connect first, then the wait
-                time.sleep(0.001)
-            if "sock" in sock_box:
-                try:
-                    sock_box["sock"].shutdown(socket.SHUT_RDWR)
-                    at = f"{(time.monotonic() - start) * 1000:6.1f} ms"
-                except OSError:  # the worker ended and closed it between is_alive() and here
-                    at = "  already closed"
-            else:
-                at = "  no socket"
         if worker is not None:
             worker.join(60)  # how long it REALLY lives (cap 60 s)
         total = time.monotonic() - start
         lingering = worker is not None and worker.is_alive()
         error = rescorer._last_error  # why the endpoint was paused ("no answer (timeout)" etc.)
-        print(f"  {mode:12s} shutdown={str(shutdown):5s}  caller {caller * 1000:6.1f} ms | "
+        print(f"  {mode:12s} cut={str(cut):5s}  caller {caller * 1000:6.1f} ms | "
               f"alive_after_call={str(alive):5s} | "
               + (f"worker STILL ALIVE after {total * 1000:7.1f} ms" if lingering
                  else f"worker end {total * 1000:7.1f} ms ({total / TIMEOUT:4.1f}x)")
-              + (f" | killed at {at}" if at is not None else "")
-              + f" | paused: {error}" + (f" | worker exc: {sock_box['error']}" if "error" in sock_box else ""))
+              + f" | paused: {error}"
+              + (f" | server saw: {server_note['error']!r}" if server_note.get("error") else ""))
     finally:
-        rerank._OPENER = original
+        net.cut = real_cut
         stop.set()
         if server is not None:
             server.join(5)  # every wait in it is stop.wait(): it ends within one drip
 
 
 def _high_resolution_timer():
-    """Windows: raise the system timer to 1 ms for the run, so a wait does not overshoot its
-    deadline by a whole 15.6 ms tick (measured: 510.9 -> 500.7 ms mean on a 0.5 s timeout).
-    Returns the handle to release in the caller's finally, or None where no such API exists —
-    Linux needs no help here (hrtimers: 500.8 ms mean on the same deadline, measured in WSL),
-    so the run is reported as "native" and nothing is raised or restored.
-    """
+    """Windows: raise the system timer to 1 ms for the run, so a wait does not overshoot its deadline by a whole
+    15.6 ms tick (measured: 510.9 -> 500.7 ms mean on a 0.5 s timeout). Returns the handle to release in the
+    caller's finally, or None where no such API exists — Linux needs no help here (hrtimers: 500.8 ms mean on the
+    same deadline, measured in WSL), so the run is reported as "native" and nothing is raised or restored."""
     if sys.platform != "win32":
         return None
     import ctypes
@@ -186,14 +169,15 @@ def _high_resolution_timer():
 
 
 def main() -> None:
-    shutdown = "--shutdown" in sys.argv
+    cut = "--no-cut" not in sys.argv
     winmm = _high_resolution_timer()
     try:
         print(f"rerank_timeout = {TIMEOUT} s (Settings floor); worker end = x of that deadline | "
+              f"cut={'on (net.py, issue #26)' if cut else 'OFF (pre-PR, --no-cut)'} | "
               f"timer: {'winmm period=1ms' if winmm is not None else 'native (no raising needed)'}")
         for mode in ("stall", "drip_headers", "drip_body"):
             for _run in range(RUNS):
-                measure(mode, shutdown)
+                measure(mode, cut)
     finally:
         if winmm is not None:
             winmm.timeEndPeriod(1)  # never leave the machine on a 1 ms tick

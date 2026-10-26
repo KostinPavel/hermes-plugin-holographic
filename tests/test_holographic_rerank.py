@@ -464,6 +464,59 @@ def test_slow_body_returns_at_rerank_timeout_not_at_the_body(tmp_path):
         server.server_close()
 
 
+class _DripHeadersHandler(http.server.BaseHTTPRequestHandler):
+    """The status line and headers, one byte every 0.03 s: each read succeeds on its own (0.03 s < the 0.5 s socket
+    timeout), so nothing inside http.client can stop the worker — only the caller's shutdown does (issue #26).
+    The response is ~260 bytes, so without the shutdown the worker reads for ~8 s, well past the join(3) below."""
+
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        head = (b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nX-Slow: " + b"a" * 200 + b"\r\n\r\n"
+                + b'{"results":[]}')
+        for byte in head:
+            self.wfile.write(bytes([byte]))
+            self.wfile.flush()
+            time.sleep(0.03)
+
+    def log_message(self, *a):
+        pass
+
+
+def test_dripped_headers_end_at_rerank_timeout_and_the_worker_dies(tmp_path):
+    """The header phase is the window issue #26 measured: http.client has no overall deadline there and every byte
+    resets the socket timer, so a server dripping its status line holds the worker ~8 s. The caller's shutdown at
+    its deadline ends the read (RemoteDisconnected / BadStatusLine; ConnectionAbortedError on Windows), so the
+    worker dies with the caller. Without it this test fails on the join(3) below — the worker is still reading at
+    3 s; the slow-body test above already covers the caller's own return."""
+
+    class _Quiet(http.server.ThreadingHTTPServer):
+        # the shutdown breaks the handler mid-write — no traceback needed here
+        def handle_error(self, *a):
+            pass
+
+    server = _Quiet(("127.0.0.1", 0), _DripHeadersHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        p = _provider(tmp_path, **{**RANK,
+                                   "rerank_url": f"http://127.0.0.1:{server.server_address[1]}/v1/rerank",
+                                   "rerank_timeout": "0.5"})
+        _fill(p)
+        start = time.perf_counter()
+        _block(p, "when does the backup run?")
+        elapsed = time.perf_counter() - start
+        assert elapsed < 1.5, f"caller waited for the server: {elapsed:.2f} s instead of ~rerank_timeout (0.5)"
+        r = p._rescorer
+        assert r.failures == 1, "a break at the caller's deadline must count as a failure"
+        assert r.status().startswith("paused"), "the endpoint pauses"
+        assert r._worker is not None
+        r._worker.join(3)  # without the shutdown the worker is still reading the status line here
+        assert not r._worker.is_alive(), "the caller's shutdown must end a read in the header phase (issue #26)"
+        p.shutdown()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 # -- blend (weight > 0) --------------------------------------------------------------------------------------
 
 def test_weight_zero_is_order_only(tmp_path, endpoint):
