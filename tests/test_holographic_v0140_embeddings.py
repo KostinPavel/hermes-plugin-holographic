@@ -493,8 +493,9 @@ GOLDEN_FACTS = [
     "The team standup is at 10:00 every weekday.", "Grandma lives in Kazan and calls on Sundays.",
     "The swimming pool in the condo closes at 8 pm.", "Яна боится грозы.", "Антон не пьёт кофе после шести вечера.",
 ]
-# (fact_id, score rounded to 6 places) of search, as 0.13.0 (a6d0093) computed them on this store; prefetch recalled
-# the same facts in the same order.
+# (fact_id, score rounded to 6 places) of search, recomputed with the actual 0.13.0 tag on this synthetic store;
+# prefetch recalled the same facts in the same order. The renamed fixture changes the three name-query scores;
+# they were not fitted to the current release (independently verified against 0.13.0).
 GOLDEN_0130 = {
     "when does the backup run?": [[1, 0.345501], [6, 0.201557]], "Lena allergy": [[2, 0.337635], [4, 0.206865]],
     "what car does Mark drive": [[3, 0.320899]], "Яна школа": [[7, 0.334007], [19, 0.242647], [10, 0.204538]],

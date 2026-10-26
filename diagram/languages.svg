@@ -43,7 +43,7 @@
   <text x="133" y="145" class="sub" text-anchor="middle">d'Irma → irma · prend-il → prend</text>
   <text x="133" y="159" class="sub" text-anchor="middle">dell'anno → anno (it)</text>
   <text x="133" y="173" class="sub" text-anchor="middle">Ankara'da → ankara (tr)</text>
-  <text x="133" y="187" class="sub" text-anchor="middle">pinda's → pinda (nl)</text>
+  <text x="133" y="187" class="sub" text-anchor="middle">amandelen → pinda (nl)</text>
   <text x="133" y="201" class="sub" text-anchor="middle">anak-anak → anak</text>
   <text x="133" y="215" class="sub" text-anchor="middle">hr-vps-এর → hr-vps + এর</text>
   <text x="133" y="229" class="sub" text-anchor="middle">hr-vps: an identifier,</text>
@@ -84,7 +84,7 @@
   <text x="817" y="131" class="sub" text-anchor="middle">folded word + stem</text>
   <text x="817" y="145" class="sub" text-anchor="middle">Snowball: 12 languages;</text>
   <text x="817" y="159" class="sub" text-anchor="middle">Arabic light10, Bengali stripper</text>
-  <text x="817" y="173" class="sub" text-anchor="middle">fold: é = e, ł = l, ı = i, ২০২৭ = 2027</text>
+  <text x="817" y="173" class="sub" text-anchor="middle">fold: é = e, ł = l, ı = i, ২০২৯ = 2029</text>
   <text x="817" y="187" class="sub" text-anchor="middle">German compounds (Wikidata)</text>
   <text x="817" y="201" class="sub" text-anchor="middle">one word, two scripts:</text>
   <text x="817" y="215" class="sub" text-anchor="middle">бэкап = backup</text>
@@ -119,21 +119,21 @@
   <text x="30" y="398" class="cell">Indonesian</text><text x="120" y="398" class="fact">Skrip dijalankan setiap malam</text><text x="330" y="398" class="fact">Kapan skrip ini jalankan?</text><text x="560" y="398" class="key">jalan</text><text x="610" y="398" class="note">(word scan)</text>
   <text x="30" y="416" class="cell">Arabic</text><text x="120" y="416" class="fact">تدرس إيرما هنا</text><text x="330" y="416" class="fact">أين تدرس لإيرما؟</text><text x="560" y="416" class="key">ايرما</text><text x="610" y="416" class="note">(for Irma: ل off)</text>
   <text x="30" y="434" class="cell">Hindi</text><text x="120" y="434" class="fact">इरमा कॉफ़ी पीती है</text><text x="330" y="434" class="fact">इरमा कौन सी कॉफी पीती है?</text><text x="560" y="434" class="key">कॉफी</text><text x="610" y="434" class="note">(nukta folded)</text>
-  <text x="30" y="452" class="cell">Bengali</text><text x="120" y="452" class="fact">পরিবার ২০২৭ সালে চলে যাবে</text><text x="330" y="452" class="fact">পরিবার 2027 সালে কোথায় যাবে?</text><text x="560" y="452" class="key">2027</text>
+  <text x="30" y="452" class="cell">Bengali</text><text x="120" y="452" class="fact">পরিবার ২০২৯ সালে চলে যাবে</text><text x="330" y="452" class="fact">পরিবার 2029 সালে কোথায় যাবে?</text><text x="560" y="452" class="key">2029</text>
   <text x="30" y="470" class="cell">French</text><text x="120" y="470" class="fact">le cœur de la ville est calme</text><text x="330" y="470" class="fact">Comment est le coeur de la ville ?</text><text x="560" y="470" class="key">coeur</text>
   <text x="30" y="488" class="cell">Italian</text><text x="120" y="488" class="fact">La festa dell'anno è a maggio</text><text x="330" y="488" class="fact">Quando è la festa di quest'anno?</text><text x="560" y="488" class="key">anno</text><text x="610" y="488" class="note">(elision off)</text>
-  <text x="30" y="506" class="cell">Turkish</text><text x="120" y="506" class="fact">Çocuğun okulu Jomtien'de</text><text x="330" y="506" class="fact">Cocuk hangi okula gidiyor?</text><text x="560" y="506" class="key">cocuk</text><text x="610" y="506" class="note">(ğ read, then folded)</text>
-  <text x="30" y="524" class="cell">Polish</text><text x="120" y="524" class="fact">Szkoła Ewy jest w Jomtien</text><text x="330" y="524" class="fact">Gdzie jest szkola Ewy?</text><text x="560" y="524" class="key">szkol</text><text x="610" y="524" class="note">(ł = l)</text>
-  <text x="30" y="542" class="cell">Dutch</text><text x="120" y="542" class="fact">De pinda's zijn op</text><text x="330" y="542" class="fact">Waar zijn de pinda?</text><text x="560" y="542" class="key">pinda</text>
+  <text x="30" y="506" class="cell">Turkish</text><text x="120" y="506" class="fact">Çocuğun okulu Rayong'de</text><text x="330" y="506" class="fact">Cocuk hangi okula gidiyor?</text><text x="560" y="506" class="key">cocuk</text><text x="610" y="506" class="note">(ğ read, then folded)</text>
+  <text x="30" y="524" class="cell">Polish</text><text x="120" y="524" class="fact">Szkoła Irmy jest w Rayong</text><text x="330" y="524" class="fact">Gdzie jest szkola Irmy?</text><text x="560" y="524" class="key">szkol</text><text x="610" y="524" class="note">(ł = l)</text>
+  <text x="30" y="542" class="cell">Dutch</text><text x="120" y="542" class="fact">De amandelen zijn op</text><text x="330" y="542" class="fact">Waar zijn de pinda?</text><text x="560" y="542" class="key">pinda</text>
   <text x="30" y="560" class="cell">German</text><text x="120" y="560" class="fact">Irma hat einen Termin beim Zahnarzt</text><text x="330" y="560" class="fact">Wann ist Irmas Zahnarzttermin?</text><text x="560" y="560" class="key">zahn · arzt · termin</text>
   <text x="30" y="578" class="cell">German</text><text x="120" y="578" class="fact">Die Familienkatze schläft viel</text><text x="330" y="578" class="fact">Wie viel schläft die Katze?</text><text x="560" y="578" class="key">katz</text><text x="610" y="578" class="note">(last part)</text>
   <text x="30" y="596" class="cell">Russian, English</text><text x="120" y="596" class="fact">Бэкап базы каждую ночь</text><text x="330" y="596" class="fact">When does the backup run?</text><text x="560" y="596" class="key">backup</text><text x="610" y="596" class="note">(one word, two scripts)</text>
-  <text x="30" y="614" class="cell">English</text><text x="120" y="614" class="fact">Irma is allergic to peanuts</text><text x="330" y="614" class="fact">What allergy does Irma have?</text><text x="560" y="614" class="key">allergi</text>
-  <text x="30" y="632" class="cell">Chinese</text><text x="120" y="632" class="fact">伊尔玛对花生过敏</text><text x="330" y="632" class="fact">伊尔玛对什么过敏？</text><text x="560" y="632" class="key">伊尔玛 · 过敏</text><text x="610" y="632" class="note">(n-grams)</text>
+  <text x="30" y="614" class="cell">English</text><text x="120" y="614" class="fact">Irma is allergic to almonds</text><text x="330" y="614" class="fact">What allergy does Irma have?</text><text x="560" y="614" class="key">allergi</text>
+  <text x="30" y="632" class="cell">Chinese</text><text x="120" y="632" class="fact">伊尔玛对杏仁过敏</text><text x="330" y="632" class="fact">伊尔玛对什么过敏？</text><text x="560" y="632" class="key">伊尔玛 · 过敏</text><text x="610" y="632" class="note">(n-grams)</text>
   <text x="30" y="650" class="cell">Chinese</text><text x="120" y="650" class="fact">臺灣大學在台北</text><text x="330" y="650" class="fact">台湾大学在哪里？</text><text x="560" y="650" class="key">台湾大学</text><text x="610" y="650" class="note">(Traditional = Simplified)</text>
   <text x="30" y="668" class="cell">Japanese</text><text x="120" y="668" class="fact">引っ越しは来月です</text><text x="330" y="668" class="fact">引越しはいつですか？</text><text x="560" y="668" class="key">引越し</text><text x="610" y="668" class="note">(spelling variant)</text>
-  <text x="30" y="686" class="cell">Korean</text><text x="120" y="686" class="fact">이르마는 땅콩 알레르기가 있다</text><text x="330" y="686" class="fact">이르마는 무슨 알레르기가 있어?</text><text x="560" y="686" class="key">알레르기</text><text x="610" y="686" class="note">(n-grams)</text>
-  <text x="30" y="704" class="cell">Thai</text><text x="120" y="704" class="fact">เอวาแพ้ถั่วลิสง</text><text x="330" y="704" class="fact">เอวาแพ้อะไร</text><text x="560" y="704" class="key">เอวา · แพ้</text><text x="610" y="704" class="note">(n-grams)</text>
+  <text x="30" y="686" class="cell">Korean</text><text x="120" y="686" class="fact">이르마는 아몬드 알레르기가 있다</text><text x="330" y="686" class="fact">이르마는 무슨 알레르기가 있어?</text><text x="560" y="686" class="key">알레르기</text><text x="610" y="686" class="note">(n-grams)</text>
+  <text x="30" y="704" class="cell">Thai</text><text x="120" y="704" class="fact">เอวาแพ้อัลมอนด์</text><text x="330" y="704" class="fact">เอวาแพ้อะไร</text><text x="560" y="704" class="key">เอวา · แพ้</text><text x="610" y="704" class="note">(n-grams)</text>
 
   <!-- No match table -->
   <text x="820" y="300" class="head">No match</text>

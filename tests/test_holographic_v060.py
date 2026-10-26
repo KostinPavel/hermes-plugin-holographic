@@ -42,7 +42,7 @@ def _found(provider, query):
 # -- keywords --------------------------------------------------------------------------------------------------------
 
 def test_keywords_find_a_fact_by_words_it_does_not_contain(provider):
-    _call(provider, action="add", content="The family plans to move to Hua Hin in spring 2027",
+    _call(provider, action="add", content="The family plans to move to Hua Hin in spring 2029",
           keywords=["relocation", "new home", "переезд"])
     _call(provider, action="add", content="The website is deployed with GitHub Actions")
     assert _found(provider, "where is our relocation going")[0].startswith("The family")
@@ -63,7 +63,7 @@ def test_keywords_are_validated(provider):
 
 
 def test_update_replaces_keywords_and_keeps_tags(provider):
-    fact = _call(provider, action="add", content="Irma is allergic to peanuts", tags="health", keywords=["nuts"])["fact_id"]
+    fact = _call(provider, action="add", content="Irma is allergic to almonds", tags="health", keywords=["nuts"])["fact_id"]
     _call(provider, action="update", fact_id=fact, keywords=["food", "anaphylaxis"])
     tags = _call(provider, action="list")["facts"][0]["tags"]
     assert tags.startswith("health") and "anaphylaxis" in tags and "nuts" not in tags
@@ -75,7 +75,7 @@ def test_update_replaces_keywords_and_keeps_tags(provider):
 def test_keywords_alone_keep_the_fact_age(provider):
     """Keywords are a search aid: adding them must not make an old fact look recently changed (temporal decay, a
     nightly job that reviews recent facts)."""
-    fact = _call(provider, action="add", content="Irma swims on Saturdays")["fact_id"]
+    fact = _call(provider, action="add", content="Irma swims on Sundays")["fact_id"]
     provider._store._conn.execute("UPDATE facts SET updated_at = '2020-01-01 00:00:00' WHERE fact_id = ?", (fact,))
     provider._store._conn.commit()
 
@@ -84,14 +84,14 @@ def test_keywords_alone_keep_the_fact_age(provider):
 
     _call(provider, action="update", fact_id=fact, keywords=["swimming", "pool"])
     assert age() == "2020-01-01 00:00:00"
-    assert _found(provider, "pool")[0] == "Irma swims on Saturdays"
+    assert _found(provider, "pool")[0] == "Irma swims on Sundays"
     _call(provider, action="update", fact_id=fact, keywords=["swimming"], tags="sport")
     assert age() != "2020-01-01 00:00:00"  # a real edit still counts
 
 
 def test_enrich_lists_facts_without_keywords(provider):
     bare = _call(provider, action="add", content="The cat is called Mia")["fact_id"]
-    _call(provider, action="add", content="Irma swims on Saturdays", keywords=["swimming", "pool"])
+    _call(provider, action="add", content="Irma swims on Sundays", keywords=["swimming", "pool"])
     enrich = _call(provider, action="enrich")
     assert [f["fact_id"] for f in enrich["facts"]] == [bare] and "update" in enrich["hint"]
     assert _call(provider, action="stats")["without_keywords"] == 1
@@ -110,7 +110,7 @@ def test_recall_indicator_can_be_switched_off(tmp_path, monkeypatch, setting, sh
         config["recall_indicator"] = setting
     p = HolographicMemoryProvider(config=config)
     p.initialize(session_id="s")
-    _call(p, action="add", content="The family plans to move to Hua Hin in spring 2027")
+    _call(p, action="add", content="The family plans to move to Hua Hin in spring 2029")
     assert "Hua Hin" in p.prefetch("when do we move to Hua Hin?")  # recalled either way
     assert (p.recall_status() is not None) is shown
     p.shutdown()
