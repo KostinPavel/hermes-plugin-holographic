@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.19.2 — 2026-10-27
+
+### Fixed
+- A reranker or embeddings server that drips response headers no longer keeps an abandoned request thread running far past the caller's timeout. The caller closes the request's socket at its deadline, including connections through an HTTPS proxy. Cancellation is retained if the socket has not appeared yet. The caller still reports a timeout and pauses the endpoint as before. No new dependency or network call is added (PR #42, KostinPavel).
+- A TLS handshake already between the raw and wrapped sockets may run until its own socket timeout before the retained cancellation stops the request. DNS resolution remains outside the socket cancellation path.
+
 ## 0.19.1 — 2026-10-26
 
 ### Tooling

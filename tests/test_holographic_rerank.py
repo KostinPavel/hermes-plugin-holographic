@@ -15,11 +15,14 @@ import json
 import threading
 import logging
 import re
+import ssl
 import time
+import urllib.request
+from pathlib import Path
 
 import pytest
 
-from hermes_plugin_holographic import HolographicMemoryProvider, rerank
+from hermes_plugin_holographic import HolographicMemoryProvider, net, rerank
 from hermes_plugin_holographic import _bottom_cut, _window_keep, blend_union
 
 
@@ -513,6 +516,53 @@ def test_dripped_headers_end_at_rerank_timeout_and_the_worker_dies(tmp_path):
         assert not r._worker.is_alive(), "the caller's shutdown must end a read in the header phase (issue #26)"
         p.shutdown()
     finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_tls_dripped_headers_keep_the_rerank_fallback_and_end_the_worker(tmp_path, monkeypatch):
+    """A real TLS request must return the normal timeout fallback and release its worker at the caller's deadline.
+
+    The only test-specific change to the opener is trusting the fixture CA; the connection, request, cut and
+    provider are production code. Without net.cut the caller still falls back, but the TLS worker reads the
+    dripping headers for seconds after the turn, so the final lifetime assertion fails.
+    """
+    cert = Path(__file__).parent / "fixtures" / "tls_cert.pem"
+    key = Path(__file__).parent / "fixtures" / "tls_key.pem"
+    server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    server_context.load_cert_chain(cert, key)
+    client_context = ssl.create_default_context(cafile=cert)
+    monkeypatch.setattr(rerank, "_OPENER", urllib.request.build_opener(
+        net._HTTP(), net._HTTPS(context=client_context), rerank._NoRedirect))
+
+    class _Quiet(http.server.ThreadingHTTPServer):
+        def handle_error(self, *a):
+            pass  # the caller's cut interrupts the handler's write
+
+    server = _Quiet(("127.0.0.1", 0), _DripHeadersHandler)
+    server.socket = server_context.wrap_socket(server.socket, server_side=True)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    p = None
+    try:
+        p = _provider(tmp_path, **{**RANK,
+                                   "rerank_url": f"https://127.0.0.1:{server.server_address[1]}/v1/rerank",
+                                   "rerank_timeout": "0.5"})
+        _fill(p)
+        started = time.perf_counter()
+        block = _block(p, "when does the backup run?")
+        elapsed = time.perf_counter() - started
+        assert "backup" in block.lower(), "timeout must retain the ordinary recall fallback"
+        assert elapsed < 1.5, f"caller waited for the TLS server: {elapsed:.2f} s"
+        r = p._rescorer
+        assert r.calls == 1 and r.failures == 1
+        assert r.last_status == "failed: no answer (timeout)"
+        assert r.status().startswith("paused")
+        assert r._worker is not None
+        r._worker.join(1.0)
+        assert not r._worker.is_alive(), "the TLS worker must end after the caller cuts its socket"
+    finally:
+        if p is not None:
+            p.shutdown()
         server.shutdown()
         server.server_close()
 
