@@ -15,6 +15,12 @@ socket that appears afterwards is closed and refused instead of read from, and n
 caller gave up. At the TLS wrap the fd moves into the ``SSLSocket`` (``wrap_socket`` detaches it from the TCP
 socket), so ``connect()`` re-publishes and the holder always holds what the request reads from.
 
+One interval is *retained but not interrupted* (the maintainer's note on #42): at the wrap the raw socket is
+already detached while the SSLSocket is not yet published, so a cut landing exactly there reaches neither object.
+The handshake then continues until its own socket timeout — bounded, not unbounded — and the retained
+cancellation refuses the connection the moment the wrapped socket is published. Every phase is therefore bounded
+by the cut, by the socket timeout, or by both; none of them promises an immediate interruption.
+
 The worker then ends with the caller's deadline *because the read under it ends*, not because several defences
 hold: in the header phase — where ``http.client`` has no overall deadline and every byte resets the socket
 timeout — a server dripping one byte per 0.2 s held a worker 28x past a 0.5 s ``rerank_timeout``, and 1.2-1.3x
@@ -138,6 +144,11 @@ def cut(holder: dict | None) -> None:
     lock), so a socket that appears afterwards — a connection still in progress, a name still being resolved —
     is refused by :func:`_publish` instead of read from. Only DNS itself stays out of reach: no socket exists
     there to shut down.
+
+    The one interval this call cannot end is the TLS wrap (see the module docstring): the raw socket is already
+    detached while the SSLSocket is not yet published, so there is no object here to shut down — the handshake
+    runs to its socket timeout, and the retained cancellation closes the connection when the wrapped socket
+    appears.
 
     A socket the worker has already closed raises, and is logged rather than silently ignored: it ended on its
     own between the caller's ``is_alive()`` and this call.

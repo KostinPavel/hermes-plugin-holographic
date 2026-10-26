@@ -772,7 +772,10 @@ it — unless an index or trigger of the old deployment uses the column: drop th
   for them, and count as above;
   either way the request, decoding included, runs on a thread of its own and the caller stops waiting then, however
   slowly the server sends — and the socket is shut down when the wait ends, so the thread's read ends with the
-  caller, not past it; resolving the name has no socket yet, so the OS resolver bounds that, not these timeouts),
+  caller, not past it — with one interval kept honest: at the TLS wrap the raw socket is detached and the wrapped one not
+  yet published, so a cut reaches neither there and the handshake runs to its own socket timeout; the retained cancellation
+  then refuses the connection immediately (bounded, not interrupted mid-handshake); resolving the name has no socket yet, so
+  the OS resolver bounds that, not these timeouts),
   a malformed answer, an HTTP status that comes after the caller stopped waiting — falls
   back to words without a word to the user; the endpoint is then left alone for 60 s, doubling up to 15 min, with one
   warning in the log. One request moves the pause one step at most, however many ways it fails; an answer to a
@@ -910,7 +913,9 @@ match), ``rerank_weight`` (0 = order-only, recommended; >0 = the min-max-normali
 the blend score; the window applies to order-only runs), ``rerank_timeout`` (3 s — additionally capped so that ``embedding_timeout + rerank_timeout`` stays under
 the 8 s the core gives a provider's prefetch: with ``embedding_timeout`` at its maximum 6 s the rerank
 timeout clamps to 1.5 s; when the wait ends the request's socket is shut down too, so a worker cannot read past
-its caller's deadline — resolving the name has no socket yet, the resolver bounds that) and ``rerank_scale`` —
+its caller's deadline — except the TLS handshake, whose socket sits between the two publications and so runs to
+its socket timeout, the retained cut refusing the connection right after; resolving the name has no socket yet,
+the resolver bounds that) and ``rerank_scale`` —
 the endpoint's score scale, set explicitly: ``logit`` (raw llama-server logits; the default, no probing) or
 ``unit`` ([0,1], Cohere-style). Set ``unit`` for an endpoint whose scores are already in [0, 1]: on the
 default ``logit`` the sigmoid runs on scores that were normalised once already, the gaps shrink and the window
