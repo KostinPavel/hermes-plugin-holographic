@@ -88,7 +88,7 @@ type only: a YAML error quotes the line it stopped at, which may hold a key.
 
 | Tool | Description |
 |------|-------------|
-| `fact_store` | add, search, probe, related, reason, contradict, change, end, correct, revert, forget, history, update, remove, list, stats, export, review, entities, alias, rename, delete_entity, split, rebuild_entities, enrich |
+| `fact_store` | add, search, probe, related, reason, contradict, change, end, correct, revert, merge, forget, history, update, remove, list, stats, export, review, entities, alias, rename, delete_entity, split, rebuild_entities, enrich |
 | `fact_feedback` | Rate a fact helpful or unhelpful (moves its trust score), or record that the person confirmed it (0.15.0) |
 
 - **search**: keyword candidates in any word form (`Маши` finds `Маша`, `deploys` finds `deploy`, `kucingnya` finds
@@ -206,6 +206,7 @@ A fact that stops being current is not overwritten. The agent says what happened
 | `end {fact_id, valid_to?}` | it no longer holds and nothing replaces it | the fact leaves the current store; its history stays |
 | `correct {fact_id, content?, valid_from?}` | it was wrong | the wrong version is never shown as the past |
 | `revert {fact_id}` | undo the last change, correction or end | the previous version is current again |
+| `merge {fact_id, from, keywords?, expect?}` | two or more facts say the same thing (0.19.0) | the copies leave the present into the keep; each keeps its history under its own id |
 | `forget {fact_id}` | the user asks to forget it | deleted for good, every version included; only a tombstone without text stays |
 
 - **Ordinary recall sees only the present.** Past versions live in their own table and index; `search` and `list`
@@ -220,6 +221,15 @@ A fact that stops being current is not overwritten. The agent says what happened
   rebuilt, the file is rewritten (`VACUUM`, with `secure_delete` on) and the write-ahead log emptied, so no copy of the
   text stays in free pages. A tombstone (the id and keyed hashes, never the text) stops auto-extraction from bringing
   the fact back from old messages and tells other tools which ids to clean from their own copies.
+- **Merge, not forget, for duplicates (0.19.0).** `merge {fact_id: <keep>, from: [ids]}` closes each copy's current
+  version as `merged`: the copy leaves search, recall and `list`; its versions, sources and confirmations stay under
+  its own id (`history {keep}` shows them under `merged_from`, `history {copy}` says `merged_into`), and its last text
+  answers `exists` with the keep when added again, also from auto-extraction. The keep keeps its own text, trust and
+  origin; keywords are joined (or given), the counts added once. `expect: {"<id>": <version_id>}` merges only if
+  every named fact is still at that version (`version_id` is in `history`), otherwise `changed_since` and nothing is
+  written, so a merge a person approved merges exactly the texts they saw. A scheduled job merges only facts it
+  stored in the same session. There is no unmerge; `forget` of the keep forgets its copies too. The first merge
+  raises the history schema (see [Database and downgrades](#database-and-downgrades)).
 - Older prompts keep working: `add supersedes=X` is `change X` (the id now stays `X`), `update content=` is `correct`,
   `remove` is `forget`.
 
@@ -959,6 +969,8 @@ for commercial use. The plugin ships neither model.
   display name) and, from 0.15.0, its origin (said / confirmed / inferred). Chat names are not kept. Each confirmation
   keeps its time, session id and the person's id, no text. `forget` deletes the source and the confirmations with
   the fact.
+- `merge` (0.19.0) removes a duplicate from the present but keeps its text, versions, sources and confirmations in
+  the file under its own id; to erase it, `forget` the copy (or the keep, which takes its copies with it).
 - `forget` deletes a fact for good (see [History](#history-sources-and-forgetting-080)); copies outside this database
   (Hermes's session transcripts, backups, other tools' caches) are not the plugin's to rewrite.
 - Dependencies: `numpy` (HRR algebra) and `snowballstemmer` (word forms; pure Python; Polish stems need 3.1 or
@@ -969,7 +981,7 @@ for commercial use. The plugin ships neither model.
 
 Schema changes are additive: 0.4.0 adds a `meta` table (schema version, HRR dimension), an `entity_aliases` table and
 an `entities.name_key` column; nothing older is dropped or rewritten, and the new column is nullable, so earlier
-versions (including the copy bundled in Hermes core) keep reading and writing the file. When this version opens a
+versions keep reading and writing the file. When this version opens a
 file an older one wrote to, it reconciles: missing keys are filled in, entities with the same key are merged (links,
 aliases and names kept), aliases of entities the older version deleted are dropped, and vectors whose size does not
 match `hrr_dim` are re-encoded. Only a writable agent does this; subagents, cron and flush contexts never migrate.
@@ -1002,6 +1014,20 @@ new fact's text, and this version's next open does not notice: run `rebuild_enti
 0.17.0 changes no schema. An older version reads and writes the file as before, but does not keep the rule of 0.17.0:
 it resolves a declared name through an alias a fact's text gave, as 0.16.x did. After going back and forth, read
 `review` (`alias_candidates`) and `entities` (`text_aliases`). 0.17.1 changes no schema either.
+
+**0.19.0 is the first release an older one cannot write after.** It adds `fact_merges` and the version status
+`merged`. A file without a merge stays at history schema 1 and every release since 0.15.0 keeps reading and writing
+it. The first `merge` raises `meta.history_schema` to 2; from then on a writer of 0.15–0.18 refuses the file
+(`HistoryTooNew`) and does not stamp it back, so **going back below 0.19.0 after a merge switches the main agent's
+memory off** until 0.19.0 is installed again or the file is restored from a backup made before the merge. Setting the
+schema back by hand is no fix: an older release's `forget` of a keep would leave its copies' text in the file. An
+older writer already open when the schema rose is not stopped; what it leaves (copies of a keep it forgot, a merge
+row of a copy it forgot) this version cleans on its next writer open, a tombstone for each erased copy. Readers of
+0.15–0.18 (subagents, flush, cron without `cron_writes`) see only the keep; their `as_of` shows a copy under its own
+id without the merge-day clip. Releases before 0.15.0 do not check the schema: they read `facts` as before, and a
+copy's text they add again is a second fact, not folded back. The schema mark is per file, so with `scope: user`,
+`chat` or `thread` a merge in one file does not lock the others. See
+[docs/history.md](docs/history.md#migration-and-older-versions-on-the-same-file).
 
 ## Development
 

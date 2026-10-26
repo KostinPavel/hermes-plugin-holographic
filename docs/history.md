@@ -39,7 +39,7 @@ So every `as_of` answer has two lists: `results` (known to hold on that date) an
 the reason says why). When `results` is empty the answer says that the history for that date is unknown rather
 than returning today's state.
 
-## Five ways a fact stops being current
+## Six ways a fact stops being current
 
 They are different actions in the API because they mean different things:
 
@@ -50,11 +50,29 @@ They are different actions in the API because they mean different things:
 | `correct` | it was wrong (typo, misheard, wrong date) | current version closed as `corrected`, new version inherits `valid_from` (or takes the corrected one) | the wrong version is **never** returned |
 | `revert` | undo the last `change` / `correct` / `end` (e.g. junk from auto-extraction) | last version → `corrected`, the previous one is current again; an ended fact is current again | as if the undone edit never happened |
 | `forget` | the user asked to forget it | the fact and **all** its versions are physically deleted; a tombstone without text stays | gone |
+| `merge` (0.19.0) | it says the same as another fact (a duplicate) | its current version closed as `merged`, a `fact_merges` row points to the keep; the fact leaves the present, its versions, sources and confirmations stay under its own id | until the local day of the merge, under its own id with `merged_into` |
 
 A correction may also fix only the date: `correct {fact_id, valid_from}` moves the start, and the end of the
 previous version moves with it when that version was closed exactly at the old start.
 
 Changing tags, keywords, category or trust is not a new version: it edits the current version in place.
+
+### Merge (0.19.0)
+
+`merge {fact_id: <keep>, from: [ids], keywords?, expect?}` is for duplicates, where `forget` was the only tool and
+took the copy's history and the person's confirmations with it. The keep is not touched as a claim: its text, trust,
+origin, category and user tags stay; its keywords are joined with the copies' (or replaced by the list given) and
+the group's `retrieval_count` / `helpful_count` are added once. Each copy keeps its versions, sources and
+confirmations under its own id; `history {keep}` lists them under `merged_from`, `history {copy}` answers
+`merged_into`. A copy's last text answers `exists` with the keep when it is added, changed into or resumed again
+and auto-extraction skips it; its earlier `changed` versions stay past versions as before, a `corrected` one is
+nothing. Chains do not form: merging a keep into another fact moves its copies to the new root, and a merge into a
+copy is refused. `expect: {"<id>": <version_id>}` makes the merge conditional on each named fact being at that
+version, so an approval of the texts someone saw merges exactly those texts (`changed_since` otherwise, nothing
+written). A cron job merges only facts it stored in the same session. Confirmations of a copy are not counted in
+the keep's `origins` (0.19.0), but a person who confirmed a copy does not raise the keep's trust a second time.
+`forget` of the keep forgets its copies too, a tombstone for each; `forget` of a copy erases it alone. There is no
+unmerge.
 
 ### Backward compatibility of the API
 
@@ -177,7 +195,7 @@ CREATE TABLE fact_versions (
     valid_from     TEXT,                        -- YYYY-MM-DD or NULL (unknown)
     valid_to       TEXT,                        -- YYYY-MM-DD, exclusive; NULL = open
     valid_to_exact INTEGER NOT NULL DEFAULT 1,  -- 0: valid_to is an upper bound
-    status         TEXT NOT NULL,               -- current | changed | ended | corrected
+    status         TEXT NOT NULL,               -- current | changed | ended | corrected | merged (0.19.0)
     recorded_at, recorded_on, closed_at,
     supersedes, superseded_by,                  -- version_ids
     trust_score,                                -- snapshot when the version was closed
@@ -192,6 +210,9 @@ CREATE TABLE fact_confirmations (fact_id INTEGER NOT NULL, confirmed_at TEXT NOT
 CREATE UNIQUE INDEX idx_versions_current ON fact_versions(fact_id) WHERE status = 'current';
 CREATE VIRTUAL TABLE fact_versions_fts USING fts5(content, tags, content=fact_versions, content_rowid=version_id);
 CREATE TABLE forgotten (fact_id INTEGER PRIMARY KEY, forgotten_at TEXT NOT NULL, digests TEXT NOT NULL);
+-- 0.19.0; status also takes 'merged'
+CREATE TABLE fact_merges (from_fact_id INTEGER PRIMARY KEY, into_fact_id INTEGER NOT NULL,
+                          into_version_id INTEGER NOT NULL, merged_at TEXT NOT NULL);
 ```
 
 `facts` gets no new column, so older versions of the plugin and tools that read `facts` directly (hermes-dreaming)
@@ -213,7 +234,15 @@ keep working. Every write is one transaction.
   - tags or category that differ → synced in place;
   - a current version whose fact is gone (an older `remove` or `supersedes`) → treated as `forget`: history
     deleted, tombstone written. An `ended` fact is legitimately absent and is left alone.
-- CI runs 0.8.0 → v0.1.1 → 0.8.0 and 0.8.0 → 0.7.0 → 0.8.0 on one database.
+- **History schema 2 (0.19.0).** The first `merge` in a file raises `meta.history_schema` to 2; a file without a
+  merge stays at 1. From then on writers of 0.15–0.18 refuse the file (the rule above), so going back below 0.19.0
+  after a merge leaves the main agent without memory until 0.19.0 or a backup from before the merge is back; setting
+  the schema back by hand would let an older `forget` of a keep leave its copies' text. A writer of an older release
+  already open when the schema rose is not stopped: on its next open, 0.19.0 erases the copies of a keep that is gone
+  (a tombstone each) and drops a merge row whose copy is gone. Readers of 0.15–0.18 see the keep only and show a
+  copy in `as_of` under its own id without the merge-day clip; releases before 0.15.0 do not read the schema.
+- CI runs 0.8.0 → v0.1.1 → 0.8.0 and 0.8.0 → 0.7.0 → 0.8.0 on one database; 0.19.0 tests a merged file against
+  0.18.2 and v0.7.0 from their tags.
 
 ## Who may write
 
