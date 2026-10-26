@@ -224,12 +224,15 @@ A fact that stops being current is not overwritten. The agent says what happened
 - **Merge, not forget, for duplicates (0.19.0).** `merge {fact_id: <keep>, from: [ids]}` closes each copy's current
   version as `merged`: the copy leaves search, recall and `list`; its versions, sources and confirmations stay under
   its own id (`history {keep}` shows them under `merged_from`, `history {copy}` says `merged_into`), and its last text
-  answers `exists` with the keep when added again, also from auto-extraction. The keep keeps its own text, trust and
-  origin; keywords are joined (or given), the counts added once. `expect: {"<id>": <version_id>}` merges only if
-  every named fact is still at that version (`version_id` is in `history`), otherwise `changed_since` and nothing is
-  written, so a merge a person approved merges exactly the texts they saw. A scheduled job merges only facts it
-  stored in the same session. There is no unmerge; `forget` of the keep forgets its copies too. The first merge
-  raises the history schema (see [Database and downgrades](#database-and-downgrades)).
+  answers `exists` with the keep when added again, also from auto-extraction — while the keep is still at the
+  version it had at the merge (`into_version_id`); once the keep is changed or ended, the copy's text is its past
+  claim (`past_version`); after a change, end or correction of the keep auto-extraction still skips it. The keep
+  keeps its own text, trust and origin; keywords are joined (or given), the counts added once.
+  `expect: {"<id>": <version_id>}` merges only if every named fact is still at that version (`version_id` is in
+  `history`), otherwise `changed_since` and nothing is written, so a merge a person approved merges exactly the
+  texts they saw. A scheduled job merges only facts it stored in the same session. There is no unmerge; `forget` of
+  the keep forgets its copies too. The first merge raises the history schema (see
+  [Database and downgrades](#database-and-downgrades)).
 - Older prompts keep working: `add supersedes=X` is `change X` (the id now stays `X`), `update content=` is `correct`,
   `remove` is `forget`.
 

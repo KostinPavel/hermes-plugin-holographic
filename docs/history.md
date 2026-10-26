@@ -65,14 +65,18 @@ origin, category and user tags stay; its keywords are joined with the copies' (o
 the group's `retrieval_count` / `helpful_count` are added once. Each copy keeps its versions, sources and
 confirmations under its own id; `history {keep}` lists them under `merged_from`, `history {copy}` answers
 `merged_into`. A copy's last text answers `exists` with the keep when it is added, changed into or resumed again
-and auto-extraction skips it; its earlier `changed` versions stay past versions as before, a `corrected` one is
-nothing. Chains do not form: merging a keep into another fact moves its copies to the new root, and a merge into a
-copy is refused. `expect: {"<id>": <version_id>}` makes the merge conditional on each named fact being at that
-version, so an approval of the texts someone saw merges exactly those texts (`changed_since` otherwise, nothing
-written). A cron job merges only facts it stored in the same session. Confirmations of a copy are not counted in
-the keep's `origins` (0.19.0), but a person who confirmed a copy does not raise the keep's trust a second time.
-`forget` of the keep forgets its copies too, a tombstone for each; `forget` of a copy erases it alone. There is no
-unmerge.
+and auto-extraction skips it — only while the keep is still at the version it had at the merge (`into_version_id`);
+once the keep is changed or ended, the copy's text is the keep's past claim (`past_version`), not its new one, and
+auto-extraction skips it after a change, end or correction of the keep, as it skips the keep's own closed
+versions. Its earlier `changed` versions stay past versions as before, a `corrected` one is nothing. Chains do not
+form: merging a keep into another fact moves its copies to the new root, and a merge into a copy is refused; a copy
+that was merged into an earlier version of that keep (the keep changed since) keeps pointing at that version, so it
+stays a past claim under the new root. `expect: {"<id>": <version_id>}` makes the merge conditional on each named
+fact being at that version, so an approval of the texts someone saw merges exactly those texts (`changed_since`
+otherwise, nothing written). A cron job merges only facts it stored in the same session. Confirmations of a copy
+are not counted in the keep's `origins` (0.19.0), but a person who confirmed a copy does not raise the keep's trust
+a second time. `forget` of the keep forgets its copies too, a tombstone for each; `forget` of a copy erases it
+alone. There is no unmerge.
 
 ### Backward compatibility of the API
 

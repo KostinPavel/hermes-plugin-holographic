@@ -20,7 +20,8 @@
   under `past_versions` with `merged_into`. A copy's earlier changed version stays a `past_version`; a corrected one
   is nothing. `add` with a `similar` fact now suggests `merge` instead of "forget the new one and confirm the old".
   This holds while the keep is still at the version it had at the merge (`into_version_id`): once the keep is
-  changed or ended, the copy's text is the keep's past claim (`past_version`), not the new one.
+  changed or ended, the copy's text is the keep's past claim (`past_version`), not the new one; auto-extraction skips
+  it after a change, end or correction of the keep; a chain rebound to a new root keeps that link.
 - `as_of` (list and search): a merged version holds on `[valid_from, min(valid_to, the local day of the merge))`,
   under its own id with `merged_into`; after `change` or `end` of the keep the copy does not hold the old claim on.
 - `fact_feedback confirmed` on the keep: a person (or session) that confirmed a copy before the merge does not raise
@@ -28,7 +29,9 @@
 - `forget {keep}` forgets its copies too, a tombstone each (`merged_copies`); `forget {copy}` erases the copy's
   history and says the keep still holds the text (`merged_into`). `stats.history` gains `merged_facts`; a fact
   that ended, resumed and was merged is not an `ended_facts`. `export` lists what was merged into the facts shown.
-- A scheduled job (`cron_writes`) merges only facts it stored in this very session (contract addition 2026-10-26).
+- A scheduled job (`cron_writes`) merges only facts it stored in this very session (contract addition 2026-10-26),
+  checked in the merge's transaction, where the keep's keywords are joined too: what another session changed a
+  moment earlier is not merged away or overwritten.
 
 ### Changed
 
