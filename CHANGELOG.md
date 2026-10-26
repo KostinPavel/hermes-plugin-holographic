@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.19.1 — 2026-10-26
+
+### Tooling
+- The `RECALL_MARGIN` gate can compare two recorded margins by paired query ids, with exact McNemar, per-target losses, noise and top-five confusion (PR #31, KostinPavel). `--recall-margin` stamps each run and uses round-trip filenames; process-global margin, endpoint and score-scale overrides are restored even after a failed run.
+- A comparison requires one endpoint, code SHA, embeddings mode, score scale and rerank mode, and matching query, row kind, split and target sets. Confusion is read only from the field required by the named dataset; a missing field or unknown shape is an error, never a fallback to a whole-output metric.
+- Historical margin rows use the synthetic multilingual identifiers. Their numerical outcomes, provenance, query ids and ordering are unchanged; they are not a fresh benchmark of the renamed corpus.
+
+`RECALL_MARGIN` remains 1.0. This patch does not change normal recall or rerank behavior.
+
 ## 0.19.0 — 2026-10-26
 
 ### Added
