@@ -423,13 +423,15 @@ class _TrickleHandler(http.server.BaseHTTPRequestHandler):
 
 
 def test_slow_body_returns_at_rerank_timeout_not_at_the_body(tmp_path):
-    """Slow body server (maintainer 19:39, item 1): 21 bytes at 100 ms each = 2.1 s with rerank_timeout 0.5.
+    """Slow body server (maintainer 19:39, item 1): 61 bytes at 100 ms each = 6.1 s with rerank_timeout 0.5 — longer
+    than the join(3) below, so a worker that lost its own deadline is still alive there (review of #33; with 21 bytes
+    the body ended at 2.1 s and the assert passed without the deadline).
 
     Caller-side close() waited for the worker stuck in read(): scores() returned at 2.0 s (21 bytes) and
     10.1 s (101 bytes), the provider lock was held for the whole turn, the core (>8 s) dropped recall. Fake close()s
     do not wait and return at once — only a real server catches this. The worker must cut itself off by
     its own deadline (read1 + with on its own thread); the caller waits only for join(timeout)."""
-    handler = type("H", (_TrickleHandler,), {"payload": b'{"results":[{"i":0}]}', "delay": 0.1})
+    handler = type("H", (_TrickleHandler,), {"payload": b'{"results":[{"i":0}]}' + b" " * 40, "delay": 0.1})
     class _Quiet(http.server.ThreadingHTTPServer):
         # the worker drops the connection on its own deadline — a break in the handler is expected,
         # no traceback needed here

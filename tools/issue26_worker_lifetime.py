@@ -39,8 +39,9 @@ DRIP = 0.2  # seconds between dripped bytes: under the socket timeout, over noth
 RUNS = 2
 
 
-def _server(mode: str, stop: threading.Event) -> int:
-    """A one-shot-connection server; returns the port. Writes the response as the mode dictates."""
+def _server(mode: str, stop: threading.Event) -> tuple[int, threading.Thread]:
+    """A one-shot-connection server; returns the port and its thread. Writes the response as the mode dictates;
+    every wait is stop.wait(), so setting *stop* ends it within one drip and the caller can join it."""
     srv = socket.socket()
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind(("127.0.0.1", 0))
@@ -73,26 +74,29 @@ def _server(mode: str, stop: threading.Event) -> int:
                         break
                     sent += chunk
                 if mode == "stall":
-                    time.sleep(60)  # never answers
+                    stop.wait(60)  # never answers (until the run ends)
                 elif mode == "drip_headers":
                     answer = b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 14\r\n\r\n{"results":[]}'
                     for byte in answer:
                         conn.sendall(bytes([byte]))
-                        time.sleep(DRIP)
+                        if stop.wait(DRIP):
+                            break
                 elif mode == "drip_body":
                     conn.sendall(b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 4096\r\n\r\n')
                     payload = b'{"results":[]}' + b"x" * 4082
                     for i in range(0, len(payload), 8):
                         conn.sendall(payload[i:i + 8])
-                        time.sleep(DRIP)
+                        if stop.wait(DRIP):
+                            break
             except OSError:
                 pass  # the worker's deadline closes the connection: expected
             finally:
                 conn.close()
         srv.close()
 
-    threading.Thread(target=run, daemon=True).start()
-    return port
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return port, thread
 
 
 def _recording_opener(sock_box: dict) -> urllib.request.OpenerDirector:
@@ -119,15 +123,16 @@ def _recording_opener(sock_box: dict) -> urllib.request.OpenerDirector:
 
 def measure(mode: str, shutdown: bool) -> None:
     stop = threading.Event()
-    port = _server(mode, stop)
-    settings = rerank.Settings({"rerank": "on", "rerank_url": f"http://127.0.0.1:{port}/v1/rerank",
-                                "rerank_timeout": "0.5"})
-    rescorer = rerank.Rescorer(settings)
-    sock_box: dict = {}
     original = rerank._OPENER
-    if shutdown:
-        rerank._OPENER = _recording_opener(sock_box)
+    server = None
     try:
+        port, server = _server(mode, stop)
+        settings = rerank.Settings({"rerank": "on", "rerank_url": f"http://127.0.0.1:{port}/v1/rerank",
+                                    "rerank_timeout": "0.5"})
+        rescorer = rerank.Rescorer(settings)
+        sock_box: dict = {}
+        if shutdown:
+            rerank._OPENER = _recording_opener(sock_box)
         start = time.monotonic()
         rescorer.scores("when does the backup run?", ["a first fact", "a second fact"])
         caller = time.monotonic() - start
@@ -139,21 +144,29 @@ def measure(mode: str, shutdown: bool) -> None:
             while "sock" not in sock_box and time.monotonic() < limit:  # connect first, then the wait
                 time.sleep(0.001)
             if "sock" in sock_box:
-                sock_box["sock"].shutdown(socket.SHUT_RDWR)
-                at = f"{(time.monotonic() - start) * 1000:6.1f} ms"
+                try:
+                    sock_box["sock"].shutdown(socket.SHUT_RDWR)
+                    at = f"{(time.monotonic() - start) * 1000:6.1f} ms"
+                except OSError:  # the worker ended and closed it between is_alive() and here
+                    at = "  already closed"
             else:
                 at = "  no socket"
         if worker is not None:
             worker.join(60)  # how long it REALLY lives (cap 60 s)
         total = time.monotonic() - start
+        lingering = worker is not None and worker.is_alive()
         error = rescorer._last_error  # why the endpoint was paused ("no answer (timeout)" etc.)
         print(f"  {mode:12s} shutdown={str(shutdown):5s}  caller {caller * 1000:6.1f} ms | "
-              f"alive_after_call={str(alive):5s} | worker end {total * 1000:7.1f} ms ({total / TIMEOUT:4.1f}x)"
+              f"alive_after_call={str(alive):5s} | "
+              + (f"worker STILL ALIVE after {total * 1000:7.1f} ms" if lingering
+                 else f"worker end {total * 1000:7.1f} ms ({total / TIMEOUT:4.1f}x)")
               + (f" | killed at {at}" if at is not None else "")
               + f" | paused: {error}" + (f" | worker exc: {sock_box['error']}" if "error" in sock_box else ""))
     finally:
         rerank._OPENER = original
         stop.set()
+        if server is not None:
+            server.join(5)  # every wait in it is stop.wait(): it ends within one drip
 
 
 def _high_resolution_timer():
@@ -167,7 +180,8 @@ def _high_resolution_timer():
         return None
     import ctypes
     winmm = ctypes.WinDLL("winmm")
-    winmm.timeBeginPeriod(1)
+    if winmm.timeBeginPeriod(1) != 0:  # TIMERR_NOERROR; refused: report the native timer, release nothing
+        return None
     return winmm
 
 
