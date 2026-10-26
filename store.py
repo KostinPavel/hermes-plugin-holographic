@@ -410,6 +410,8 @@ class MemoryStore(EntityMixin, HistoryMixin):
                 self._reconcile_history()
             if content is not None and history and content != row["content"]:
                 other = self._one("SELECT fact_id FROM facts WHERE content = ? AND fact_id != ?", (content, fact_id))
+                if other is None:  # the last text of a copy merged into another fact: that fact says it (0.19.0)
+                    other = self._merged_head(content, fact_id)
                 if other is not None:
                     raise DuplicateContentError(int(other["fact_id"]))
                 cur = self._current_version(fact_id)

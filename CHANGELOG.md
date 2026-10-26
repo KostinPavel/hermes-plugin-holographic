@@ -2,8 +2,49 @@
 
 ## Unreleased
 
+### Added
+
+- **`fact_store merge {fact_id: <keep>, from: [ids], keywords?, expect?}`**: two facts that say the same thing become
+  one without losing either history. Each copy's current version is closed as `merged` (a new status), a
+  `fact_merges` row (`from_fact_id, into_fact_id, into_version_id, merged_at`) says where it went, its names move to
+  the keep, its row leaves search, recall and `list`; its versions, sources and confirmations stay under its own id,
+  shown by `history {keep}` under `merged_from` (with `merged_confirmations`) and by `history {copy}` as
+  `merged_into`. Every version in `history` now carries its `version_id`. The keep keeps its trust, origin, category
+  and user tags; the group's `retrieval_count` / `helpful_count` are added once (the same merge again changes
+  nothing); keywords are the keep's first, then each copy's, or the list given (`[]` clears). `expect`
+  (`{"<fact_id>": <version_id>}`) makes the merge conditional: a participant at another version answers
+  `changed_since` with the current ids, nothing written. Chains are rebound to the root; a merge into a copy, of the
+  keep itself, of an ended or unknown fact, or of more than 20 is refused without changes. One transaction.
+- The last text of a merged copy does not come back: `add` (also from a scheduled job), `change`, `update content=`
+  and a resume answer with the keep (`exists`, `merged_from`); auto-extraction skips it; the write check lists it
+  under `past_versions` with `merged_into`. A copy's earlier changed version stays a `past_version`; a corrected one
+  is nothing. `add` with a `similar` fact now suggests `merge` instead of "forget the new one and confirm the old".
+  This holds while the keep is still at the version it had at the merge (`into_version_id`): once the keep is
+  changed or ended, the copy's text is the keep's past claim (`past_version`), not the new one; auto-extraction skips
+  it after a change, end or correction of the keep; a chain rebound to a new root keeps that link.
+- `as_of` (list and search): a merged version holds on `[valid_from, min(valid_to, the local day of the merge))`,
+  under its own id with `merged_into`; after `change` or `end` of the keep the copy does not hold the old claim on.
+- `fact_feedback confirmed` on the keep: a person (or session) that confirmed a copy before the merge does not raise
+  the keep's trust again. `origins` still count the keep's own rows only.
+- `forget {keep}` forgets its copies too, a tombstone each (`merged_copies`); `forget {copy}` erases the copy's
+  history and says the keep still holds the text (`merged_into`). `stats.history` gains `merged_facts`; a fact
+  that ended, resumed and was merged is not an `ended_facts`. `export` lists what was merged into the facts shown.
+- A scheduled job (`cron_writes`) merges only facts it stored in this very session (contract addition 2026-10-26),
+  checked in the merge's transaction, where the keep's keywords are joined too: what another session changed a
+  moment earlier is not merged away or overwritten.
+
 ### Changed
 
+- **History schema 2.** The first merge in a file raises `meta.history_schema` to 2; a file without merges stays at 1
+  and an older release still writes it. After a merge, a writer of 0.15–0.18 refuses the file (`HistoryTooNew`) and
+  does not stamp it back: the main agent of an older release has no memory on that file until the plugin is
+  0.19.0 again or the file is restored from a backup (`UPDATE meta SET value='1'` by hand is not a fix: the old
+  forget of a keep leaves its copies' text). An older writer already open when the mark rose is not stopped: its
+  forget of a keep leaves the copies, which this version erases (a tombstone each) on its next writer open, as it
+  does for a keep a release without history deleted; a merge row whose copy an older writer forgot is dropped.
+  Readers of 0.15–0.18 see the keep only, the copy in `as_of` under its own id without the clip, `history` without
+  `merged_into`. v0.7.0 and older read `facts` as before; what they add of a copy's text is a second fact that is
+  not folded back.
 - **The block says when to store a standing rule** (issue #34, KostinPavel): "Store a lasting preference, rule or
   limitation in the same turn the person states it, even in passing; not a request limited to the current task."
   The line before it now reads "Not task progress, tool output or one-off task instructions", so the two agree. The
