@@ -486,18 +486,18 @@ GOLDEN_FACTS = [
     "The nightly backup runs from the OES box at 2 am.", "Lena is allergic to peanuts.",
     "Mark's car is a grey 2019 Skoda Octavia.", "Lena's birthday is on June 3.",
     "Tom plays the violin on Tuesdays and Thursdays.", "The production database runs PostgreSQL 16 on a Hetzner server.",
-    "Ева ходит в третий класс международной школы.", "Антон ездит на скутере Honda Forza.",
-    "Ксюша работает рекрутером в агентстве HR24.", "Ева занимается плаванием по средам.",
+    "Яна ходит в третий класс международной школы.", "Антон ездит на скутере Honda Forza.",
+    "Ксюша работает рекрутером в агентстве HR24.", "Яна занимается плаванием по средам.",
     "我们家的猫叫团子，三岁了。", "服务器的备份每天凌晨两点进行。", "Der Zahnarzttermin ist am Montag um 9 Uhr.",
     "Jonas spielt Fußball im Verein.", "Carlos trabaja de enfermero en el turno de noche.",
     "The team standup is at 10:00 every weekday.", "Grandma lives in Kazan and calls on Sundays.",
-    "The swimming pool in the condo closes at 8 pm.", "Ева боится грозы.", "Антон не пьёт кофе после шести вечера.",
+    "The swimming pool in the condo closes at 8 pm.", "Яна боится грозы.", "Антон не пьёт кофе после шести вечера.",
 ]
 # (fact_id, score rounded to 6 places) of search, as 0.13.0 (a6d0093) computed them on this store; prefetch recalled
 # the same facts in the same order.
 GOLDEN_0130 = {
     "when does the backup run?": [[1, 0.345501], [6, 0.201557]], "Lena allergy": [[2, 0.337635], [4, 0.206865]],
-    "what car does Mark drive": [[3, 0.320899]], "Ева школа": [[7, 0.331086], [19, 0.236746], [10, 0.201351]],
+    "what car does Mark drive": [[3, 0.320899]], "Яна школа": [[7, 0.334007], [19, 0.242647], [10, 0.204538]],
     "Антон кофе": [[20, 0.348972], [8, 0.167384]], "备份几点": [[12, 0.176822]], "猫叫什么": [[11, 0.215834]],
     "Zahnarzt Montag": [[13, 0.324093]], "Carlos enfermero": [[15, 0.305444]], "swimming pool hours": [[18, 0.337]],
     "Where does Grandma live?": [[17, 0.338986]], "violin Tom": [[5, 0.347396]], "server database": [[6, 0.345742]],
@@ -505,9 +505,9 @@ GOLDEN_0130 = {
 # Since the chit-chat gate (test_holographic_chit_chat_gate.py) prefetch leaves out a fact that shares one word of the
 # question when that word is in other facts too and names no one here (these facts are added without entities): #6
 # "The production database runs PostgreSQL 16" is no answer to "when does the backup run?", nor "Lena's birthday" to
-# "Lena allergy", "Ева боится грозы" to "Ева школа" or Anton's scooter to "Антон кофе". Search still finds them all,
+# "Lena allergy", "Яна боится грозы" to "Яна школа" or Anton's scooter to "Антон кофе". Search still finds them all,
 # with the scores above.
-LEFT_OUT_BY_THE_GATE = {"when does the backup run?": {6}, "Lena allergy": {4}, "Ева школа": {19, 10}, "Антон кофе": {8}}
+LEFT_OUT_BY_THE_GATE = {"when does the backup run?": {6}, "Lena allergy": {4}, "Яна школа": {19, 10}, "Антон кофе": {8}}
 
 
 def test_off_scores_and_recall_are_those_of_0130(tmp_path, endpoint):

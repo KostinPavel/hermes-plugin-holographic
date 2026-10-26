@@ -66,18 +66,18 @@ def test_a_function_word_of_another_language_stays_informative():
 def test_folding():
     assert fold("está") == "esta" and fold("ação") == "acao"
     assert fold("й") == "й"  # Cyrillic keeps its breve
-    assert fold("إيفا") == fold("ايفا") and fold("قطة") == "قطه" and fold("مرحبًا") == "مرحبا"
+    assert fold("إيرما") == fold("ايرما") and fold("قطة") == "قطه" and fold("مرحبًا") == "مرحبا"
     assert fold("कॉफ़ी") == fold("कॉफी")  # nukta
     assert fold("২০২৭") == "2027" and fold("٢٠٢٧") == "2027"
 
 
 def test_elision_inversion_and_hyphens():
-    assert words("le rendez-vous d'Eva") == ["le", "rendez-vous", "eva"]  # a noun, not an inverted verb
-    assert {"rendez", "vous"} <= analyze("le rendez-vous d'Eva").bag
+    assert words("le rendez-vous d'Irma") == ["le", "rendez-vous", "irma"]  # a noun, not an inverted verb
+    assert {"rendez", "vous"} <= analyze("le rendez-vous d'Irma").bag
     assert words("Comment Anton prend-il son café ?") == ["comment", "anton", "prend", "son", "cafe"]
-    assert words("Quand Eva a-t-elle natation") == ["quand", "eva", "a", "natation"]
+    assert words("Quand Irma a-t-elle natation") == ["quand", "irma", "a", "natation"]
     assert words("anak-anak bermain") == ["anak", "bermain"]
-    assert words("hr-ovh-এর ব্যাকআপ") == ["hr-ovh", "এর", "ব্যাকআপ"]
+    assert words("hr-vps-এর ব্যাকআপ") == ["hr-vps", "এর", "ব্যাকআপ"]
     assert words("IT-тусовка в пятницу") == ["it", "тусовка", "в", "пятницу"]
     assert "sextas" in analyze("nas sextas-feiras").bag
     assert is_identifier("pve-01") and is_identifier("v0.21.6") and not is_identifier("кто-то")
@@ -111,14 +111,14 @@ def test_french_inversion_is_not_a_required_identifier(provider):
 
 def test_arabic_clitics(store):
     store.add_fact("قطة العائلة اسمها ميا")
-    store.add_fact("تدرس إيفا في مدرسة دولية")
+    store.add_fact("تدرس إيرما في مدرسة دولية")
     assert _found(store, "ما اسم القطة؟")[0] == "قطة العائلة اسمها ميا"  # article on one side only
-    assert _found(store, "مدرسة لإيفا")[0] == "تدرس إيفا في مدرسة دولية"  # preposition glued to the name
+    assert _found(store, "مدرسة لإيرما")[0] == "تدرس إيرما في مدرسة دولية"  # preposition glued to the name
 
 
 def test_arabic_entity_mentioned_with_a_preposition(provider):
-    _call(provider, action="add", content="إيفا لديها حساسية من الفول السوداني", entities=["إيفا"])
-    assert "حساسية" in provider.prefetch("متى دروس السباحة لإيفا؟")
+    _call(provider, action="add", content="إيرما لديها حساسية من الفول السوداني", entities=["إيرما"])
+    assert "حساسية" in provider.prefetch("متى دروس السباحة لإيرما؟")
 
 
 def test_arabic_and_indic_queries_never_reach_fts():
@@ -138,11 +138,11 @@ def test_hindi_in_a_store_where_letters_are_everywhere(store):
 
 
 def test_bengali_case_endings_and_digits(store):
-    store.add_fact("পরিবার ২০২৭ সালের বসন্তে চিয়াং মাইতে চলে যাবে")
-    store.add_fact("প্রতি শনিবার সকালে ইভার সাঁতারের ক্লাস হয়")
-    assert _found(store, "চিয়াং মাই কবে")[0].startswith("পরিবার")
+    store.add_fact("পরিবার ২০২৭ সালের বসন্তে হুয়া হিনে চলে যাবে")
+    store.add_fact("প্রতি শনিবার সকালে ইরমার সাঁতারের ক্লাস হয়")
+    assert _found(store, "হুয়া হিন কবে")[0].startswith("পরিবার")
     assert _found(store, "2027")[0].startswith("পরিবার")
-    assert _found(store, "ইভা সাঁতার")[0].startswith("প্রতি")
+    assert _found(store, "ইরমা সাঁতার")[0].startswith("প্রতি")
 
 
 def test_indonesian_prefixes(store):
@@ -153,16 +153,16 @@ def test_indonesian_prefixes(store):
 
 
 def test_reason_with_an_unknown_arabic_word(store):
-    store.add_fact_status("إيفا لديها حساسية من الفول السوداني", entities=["إيفا"])[0]
-    store.add_fact_status("تدرس إيفا في مدرسة دولية", entities=["إيفا"])[0]
-    assert [f["content"] for f in _r(store).reason(["إيفا", "الحساسية"])] == ["إيفا لديها حساسية من الفول السوداني"]
+    store.add_fact_status("إيرما لديها حساسية من الفول السوداني", entities=["إيرما"])[0]
+    store.add_fact_status("تدرس إيرما في مدرسة دولية", entities=["إيرما"])[0]
+    assert [f["content"] for f in _r(store).reason(["إيرما", "الحساسية"])] == ["إيرما لديها حساسية من الفول السوداني"]
 
 
 # -- gate, conflicts, entity facts ---------------------------------------------------------------------------------
 
 def test_function_words_do_not_make_a_message_relevant(provider):
-    _call(provider, action="add", content="La familia planea mudarse a Chiang Mai en la primavera de 2027")
-    _call(provider, action="add", content="ईवा को मूंगफली से एलर्जी है")
+    _call(provider, action="add", content="La familia planea mudarse a Hua Hin en la primavera de 2027")
+    _call(provider, action="add", content="इरमा को मूंगफली से एलर्जी है")
     assert provider.prefetch("¿Cuál es la capital de Australia?") == ""
     assert provider.prefetch("ठीक है, धन्यवाद") == ""
 
@@ -180,9 +180,9 @@ def test_negation_is_a_possible_conflict(provider, old, new):
 
 
 def test_entity_facts_come_newest_first_when_timestamps_tie(store):
-    ids = [store.add_fact_status(f"Eva fact number {i}", entities=["Eva"])[0] for i in range(4)]
+    ids = [store.add_fact_status(f"Irma fact number {i}", entities=["Irma"])[0] for i in range(4)]
     store._conn.execute("UPDATE facts SET updated_at = '2026-01-01 00:00:00'")
-    group = store.entity_ids("Eva")
+    group = store.entity_ids("Irma")
     assert [f["fact_id"] for f in _r(store)._linked_facts([group], None, 0.0, 2)] == [ids[3], ids[2]]
 
 
@@ -196,20 +196,20 @@ def test_a_function_word_is_told_by_the_other_words():
 
 
 def test_ascii_hyphenated_tokens_are_identifiers(provider):
-    assert is_identifier("hr-ovh") and is_identifier("carry-on") and not is_identifier("кто-то")
+    assert is_identifier("hr-vps") and is_identifier("carry-on") and not is_identifier("кто-то")
     assert words("carry-on luggage") == ["carry-on", "luggage"]  # French inversion only in French text
     _call(provider, action="add", content="hr-other deploys software nightly")
-    assert provider.prefetch("how does hr-ovh deploy") == ""
+    assert provider.prefetch("how does hr-vps deploy") == ""
 
 
 def test_a_host_inside_chinese_text_is_required(provider):
     _call(provider, action="add", content="服务器hr-other部署软件")
-    assert provider.prefetch("hr-ovh服务器部署") == ""
+    assert provider.prefetch("hr-vps服务器部署") == ""
 
 
 @pytest.mark.parametrize("fact,query", [
     ("a ação foi rápida", "ações"), ("o coração bate", "corações"), ("el lápiz rojo", "lápices"),
-    ("le cœur de la ville", "coeur"), ("إيفا تدرس هنا", "ولإيفا"), ("إيفا تدرس هنا", "وبإيفا"),
+    ("le cœur de la ville", "coeur"), ("إيرما تدرس هنا", "ولإيرما"), ("إيرما تدرس هنا", "وبإيرما"),
     ("قهوته سوداء", "القهوة")])
 def test_forms_of_one_word_meet(fact, query):
     assert any(t.found_in(analyze(fact)) for t in query_terms(query))

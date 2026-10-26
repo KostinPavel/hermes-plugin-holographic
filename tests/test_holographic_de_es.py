@@ -74,7 +74,7 @@ def test_a_modifier_alone_never_recalls(store):
 
 
 def test_question_head_alone_counts_as_a_root():
-    fact = text.analyze("Am Abend geht Eva schwimmen und danach essen")
+    fact = text.analyze("Am Abend geht Irma schwimmen und danach essen")
     term = text.query_terms("Wann ist der Elternabend?")[0]
     assert term.match(fact) == text._DERIV_WEIGHT
 

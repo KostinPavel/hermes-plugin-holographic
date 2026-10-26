@@ -20,7 +20,7 @@
 
 ## 0.18.3 — 2026-10-26
 
-A case form of a Russian name the store knows meets its other forms before the turn («Еве» finds «у Евы»), and
+A case form of a Russian name the store knows meets its other forms before the turn («Яне» finds «у Яны»), and
 the recall stages can be traced at debug level by fact id (PR #29, KostinPavel). With rerank off, recall changes
 only where a question holds such a form and the store holds the name.
 
@@ -37,11 +37,11 @@ only where a question holds such a form and the store holds the name.
 
 ### Fixed
 
-- **«Еве» did not meet «Ева» or «Евы».** A family store asked «что Еве нужно взять с собой во вторник и какой чай
-  она любит?» got the fact about Tuesdays and not «Ева любит жасминовый чай…»: the coverage gate cut it at 0.25. In
-  plain Russian text «Ева», «Евы» and «Еве» share only Snowball's stem «ев», which is under `_MIN_STEM` and left out
-  of a word's keys (as a prefix it would find «евро»), so the name's case forms never met, while «Ксюша» and «Ксюше»
-  share «ксюш»; the same for «Оля», «Аня», «Яна», «Ира» and every name whose stem is two letters. The gate now
+- **«Яне» did not meet «Яна» or «Яны».** A family store asked «что Яне нужно взять с собой во вторник и какой чай
+  она любит?» got the fact about Tuesdays and not «Яна любит жасминовый чай…»: the coverage gate cut it at 0.25. In
+  plain Russian text «Яна», «Яны» and «Яне» share only Snowball's stem «ян», which is under `_MIN_STEM` and left out
+  of a word's keys (as a prefix it would find «январь»), so the name's case forms never met, while «Ксюша» and «Ксюше»
+  share «ксюш»; the same for «Оля», «Аня», «Юля», «Ира» and every name whose stem is two letters. The gate now
   credits a term that is a form of a name the store knows (an entity's name or alias; a one-word name whether
   declared or guessed) to a fact holding another form of it, by the key the two share with the name, and counts
   such a term's document frequency over the texts, which the FTS index cannot. Nothing else reads these keys: not
@@ -243,7 +243,7 @@ common word with the message.
   word that only one fact holds, and scripts without capitals (README, Languages). Codex review: three findings (the
   FTS prefix count, names compared by spelling, caseless scripts and German), each fixed with a test.
   `test_holographic_v0140_embeddings.py` pinned prefetch to 0.13.0; four of its thirteen questions now recall fewer
-  facts, the ones that share only "run", "Lena", «Ева» or «Антон» with the question, and the test says which.
+  facts, the ones that share only "run", "Lena", «Яна» or «Антон» with the question, and the test says which.
 
 ### Internal
 
@@ -870,7 +870,7 @@ version numbers, words like `count` and short phrases from the chat).
   - a version number with nothing beside it that names a thing ("0.17.0 installed", «версия 0.17.0»; "Python 3.12",
     "Ubuntu 24.04 LTS" and «1С:Предприятие 8.3» stay: a word with a capital, or in a script without case, names one);
   - in quotes, a span all in lower case in a script with letter case and no identifier in it ('count', 'max', 'run
-    fast', «быстро беги»; 'kanban.db', 'gpt-4o', 'hr-ovh' stay);
+    fast', «быстро беги»; 'kanban.db', 'gpt-4o', 'hr-vps' stay);
   - in quotes, a greeting or a courtesy ("Good morning", «Спасибо большое», “谢谢”; "Good Morning America" and
     "Hello Kitty" stay);
   - in quotes, a Chinese span that reads as something said (`text.zh_phrase`): its last word is a sentence-final
@@ -1484,7 +1484,7 @@ Chinese, Spanish `va`).
   way. A question in kanji only cannot be told from Chinese and is still folded, so a Japanese fact keeps that
   form too (`締切` still meets `締切は明日`); the Chinese-question → Japanese-fact direction through that form
   remains, and needs the question's script in the n-gram match to close.
-- **Spanish `va`, `van`, `vas`, `voy` tell the language** without being dropped as function words: "Eva va a la
+- **Spanish `va`, `van`, `vas`, `voy` tell the language** without being dropped as function words: "Irma va a la
   escuela" was determined as French / Italian (no Spanish stems, no verb forms); the forms of `ir` now vote for
   Spanish and stay words of the question ("¿Cómo va Javier?" still meets `fue`).
 
@@ -1562,7 +1562,7 @@ Italian, Turkish, Polish and Dutch at the level of Spanish and French.
 - **Italian, Turkish, Polish, Dutch.** Snowball stems (each word stemmed as written and folded, so a word typed
   without its marks still meets one typed with them), function words, greetings and courtesy pieces, negators,
   "with" / "without" and "but" words. Turkish: `İ`, `I`, `ı` and `i` compare as one (`İstanbul` / `ISTANBUL`, `KIZIM`
-  / `kızım`); a case ending after an apostrophe comes off a name (`Ankara'da`, `Ayşe'nin`, `HR24'ün`, `hr-ovh'de`), so
+  / `kızım`); a case ending after an apostrophe comes off a name (`Ankara'da`, `Ayşe'nin`, `HR24'ün`, `hr-vps'de`), so
   the name is mentioned and an identifier stays required; the noun without the possessive `s` Snowball leaves
   (`kedisi` / `kedi`). Polish: `ł` compares as `l` and is still searched as written (`szkoła` / `szkole` / `szkola`).
   Italian: elision after `quest'`, `quell'`, `dov'`, `com'`, `cos'`, `anch'` and the like (not before a lone `s`:
@@ -1595,9 +1595,9 @@ Italian, Turkish, Polish and Dutch at the level of Spanish and French.
 - Latin text of no determined language is stemmed in English, Spanish, French, Portuguese, Indonesian and German as
   before; in Turkish, Polish or Dutch only when it has their letters, in Italian never (Polish stems joined `army` /
   `arm`, `apply` / `apple`).
-- A host name stays required in Turkish, Italian, Polish and Dutch text (`hr-ovh'de`): only Spanish, French,
+- A host name stays required in Turkish, Italian, Polish and Dutch text (`hr-vps'de`): only Spanish, French,
   Portuguese, Indonesian and German text reads a letters-only hyphenated word as a compound, and only when every tied
-  language does ("De server hr-ovh" ties Dutch with Spanish).
+  language does ("De server hr-vps" ties Dutch with Spanish).
 - A Japanese fact whose spelling the variants changed also keeps it as written, so a question in kanji only (not
   folded: it has no kana) still meets it (`締切` / `締切は明日`). A hiragana variant starts after other hiragana only
   when that is a particle after a kanji or katakana word (`かいちょう` holds no `いちょう`).
@@ -1897,10 +1897,10 @@ Reviewed before release by Codex CLI; its findings are fixed below, each with a 
 - **Folding**: Latin accents and ligatures, Arabic vowel marks and letter variants (`أ` = `ا`, `ة` = `ه`), the Indic
   nukta, native digits (searched in each digit system too, inside identifiers as well: `2027` finds `২০২৭`, `HR24`
   finds `HR২৪`). Control characters never reach an FTS5 expression.
-- **Tokens**: Unicode punctuation stripped (`¿`, `؟`, `।`); French elision (`d'Eva`) and, in French text, inversion
+- **Tokens**: Unicode punctuation stripped (`¿`, `؟`, `।`); French elision (`d'Irma`) and, in French text, inversion
   (`prend-il`, `est-ce`, but not `rendez-vous`); Portuguese enclisis in Portuguese text; reduplication (`anak-anak`); a
-  hyphen between scripts splits (`hr-ovh-এর`). Letters-only hyphenated tokens stay identifiers in English text and
-  text of no determined language (`hr-ovh`, also inside Chinese text); in Spanish, French, Portuguese and Indonesian
+  hyphen between scripts splits (`hr-vps-এর`). Letters-only hyphenated tokens stay identifiers in English text and
+  text of no determined language (`hr-vps`, also inside Chinese text); in Spanish, French, Portuguese and Indonesian
   text they are compound words.
 - **Greetings** in the seven languages; negators (`no`, `pas`, `não`, `tidak`, `لا`, `नहीं`, `না`).
 
@@ -1928,7 +1928,7 @@ Language quality, measured on English, Russian and Chinese stores (see README, "
   "可以，继续吧" recalled a fact that also said 可以. Recall before the turn also accepts IDF-weighted coverage of the
   meaningful characters (stricter, 0.5), since a one-character word (猫) or a reordered phrase (名字 / 名叫) shares
   characters rather than bigrams. Main-set recall 75 % → 100 %.
-- **Latin words inside Chinese text** ("猎头公司HR24", "服务器hr-ovh运行") are found: the tokenizer glues them to the
+- **Latin words inside Chinese text** ("猎头公司HR24", "服务器hr-vps运行") are found: the tokenizer glues them to the
   characters around them, so they are matched as substrings, and an ASCII identifier's word boundary is ASCII-only.
 - **Declared Chinese names** are recognised inside a message (no spaces around them), so their facts join the recall.
 - **reason** with a name that is not an entity matches it in any word form ("allergy" finds "allergic"; was an exact

@@ -42,13 +42,13 @@ def _found(provider, query):
 # -- keywords --------------------------------------------------------------------------------------------------------
 
 def test_keywords_find_a_fact_by_words_it_does_not_contain(provider):
-    _call(provider, action="add", content="The family plans to move to Chiang Mai in spring 2027",
+    _call(provider, action="add", content="The family plans to move to Hua Hin in spring 2027",
           keywords=["relocation", "new home", "переезд"])
     _call(provider, action="add", content="The website is deployed with GitHub Actions")
     assert _found(provider, "where is our relocation going")[0].startswith("The family")
     assert _found(provider, "когда переезд")[0].startswith("The family")  # a translation
     block = provider.prefetch("any news about the relocation?")
-    assert "Chiang Mai" in block and "keywords" not in block and "переезд" not in block  # the fact, not its keywords
+    assert "Hua Hin" in block and "keywords" not in block and "переезд" not in block  # the fact, not its keywords
 
 
 def test_keywords_in_chinese_are_searched_like_the_text(provider):
@@ -63,7 +63,7 @@ def test_keywords_are_validated(provider):
 
 
 def test_update_replaces_keywords_and_keeps_tags(provider):
-    fact = _call(provider, action="add", content="Eva is allergic to peanuts", tags="health", keywords=["nuts"])["fact_id"]
+    fact = _call(provider, action="add", content="Irma is allergic to peanuts", tags="health", keywords=["nuts"])["fact_id"]
     _call(provider, action="update", fact_id=fact, keywords=["food", "anaphylaxis"])
     tags = _call(provider, action="list")["facts"][0]["tags"]
     assert tags.startswith("health") and "anaphylaxis" in tags and "nuts" not in tags
@@ -75,7 +75,7 @@ def test_update_replaces_keywords_and_keeps_tags(provider):
 def test_keywords_alone_keep_the_fact_age(provider):
     """Keywords are a search aid: adding them must not make an old fact look recently changed (temporal decay, a
     nightly job that reviews recent facts)."""
-    fact = _call(provider, action="add", content="Eva swims on Saturdays")["fact_id"]
+    fact = _call(provider, action="add", content="Irma swims on Saturdays")["fact_id"]
     provider._store._conn.execute("UPDATE facts SET updated_at = '2020-01-01 00:00:00' WHERE fact_id = ?", (fact,))
     provider._store._conn.commit()
 
@@ -84,14 +84,14 @@ def test_keywords_alone_keep_the_fact_age(provider):
 
     _call(provider, action="update", fact_id=fact, keywords=["swimming", "pool"])
     assert age() == "2020-01-01 00:00:00"
-    assert _found(provider, "pool")[0] == "Eva swims on Saturdays"
+    assert _found(provider, "pool")[0] == "Irma swims on Saturdays"
     _call(provider, action="update", fact_id=fact, keywords=["swimming"], tags="sport")
     assert age() != "2020-01-01 00:00:00"  # a real edit still counts
 
 
 def test_enrich_lists_facts_without_keywords(provider):
     bare = _call(provider, action="add", content="The cat is called Mia")["fact_id"]
-    _call(provider, action="add", content="Eva swims on Saturdays", keywords=["swimming", "pool"])
+    _call(provider, action="add", content="Irma swims on Saturdays", keywords=["swimming", "pool"])
     enrich = _call(provider, action="enrich")
     assert [f["fact_id"] for f in enrich["facts"]] == [bare] and "update" in enrich["hint"]
     assert _call(provider, action="stats")["without_keywords"] == 1
@@ -110,8 +110,8 @@ def test_recall_indicator_can_be_switched_off(tmp_path, monkeypatch, setting, sh
         config["recall_indicator"] = setting
     p = HolographicMemoryProvider(config=config)
     p.initialize(session_id="s")
-    _call(p, action="add", content="The family plans to move to Chiang Mai in spring 2027")
-    assert "Chiang Mai" in p.prefetch("when do we move to Chiang Mai?")  # recalled either way
+    _call(p, action="add", content="The family plans to move to Hua Hin in spring 2027")
+    assert "Hua Hin" in p.prefetch("when do we move to Hua Hin?")  # recalled either way
     assert (p.recall_status() is not None) is shown
     p.shutdown()
 
@@ -126,7 +126,7 @@ def test_german_compounds_end_in_the_word_they_name(provider):
 
 
 def test_german_function_words_are_not_topics(provider):
-    _call(provider, action="add", content="Die Datenbank von hr-ovh wird jede Nacht gesichert")
+    _call(provider, action="add", content="Die Datenbank von hr-vps wird jede Nacht gesichert")
     assert provider.prefetch("Was ist die Hauptstadt von Australien?") == ""
 
 
@@ -135,7 +135,7 @@ def test_japanese_particles_and_korean_and_thai_fillers(provider):
     assert run_grams("네") == [] and run_grams("โอเค") == []
     assert dict(run_grams("แมวของครอบครัว"))["ของ"] == 0.0  # Thai "of"
     _call(provider, action="add", content="안톤은 목록 없이 짧은 답변을 좋아한다")
-    _call(provider, action="add", content="ฐานข้อมูลของ hr-ovh สำรองข้อมูลทุกคืน")
+    _call(provider, action="add", content="ฐานข้อมูลของ hr-vps สำรองข้อมูลทุกคืน")
     assert provider.prefetch("좋아, 계속해") == ""
     assert provider.prefetch("เมืองหลวงของออสเตรเลียคืออะไร") == ""
 

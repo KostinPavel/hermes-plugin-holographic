@@ -46,7 +46,7 @@ class _FailingWrites:
 def test_deferred_recall_counts_log_the_kind_not_the_text(tmp_path, caplog):
     provider = _provider(tmp_path)
     store = provider._store
-    fact_id = store.add_fact("Ева любит жасминовый чай.")
+    fact_id = store.add_fact("Яна любит жасминовый чай.")
     store._conn = _FailingWrites(store._conn)
     with caplog.at_level(logging.DEBUG, logger="hermes_plugin_holographic"):
         assert store.add_retrieval_counts({fact_id: 1}) is False
@@ -58,7 +58,7 @@ def test_deferred_recall_counts_log_the_kind_not_the_text(tmp_path, caplog):
 
 def test_the_flush_of_recall_counts_logs_the_kind_not_the_text(tmp_path, caplog, monkeypatch):
     provider = _provider(tmp_path)
-    fact_id = provider._store.add_fact("Ева любит жасминовый чай.")
+    fact_id = provider._store.add_fact("Яна любит жасминовый чай.")
     for key in list(provider._stores):
         provider._pending.setdefault(key, __import__("collections").Counter())[fact_id] += 1
 
