@@ -178,7 +178,9 @@ def test_search_order_exception_keeps_the_unranked_results_and_counts(tmp_path, 
     def boom(*a, **k):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(p._rescorer, "order", boom)
+    # the search stage calls scores() now (the trace needs the score; the same indexes order() returned): an
+    # exception anywhere in the stage still counts as a failed call and keeps the unranked results (item 4)
+    monkeypatch.setattr(p._rescorer, "scores", boom)
     res = json.loads(p.handle_tool_call("fact_store", {"action": "search", "query": "backup"}))
     # on a rerank failure search returns UNRANKED results, not an error
     assert [r.get("fact_id") for r in res.get("results", [])] == off_ids

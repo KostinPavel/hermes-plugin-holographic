@@ -1446,17 +1446,26 @@ def _primary_stem(word: str, lang: str, written: str) -> str:
     return stem_ if len(stem_) >= _MIN_STEM else word
 
 
+def name_forms(word: str) -> frozenset:
+    """The keys of a folded word read as a name: the word and every stem, the short ones too. «Ева», «Евы» and «Еве»
+    share «ев», which the words of a plain Russian text do not carry: _keys keeps a stem under _MIN_STEM only in text
+    whose language is determined, and that is told by Latin function words ("the Ева" has «ев», «Ева любит чай»
+    has not). frozenset() for a word of a script whose names are not inflected (a Latin name matches as written)
+    or an unsegmented run; the callers leave identifiers out."""
+    script = word_script(word)
+    if script not in _SCRIPT_LANGS or UNSEGMENTED.search(word):
+        return frozenset()
+    return _keys(word, _SCRIPT_LANGS[script])
+
+
 def name_keys(name: str) -> tuple[tuple[frozenset, bool], ...]:
     """(forms, exact?) of each word of an entity name. Latin-script names are not inflected, so they match only
     themselves (and the English possessive): "Jean" is not mentioned by "jeans", "Rose" not by "roses". Names in
     other scripts match by their keys, which carry their inflections ("Маши" mentions "Маша", "لإيفا" "إيفا")."""
     out = []
     for word in analyze(name).words:
-        script = word_script(word.text)
-        if script in _SCRIPT_LANGS and not word.identifier and not UNSEGMENTED.search(word.text):
-            out.append((_keys(word.text, _SCRIPT_LANGS[script]), False))
-        else:
-            out.append((frozenset({word.text, word.text + "'s"}), True))
+        forms = name_forms(word.text) if not word.identifier else frozenset()
+        out.append((forms, False) if forms else (frozenset({word.text, word.text + "'s"}), True))
     return tuple(out)
 
 
