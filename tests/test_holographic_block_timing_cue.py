@@ -31,3 +31,13 @@ def test_the_cue_names_a_rule_said_in_passing(tmp_path):
     """The miss was a rule given as an aside at the start of a task, not a preference announced as such."""
     cue = next(line for line in _block(tmp_path).splitlines() if "same turn" in line)
     assert "in passing" in cue or "aside" in cue, cue
+
+
+def test_the_cue_and_the_line_before_it_agree_on_task_requests(tmp_path):
+    """Codex review of #37: "store a rule at once" next to "do not store instructions" contradicted itself. Both
+    lines must draw the same line: a lasting rule is stored, a request limited to the current task is not."""
+    lines = _block(tmp_path).splitlines()
+    cue = next(line for line in lines if "same turn" in line)
+    durable = next(line for line in lines if "durable facts" in line)
+    assert "lasting" in cue and "current task" in cue, cue
+    assert "one-off task instructions" in durable, durable
