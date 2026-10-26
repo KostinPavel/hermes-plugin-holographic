@@ -15,7 +15,7 @@ from .entity_names import entity_key, fold
 from .entity_names import (  # noqa: F401 - re-exported: they lived here, and the provider and tests import them from store
     _RE_TOKEN, _capitalized_phrases, _entity_key_0160, _name_shaped, _outside_plain_quotes, _script_pieces, _valid_entity,
     _without_code, unusable_names)
-from .history import HISTORY_SCHEMA, HistoryMixin, NotFound, parse_day
+from .history import HISTORY_SCHEMA, HistoryMixin, NotFound, error_kind, parse_day
 
 logger = logging.getLogger(__name__)
 
@@ -610,7 +610,7 @@ class MemoryStore(EntityMixin, HistoryMixin):
                     self._conn.executemany("UPDATE facts SET retrieval_count = retrieval_count + ? WHERE fact_id = ?", rows)
                 return True
             except sqlite3.OperationalError as exc:
-                logger.debug("holographic: recall counts deferred (%s)", exc)
+                logger.debug("holographic: recall counts deferred (%s)", error_kind(exc))
                 return False
             finally:
                 self._conn.execute("PRAGMA busy_timeout = 10000")

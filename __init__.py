@@ -868,7 +868,7 @@ class HolographicMemoryProvider(MemoryProvider):
         try:
             total = self._store.count_facts()
         except Exception as exc:  # noqa: BLE001 - busy or broken: not "empty", which the model would believe
-            logger.warning("holographic: could not count the stored facts (%s: %s)", type(exc).__name__, exc)
+            logger.warning("holographic: could not count the stored facts (%s)", error_kind(exc))
             return (f"# Holographic Memory\nActive, but the store could not be read just now ({type(exc).__name__}); "
                     "fact_store may fail until it can.")
         # No live numbers in this block: it sits near the top of the system prompt, and a fact count here changed with
@@ -1453,7 +1453,7 @@ class HolographicMemoryProvider(MemoryProvider):
                 if opened[0].add_retrieval_counts(dict(pending)):
                     pending.clear()
             except Exception as e:  # noqa: BLE001 - counts are advisory and stay pending for the next turn
-                logger.debug("Holographic retrieval count failed: %s", e)
+                logger.debug("Holographic retrieval count failed: %s", error_kind(e))
             if len(pending) > _MAX_TRACKED_FACTS:  # the database stays busy: keep memory bounded
                 self._pending[store_key] = Counter(dict(pending.most_common(_MAX_TRACKED_FACTS)))
 
