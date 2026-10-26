@@ -636,7 +636,7 @@ class EntityMixin:
 
     def known_name_forms(self) -> frozenset:
         """Keys of the words of every entity's name and aliases read as names (name_forms): «ян» and «яна» of «Яна»
-        or of «Яна Гавриленко». One-word names count whether declared or guessed, unlike the index above: a key of
+        or of «Яна Соколова». One-word names count whether declared or guessed, unlike the index above: a key of
         this set only lets a case form of a name stand in for the word in recall's coverage (FactRetriever.relevant),
         it links nothing to the entity. Names in Latin script give no key (they match as written). Cached with the
         index."""

@@ -70,7 +70,7 @@ def _store(tmp_path, how: str | None):
             args["entities"] = ["Яна"]
         back[json.loads(provider.handle_tool_call("fact_store", args))["fact_id"]] = key
     if how == "phrase":
-        result = provider.handle_tool_call("fact_store", {"action": "add", "content": "Яна Гавриленко записана в школу балета."})
+        result = provider.handle_tool_call("fact_store", {"action": "add", "content": "Яна Соколова записана в школу балета."})
         back[json.loads(result)["fact_id"]] = "kid_full"
     elif how == "alias":
         assert "error" not in provider.handle_tool_call("fact_store", {"action": "alias", "entity": "Яна", "content": "Яночка"})
