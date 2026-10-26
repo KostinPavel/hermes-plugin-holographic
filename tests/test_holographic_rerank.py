@@ -644,3 +644,14 @@ def test_a_long_fact_is_cut_to_the_limit_before_it_is_sent(tmp_path, endpoint):
     assert len(body["query"]) <= rerank.RERANK_MAX_CHARS
     assert max(len(d) for d in body["documents"]) <= rerank.RERANK_MAX_CHARS
     p.shutdown()
+
+
+def test_the_length_rule_measures_the_text_that_is_sent(tmp_path, endpoint):
+    """Codex review of #38: the guard measured the stripped message and the request cut the raw one, so a message
+    led by 1,000 blank lines passed the guard and sent only the blank lines. What is checked is what goes out."""
+    p = _provider(tmp_path, **RANK)
+    _fill(p)
+    p.prefetch("\n" * 1000 + "when does the backup run?")
+    assert endpoint.requests, "a short question behind blank lines is still rescored"
+    assert endpoint.requests[-1]["body"]["query"] == "when does the backup run?"
+    p.shutdown()

@@ -225,7 +225,8 @@ class Rescorer:
         if self._secret and self._secret(query or ""):
             self.last_status = "skipped_secret"
             return None  # no call at all: what recall must not inject is never sent
-        if len((query or "").strip()) > RERANK_MAX_CHARS:
+        query = (query or "").strip()  # what is measured below is what is sent
+        if len(query) > RERANK_MAX_CHARS:
             # A message this long (a night job's prompt, a pasted log) would not fit the model with a fact beside it;
             # cutting it would rescore by its first lines only. Not a failure: the rerank-off order stays.
             self.last_status = "skipped_long"
@@ -238,7 +239,7 @@ class Rescorer:
             return [(0, 1.0)]
         limit = int(self.settings.top_k)
         docs = [documents[i] for i in range(min(limit, len(documents)))]
-        body = {"model": self.settings.model, "query": (query or "")[:RERANK_MAX_CHARS],
+        body = {"model": self.settings.model, "query": query,
                 "documents": [str(d)[:RERANK_MAX_CHARS] for d in docs],
                 "top_n": limit}
         ranked = self._request(body)
