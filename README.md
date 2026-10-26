@@ -900,7 +900,9 @@ the endpoint's score scale, set explicitly: ``logit`` (raw llama-server logits; 
 default ``logit`` the sigmoid runs on scores that were normalised once already, the gaps shrink and the window
 keeps more than it should. A value outside that pair is a config problem that names the key and turns
 memory off for the session, like any other out-of-set value — never a silent fallback.
-A query that holds a secret is never sent.
+A query that holds a secret is never sent. A message over 1,000 characters (a night job's prompt, a pasted log) is not rescored
+either: with a fact beside it, it would not fit the model's 1,024 tokens, and the server refuses the whole call; its
+order stays the rerank-off order, and it is not a failure (`skipped_long`). Each fact sent is cut to 1,000 characters.
 With ``rerank_weight: 0`` the cross-encoder judges text only and ignores trust: a fact whose trust
 was lowered (by feedback or by a dreaming plugin) can move back to the top of what is admitted.
 

@@ -33,6 +33,11 @@ logger = logging.getLogger(__name__)
 
 PAUSE_FIRST, PAUSE_MAX = 60.0, 900.0  # seconds the endpoint is left alone after a failure, doubling
 MAX_RESPONSE = 64 << 20
+# A query or a document past this many characters does not go to the model (2026-10-26): jina-reranker-v2 takes
+# 1024 tokens per query-document pair and llama-server refuses the whole request when one pair runs over (500
+# past its batch, 400 past the context), which paused the endpoint on Mia's long night-job prompts. 1000 + 1000
+# characters stay under 1024 tokens even for dense text; a fact is at most 1000 characters (the write screen).
+RERANK_MAX_CHARS = 1000
 DEFAULT_TOP_K = 40  # depth of the pool the cross-encoder sees; the first stage's limit is widened to match
 DEFAULT_TIMEOUT = 3.0  # seconds; 3.0, not 2.0: a slow local endpoint is the normal case (issue #5)
 
@@ -163,8 +168,8 @@ class Rescorer:
         self._epoch = 0
         self.calls = 0  # requests sent (stats, tests)
         self.failures = 0  # counted fallbacks: scores() returned None on a failure (diagnostics)
-        # The outcome of the last scores(): answered / failed: ... / skipped_single / skipped_secret / skipped_busy /
-        # not_called.
+        # The outcome of the last scores(): answered / failed: ... / skipped_single / skipped_secret / skipped_long /
+        # skipped_busy / not_called.
         # Stamped into the runner lines; the run fails on failed (PR #10, 19:07 fix list).
         self.last_status = "not_called"
         # The live worker of the previous request (point 5 of the 24:10 checklist): after join(timeout) the thread
@@ -220,6 +225,11 @@ class Rescorer:
         if self._secret and self._secret(query or ""):
             self.last_status = "skipped_secret"
             return None  # no call at all: what recall must not inject is never sent
+        if len((query or "").strip()) > RERANK_MAX_CHARS:
+            # A message this long (a night job's prompt, a pasted log) would not fit the model with a fact beside it;
+            # cutting it would rescore by its first lines only. Not a failure: the rerank-off order stays.
+            self.last_status = "skipped_long"
+            return None
         if len(documents) == 1:
             # One sendable document: nothing to reorder, the window cannot drop the only candidate
             # (a cut judged from the top always keeps the top) and the blend of a single score is
@@ -228,8 +238,8 @@ class Rescorer:
             return [(0, 1.0)]
         limit = int(self.settings.top_k)
         docs = [documents[i] for i in range(min(limit, len(documents)))]
-        body = {"model": self.settings.model, "query": (query or "")[:2000],
-                "documents": [str(d)[:2000] for d in docs],
+        body = {"model": self.settings.model, "query": (query or "")[:RERANK_MAX_CHARS],
+                "documents": [str(d)[:RERANK_MAX_CHARS] for d in docs],
                 "top_n": limit}
         ranked = self._request(body)
         if ranked is _BUSY:

@@ -611,3 +611,36 @@ def test_failed_call_shows_exactly_the_off_block(tmp_path, endpoint):
     assert len(re.findall(r"- #\d+", off_block)) == 6  # five lexical ones + the sixth from the entity stream
     off.shutdown()
     down.shutdown()
+
+
+# -- a query or a fact too long for the model (Mia 2026-10-26) ---------------------------------------------------
+# llama-server answered 500 for the whole request when a query-document pair ran past its batch (643-732 tokens at 512)
+# and 400 past the model's 1024-token context: 36 failed calls in a week on Mia's night jobs, whose prompts are long.
+# A message over RERANK_MAX_CHARS is not rescored (its order stays the rerank-off order) and a document is cut to it,
+# so a pair stays within ~1024 tokens even for dense text.
+
+
+def test_a_long_message_is_not_sent_and_does_not_pause_the_endpoint(tmp_path, endpoint):
+    p = _provider(tmp_path, **RANK)
+    _fill(p)
+    query = "when does the backup run? " + "Context of the nightly job, step by step. " * 40
+    assert len(query) > rerank.RERANK_MAX_CHARS
+    block = _block(p, query)
+    assert endpoint.requests == [], "a message too long for the model must not be sent"
+    r = p._rescorer
+    assert r.last_status == "skipped_long"
+    assert r.failures == 0 and not r.status().startswith("paused"), "a skip is not a failure"
+    assert block, "recall still answers, in the rerank-off order"
+    p.shutdown()
+
+
+def test_a_long_fact_is_cut_to_the_limit_before_it_is_sent(tmp_path, endpoint):
+    p = _provider(tmp_path, **RANK)
+    _fill(p)
+    p._store.add_fact("The monthly backup runs from the tape box at 5 am. " + "Details of the tape rotation. " * 60)
+    p.prefetch("when does the backup run?")
+    assert endpoint.requests, "the pool of backup facts must have been rescored"
+    body = endpoint.requests[-1]["body"]
+    assert len(body["query"]) <= rerank.RERANK_MAX_CHARS
+    assert max(len(d) for d in body["documents"]) <= rerank.RERANK_MAX_CHARS
+    p.shutdown()
