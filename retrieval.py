@@ -135,13 +135,14 @@ _AS_OF_TEMPLATE = (
     "v.valid_to_exact, v.recorded_on, v.recorded_at AS created_at, COALESCE(v.closed_at, v.recorded_at) AS updated_at, "
     "COALESCE(c.trust_score, v.trust_score, ?) AS trust_score, 0 AS retrieval_count, NULL AS hrr_vector{merged} "
     "FROM fact_versions v LEFT JOIN facts c ON c.fact_id = v.fact_id AND v.status = 'current' {join}"
-    "WHERE v.status != 'corrected' AND (v.valid_from IS NULL OR v.valid_from <= ?) AND (v.valid_to IS NULL OR v.valid_to > ?))")
+    "WHERE v.status != 'corrected' AND (v.valid_from IS NULL OR v.valid_from <= ?) AND (v.valid_to IS NULL OR v.valid_to > ?)"
+    "{gone})")
 # A merged version (0.19.0) carries its merge row: the day it was merged clips it (HistoryMixin.clip_merged). A file
 # no writer of 0.19.0 has opened has no fact_merges table: a reader of it takes the source without the join.
-_AS_OF_SOURCE = _AS_OF_TEMPLATE.format(
-    merged=", m.merged_at, m.into_fact_id AS merged_into",
-    join="LEFT JOIN fact_merges m ON m.from_fact_id = v.fact_id AND v.status = 'merged' ")
-_AS_OF_SOURCE_PLAIN = _AS_OF_TEMPLATE.format(merged="", join="")
+_AS_OF_MERGED = {"merged": ", m.merged_at, m.into_fact_id AS merged_into",
+                 "join": "LEFT JOIN fact_merges m ON m.from_fact_id = v.fact_id AND v.status = 'merged' "}
+_AS_OF_SOURCE = _AS_OF_TEMPLATE.format(**_AS_OF_MERGED, gone="")
+_AS_OF_SOURCE_PLAIN = _AS_OF_TEMPLATE.format(merged="", join="", gone="")
 # Every column a candidate read may return: the facts table's, the as_of source's extras and the FTS rank. Anything
 # else in a row (a column left by another program) is not ours and never reaches a result (_fact_row).
 _AS_OF_EXTRA = ("version_id", "seq", "status", "valid_from", "valid_to", "valid_to_exact", "recorded_on", "merged_at",
@@ -176,7 +177,13 @@ class FactRetriever:
         self._vectors: VectorIndex | None = None  # search by meaning, built on first use
 
     def _as_of(self, day: str) -> _Corpus:
-        source = _AS_OF_SOURCE if self.store._merges_ready() else _AS_OF_SOURCE_PLAIN
+        if self.store._merges_ready():
+            # Merged versions that no longer hold on the day leave before ranking (they would take the pool).
+            gone = self.store.merged_gone_by(day)
+            source = _AS_OF_TEMPLATE.format(**_AS_OF_MERGED, gone=f" AND v.version_id NOT IN "
+                                            f"({','.join(str(int(i)) for i in gone)})" if gone else "")
+        else:
+            source = _AS_OF_SOURCE_PLAIN
         return _Corpus(source, (self.store.default_trust, day, day), "fact_versions_fts", "version_id",
                        self._version_cache)
 

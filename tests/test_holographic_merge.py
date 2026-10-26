@@ -755,3 +755,64 @@ def test_merge_is_serialised_with_the_other_operations(provider):
     assert isinstance(provider._retriever, FactRetriever)
     with pytest.raises(NotFound):
         provider._store.merge_facts(keep, [99999])
+
+
+# --- the merged claim is the keep's version at the merge (review of PR #36) --------------------------------------------
+
+
+def test_after_the_keep_changes_the_copys_text_is_a_past_claim_not_the_new_one(tmp_path, clock):
+    """Codex review of #36: «Paris» merged into a keep that later became «Berlin» must not answer `exists` with the
+    Berlin fact (which would confirm Berlin by the words of Paris) nor end another fact changed into that text."""
+    first = _provider(tmp_path, session_id="s1")
+    keep, copy = _pair(first)
+    _call(first, action="merge", fact_id=keep, **{"from": [copy]})
+    clock.day = "2026-12-05"
+    _call(first, action="change", fact_id=keep, content="Alice Smith lives in Berlin", valid_from="2026-12-01")
+    other = _call(first, action="add", content="Bob Jones lives in Rome")["fact_id"]
+    first.shutdown()
+    later = _provider(tmp_path, session_id="s2", user_id="u9")
+    confirmations = later._store.read("SELECT COUNT(*) FROM fact_confirmations WHERE fact_id = ?", (keep,))[0][0]
+    result = _call(later, action="add", content="Alice Smith is living in Paris by the Louvre zorblat", origin="said")
+    assert result["status"] == "past_version" and result["fact_id"] == keep, result
+    assert "merged_from" not in result
+    assert later._store.read("SELECT COUNT(*) FROM fact_confirmations WHERE fact_id = ?", (keep,))[0][0] == confirmations
+    changed = _call(later, action="change", fact_id=other, content="Alice Smith is living in Paris by the Louvre zorblat")
+    assert changed.get("status") != "exists", changed  # the Berlin fact does not hold that text
+    assert later._store.read("SELECT 1 FROM facts WHERE fact_id = ?", (other,)), "the other fact must not be ended"
+    later.shutdown()
+
+
+def test_as_of_on_the_merge_day_is_not_crowded_out_by_the_merged_copies(provider, clock):
+    """Codex review of #36: the merge-day cut must apply before ranking; copies that no longer hold must not take the
+    candidate pool (105 higher-trust copies of a lower-trust keep left `limit=1` empty)."""
+    keep = _call(provider, action="add", content="Alice Smith lives in Paris", valid_from="2026-01-01")["fact_id"]
+    copies = [_call(provider, action="add", content=f"Alice Smith lives in Paris, note {n} zorblat",
+                    valid_from="2026-01-01")["fact_id"] for n in range(105)]
+    conn = sqlite3.connect(provider._store.db_path)
+    conn.execute(f"UPDATE facts SET trust_score = 0.9 WHERE fact_id IN ({','.join('?' * len(copies))})", copies)
+    conn.execute("UPDATE facts SET trust_score = 0.4 WHERE fact_id = ?", (keep,))
+    conn.commit()
+    conn.close()
+    for i in range(0, len(copies), 20):
+        assert "error" not in _call(provider, action="merge", fact_id=keep, **{"from": copies[i:i + 20]})
+    found = _call(provider, action="search", query="Alice Smith Paris", as_of=clock.day, limit=1, min_trust=0)
+    assert [f["fact_id"] for f in found["results"]] == [keep], found
+
+
+def test_a_confirmation_of_the_copy_does_not_count_against_the_keeps_new_claim(tmp_path, clock):
+    """Codex review of #36: Bob confirmed «Paris» (the copy); after the keep changed to «Berlin», his first
+    confirmation of Berlin is a new one and raises trust — change cleared the old claim's feedback."""
+    first = _provider(tmp_path, session_id="s1")
+    keep, copy = _pair(first)
+    first.shutdown()
+    bob = _provider(tmp_path, session_id="s2", user_id="bob")
+    _feedback(bob, action="confirmed", fact_id=copy)
+    _call(bob, action="merge", fact_id=keep, **{"from": [copy]})
+    clock.day = "2026-12-05"
+    _call(bob, action="change", fact_id=keep, content="Alice Smith lives in Berlin", valid_from="2026-12-01")
+    trust = bob._store.read("SELECT trust_score FROM facts WHERE fact_id = ?", (keep,))[0][0]
+    bob.shutdown()
+    bob_again = _provider(tmp_path, session_id="s3", user_id="bob")
+    result = _feedback(bob_again, action="confirmed", fact_id=keep)
+    assert result["confirmed"] is True and result["trust_score"] > trust, result
+    bob_again.shutdown()

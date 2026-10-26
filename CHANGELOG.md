@@ -19,6 +19,8 @@
   and a resume answer with the keep (`exists`, `merged_from`); auto-extraction skips it; the write check lists it
   under `past_versions` with `merged_into`. A copy's earlier changed version stays a `past_version`; a corrected one
   is nothing. `add` with a `similar` fact now suggests `merge` instead of "forget the new one and confirm the old".
+  This holds while the keep is still at the version it had at the merge (`into_version_id`): once the keep is
+  changed or ended, the copy's text is the keep's past claim (`past_version`), not the new one.
 - `as_of` (list and search): a merged version holds on `[valid_from, min(valid_to, the local day of the merge))`,
   under its own id with `merged_into`; after `change` or `end` of the keep the copy does not hold the old claim on.
 - `fact_feedback confirmed` on the keep: a person (or session) that confirmed a copy before the merge does not raise

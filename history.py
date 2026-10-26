@@ -323,10 +323,16 @@ class HistoryMixin:
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'fact_merges'"))
         return self._entry["merges"]
 
-    def _merge_group(self, keep: int) -> list[int]:
-        """The ids merged into *keep* (chains are rebound to the root, so one level is the whole group)."""
+    def _merge_group(self, keep: int, current_claim: bool = False) -> list[int]:
+        """The ids merged into *keep* (chains are rebound to the root, so one level is the whole group); with
+        *current_claim*, only those merged into the keep's current version: after a change of the keep a copy's
+        confirmations were of the old claim, as the keep's own were (change clears those)."""
         if not self._merges_ready():
             return []
+        if current_claim:
+            return [r[0] for r in self._conn.execute(
+                "SELECT m.from_fact_id FROM fact_merges m JOIN fact_versions k ON k.version_id = m.into_version_id "
+                "WHERE m.into_fact_id = ? AND k.status = 'current' ORDER BY m.from_fact_id", (keep,))]
         return [r[0] for r in self._conn.execute(
             "SELECT from_fact_id FROM fact_merges WHERE into_fact_id = ? ORDER BY from_fact_id", (keep,))]
 
@@ -738,8 +744,8 @@ class HistoryMixin:
                         "merged_confirmations": self._merged_confirmations(keep)}
             now = self._now()
             marks = ",".join("?" * len(copies))
-            self._write(f"UPDATE fact_merges SET into_fact_id = ? WHERE into_fact_id IN ({marks})",
-                        (keep, *[r["fact_id"] for r in copies]))
+            self._write(f"UPDATE fact_merges SET into_fact_id = ?, into_version_id = ? WHERE into_fact_id IN ({marks})",
+                        (keep, int(versions[keep]["version_id"]), *[r["fact_id"] for r in copies]))
             retrieval = helpful = 0
             moved: list[int] = []  # the copies' names, to be keep's
             for row in copies:
@@ -813,12 +819,15 @@ class HistoryMixin:
         """{fact_id: the keep, merged_from: the copy, merged_at} when exactly *text* is the last text of a fact
         merged into a current fact (the version with status 'merged'), else None. Only that version: a copy's
         earlier changed or ended text is a past version, a corrected one never held, and once the keep is gone
-        nothing says the text."""
+        nothing says the text. Only while the keep is still at the version it had when the copy was merged in
+        (into_version_id): after a change or an end of the keep the copy's text is the keep's past claim
+        (past_version), not its new one."""
         if not self.history_ready() or not self._merges_ready():
             return None
         row = self.read("SELECT m.into_fact_id, v.fact_id, m.merged_at FROM fact_versions v JOIN fact_merges m "
                         "ON m.from_fact_id = v.fact_id WHERE v.content = ? AND v.status = 'merged' AND EXISTS "
-                        "(SELECT 1 FROM facts f WHERE f.fact_id = m.into_fact_id) ORDER BY v.version_id DESC LIMIT 1",
+                        "(SELECT 1 FROM facts f WHERE f.fact_id = m.into_fact_id) AND EXISTS (SELECT 1 FROM fact_versions k WHERE "
+                        "k.version_id = m.into_version_id AND k.status = 'current') ORDER BY v.version_id DESC LIMIT 1",
                         ((text or "").strip(),))
         if not row:
             return None
@@ -867,6 +876,17 @@ class HistoryMixin:
                         f"EXISTS (SELECT 1 FROM facts f WHERE f.fact_id = v.fact_id) AS is_current FROM fact_versions v "
                         f"WHERE v.content = ? AND v.status IN ({marks}) ORDER BY v.version_id DESC LIMIT 1",
                         ((text or "").strip(), *statuses))
+        if row:
+            return dict(row[0])
+        if statuses != CLOSED or not self._merges_ready():
+            return None
+        # The last text of a merged copy whose keep has moved on (changed or ended since the merge): it said the keep's
+        # claim of then, so it is that version of the keep (0.19.0).
+        row = self.read(f"SELECT k.fact_id, k.seq, k.status, k.valid_to, k.valid_to_exact, "
+                        f"EXISTS (SELECT 1 FROM facts f WHERE f.fact_id = k.fact_id) AS is_current FROM fact_versions v "
+                        f"JOIN fact_merges m ON m.from_fact_id = v.fact_id JOIN fact_versions k ON k.version_id = "
+                        f"m.into_version_id WHERE v.content = ? AND v.status = 'merged' AND k.status IN ({marks}) "
+                        f"ORDER BY v.version_id DESC LIMIT 1", ((text or "").strip(), *statuses))
         return dict(row[0]) if row else None
 
     def history(self, fact_id: int) -> dict:
@@ -922,6 +942,15 @@ class HistoryMixin:
                 entry["replaced_by_version"] = seqs[r["superseded_by"]]
             versions.append(entry)
         return versions
+
+    def merged_gone_by(self, day: str) -> list[int]:
+        """version_ids of merged versions that no longer hold on *day* (merged on it or before, by local day): an
+        as_of search leaves them out of its corpus before ranking, so they take no place in its pool."""
+        if not self._merges_ready():
+            return []
+        rows = self.read("SELECT v.version_id, m.merged_at FROM fact_versions v JOIN fact_merges m ON "
+                         "m.from_fact_id = v.fact_id WHERE v.status = 'merged'")
+        return [int(r[0]) for r in rows if self._local_day(r[1]) <= day]
 
     def clip_merged(self, row) -> dict | None:
         """A version row as a dict, a merged one with its effective end (0.19.0): from the local day of the merge the
@@ -1071,7 +1100,7 @@ class HistoryMixin:
             if row is None:
                 raise NotFound(f"fact_id {fact_id} not found")
             # The group (0.19.0): a person who confirmed a copy before it was merged in has confirmed this claim
-            group = [fact_id, *self._merge_group(fact_id)]
+            group = [fact_id, *self._merge_group(fact_id, current_claim=True)]
             marks = ",".join("?" * len(group))
             again = bool(self._one(f"SELECT 1 FROM fact_confirmations WHERE fact_id IN ({marks}) AND session_id = ?",
                                    (*group, session)))
