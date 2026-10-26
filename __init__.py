@@ -879,6 +879,8 @@ class HolographicMemoryProvider(MemoryProvider):
                  "(or probe a person/thing by name).",
                  "- Store durable facts as short standalone sentences: people, projects, decisions, preferences, "
                  "corrections. Not task progress, tool output or instructions.",
+                 "- A standing preference, rule or limitation the person states, even in passing (\"don't update "
+                 "the plugin by hand\"): add it in that same turn, next to whatever else you store.",
                  "- One-word names (a first name, a pet): pass entities=[\"Masha\"] when adding, so later facts link to them.",
                  "- A stored fact that is no longer true: change it (it changed), end it (it no longer holds), correct "
                  "it (it was wrong); the history is kept. \"Forget it\" from the user: forget {fact_id}.",
