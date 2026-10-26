@@ -698,6 +698,11 @@ def summarize(rows: list[dict]) -> None:
 
 def main(argv):
     global ENDPOINT, SCALE
+    # Every override below is process-global: a later main([]) in the same process must not run at this
+    # run's margin, endpoint or scale under the plain file name and overwrite a baseline (review of PR #31:
+    # item 3 for RECALL_MARGIN; ENDPOINT is also --endpoint's default below, so it leaked the same way).
+    saved_endpoint, saved_scale = ENDPOINT, SCALE
+    saved_margin = _holographic_embeddings.RECALL_MARGIN
     ap = argparse.ArgumentParser(description="Provenance probe: the sources of facts in prefetch")
     ap.add_argument("--set", default="multi",
                     help="multi | contrast_ru | contrast_en | contrast_zh | household")
@@ -719,54 +724,58 @@ def main(argv):
                     help="override embeddings.RECALL_MARGIN for this run and stamp the value into every row "
                          "and the file name (the 0.6 gate, PR #17); default: the module's own value")
     args = ap.parse_args(argv)
-    if args.recall_margin is not None:
-        _holographic_embeddings.RECALL_MARGIN = args.recall_margin
+    try:
+        if args.recall_margin is not None:
+            _holographic_embeddings.RECALL_MARGIN = args.recall_margin
 
-    ENDPOINT = args.endpoint
-    SCALE = args.rerank_scale
+        ENDPOINT = args.endpoint
+        SCALE = args.rerank_scale
 
-    out_dir = Path(args.out) if args.out else (_REPO / "results")
-    out_dir.mkdir(exist_ok=True)
-    embs = ["off", "on"] if args.emb == "both" else [args.emb]
-    modes = [m.strip() for m in args.modes.split(",") if m.strip()]
-    all_rows: list[dict] = []
+        out_dir = Path(args.out) if args.out else (_REPO / "results")
+        out_dir.mkdir(exist_ok=True)
+        embs = ["off", "on"] if args.emb == "both" else [args.emb]
+        modes = [m.strip() for m in args.modes.split(",") if m.strip()]
+        all_rows: list[dict] = []
 
-    # a mock runner when no endpoint is set — as in benchmark_rerank
-    if not args.endpoint:
-        print("warning: no endpoint set — using a mock order (no real scores)")
+        # a mock runner when no endpoint is set — as in benchmark_rerank
+        if not args.endpoint:
+            print("warning: no endpoint set — using a mock order (no real scores)")
 
-    for emb in embs:
-        if args.set == "multi":
-            rows = run_multilingual([lg.strip() for lg in args.langs.split(",") if lg.strip()],
-                                    modes, emb, args.endpoint)
-        elif args.set == "household":
-            rows = run_household(modes, emb, args.endpoint, split=args.split,
-                                 names_fit=args.names_fit)
-        else:
-            rows = run_contrast(args.set, modes, emb, args.endpoint)
-        suffix = "" if args.set != "household" else (
-            f"_{args.split}" + ("_nfoff" if args.names_fit == "off" else ""))
-        # --label: the second reranker/model must not overwrite the first one's file (item 9: bge vs jina)
-        label = f"_{args.label}" if args.label else ""
-        # --recall-margin: two margins must not overwrite each other (PR #17 recipe, 2026-10-24)
-        margin_sfx = "" if args.recall_margin is None else f"_m{args.recall_margin:g}"
-        path = out_dir / f"provenance_{args.set}{suffix}{label}{margin_sfx}_{emb}.jsonl"
-        sha = _git_sha()
-        for r in rows:
-            r["git_sha"] = sha
-            r["endpoint"] = args.endpoint or "mock"
-            r["scale"] = SCALE  # which scale was set for the run
-            r["margin"] = _holographic_embeddings.RECALL_MARGIN  # which RECALL_MARGIN the run used
-        with open(path, "w", encoding="utf-8") as fh:
+        for emb in embs:
+            if args.set == "multi":
+                rows = run_multilingual([lg.strip() for lg in args.langs.split(",") if lg.strip()],
+                                        modes, emb, args.endpoint)
+            elif args.set == "household":
+                rows = run_household(modes, emb, args.endpoint, split=args.split,
+                                     names_fit=args.names_fit)
+            else:
+                rows = run_contrast(args.set, modes, emb, args.endpoint)
+            suffix = "" if args.set != "household" else (
+                f"_{args.split}" + ("_nfoff" if args.names_fit == "off" else ""))
+            # --label: the second reranker/model must not overwrite the first one's file (item 9: bge vs jina)
+            label = f"_{args.label}" if args.label else ""
+            # --recall-margin: two margins must not overwrite each other (PR #17 recipe, 2026-10-24)
+            margin_sfx = "" if args.recall_margin is None else f"_m{args.recall_margin!r}"
+            path = out_dir / f"provenance_{args.set}{suffix}{label}{margin_sfx}_{emb}.jsonl"
+            sha = _git_sha()
             for r in rows:
-                fh.write(json.dumps(r, ensure_ascii=False) + "\n")
-        print(f"\n=== {args.set} emb={emb}: {len(rows)} queries -> {path}")
-        if args.set == "household":
-            summarize_household(rows)
-        else:
-            summarize(rows)
-        all_rows.extend(rows)
-    return all_rows
+                r["git_sha"] = sha
+                r["endpoint"] = args.endpoint or "mock"
+                r["scale"] = SCALE  # which scale was set for the run
+                r["margin"] = _holographic_embeddings.RECALL_MARGIN  # which RECALL_MARGIN the run used
+            with open(path, "w", encoding="utf-8") as fh:
+                for r in rows:
+                    fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+            print(f"\n=== {args.set} emb={emb}: {len(rows)} queries -> {path}")
+            if args.set == "household":
+                summarize_household(rows)
+            else:
+                summarize(rows)
+            all_rows.extend(rows)
+        return all_rows
+    finally:
+        ENDPOINT, SCALE = saved_endpoint, saved_scale
+        _holographic_embeddings.RECALL_MARGIN = saved_margin
 
 
 if __name__ == "__main__":

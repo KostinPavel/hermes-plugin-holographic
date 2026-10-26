@@ -139,9 +139,20 @@ def report(path: str) -> None:
 
 
 def _confused(r: dict) -> bool:
-    """A confuser in the top five: household stamps `confused`, multi a `wrong5` list, contrast a
-    boolean `wrong` that is already computed against the top five."""
-    return bool(r.get("confused")) or bool(r.get("wrong5")) or bool(r.get("wrong"))
+    """A confuser in the top five, read from the row's OWN field: household stamps `confused`, multi a
+    `wrong5` list, contrast a boolean `wrong` already computed against the top five.
+
+    No fallback between the fields: multi's `wrong` covers the whole output, so an empty `wrong5` with a
+    foreign key below the fifth position is not confusion — counting it anyway inflates the default side
+    and hides a rise (the reviewer's reproduction of PR #31: top-five confusion 0 -> 1, reported 1 -> 1,
+    gate passes)."""
+    if "confused" in r:  # household
+        return bool(r["confused"])
+    if "wrong5" in r:  # multi: the top five only
+        return bool(r["wrong5"])
+    if "wrong" in r:  # contrast: the boolean already covers the top five
+        return bool(r["wrong"])
+    raise SystemExit(f"unknown row shape — no confusion field among {sorted(r)}")
 
 
 def _noise(r: dict) -> bool:
@@ -170,8 +181,19 @@ def report_margins(paths: list[str]) -> None:
         raise SystemExit(f"expected rows stamped with exactly two margins, got {margins} — "
                          f"run provenance_probe --recall-margin twice and pass both files")
     lo, hi = margins  # sorted ascending: lo is the proposal (0.6), hi the current default (1.0)
-    for field in ("git_sha", "emb", "mode", "scale"):
-        vals = sorted({str(r.get(field)) for r in rows})
+    unstamped = [i for i, r in enumerate(rows) if r.get("margin") in (None, "")]
+    if unstamped:
+        raise SystemExit(f"{len(unstamped)} rows carry no margin (row {unstamped[0]}) — a row that does "
+                         f"not say which run it came from cannot be paired")
+    # One clean head for the WHOLE comparison — the endpoint too: two rerank/embedding servers are not one
+    # margin change. A field no row carries refuses the run instead of passing it (PR #31, item 2: the old
+    # filter dropped empty values, so a run stamped with no endpoint at all was a run nobody checked).
+    for field in ("git_sha", "emb", "mode", "scale", "endpoint"):
+        missing = [i for i, r in enumerate(rows) if r.get(field) in (None, "")]
+        if missing:
+            raise SystemExit(f"{field} missing from {len(missing)} rows (row {missing[0]}) — the pairing "
+                             f"needs one clean head")
+        vals = sorted({str(r[field]) for r in rows})
         if len(vals) > 1:
             raise SystemExit(f"mixed runs — {field}={vals}: the pairing needs one clean head")
     seen = {m: set() for m in margins}
@@ -181,11 +203,27 @@ def report_margins(paths: list[str]) -> None:
             raise SystemExit(f"duplicate rows for margin {r['margin']} {key} — the report is impossible")
         seen[float(r["margin"])].add(key)
     # pairing is per (set, lang, qid): the margin is what differs, not part of the pair key
-    only = {m: sorted(seen[m] - (seen[margins[0]] & seen[margins[1]])) for m in margins}
+    only = {m: sorted(seen[m] - (seen[margins[0]] & seen[margins[1]]), key=str) for m in margins}
     if only[margins[0]] or only[margins[1]]:
         raise SystemExit(f"unpaired rows: {only[margins[0]][:3]} vs {only[margins[1]][:3]}")
-    by = {m: {(r["set"], r["lang"], r["qid"]): r for r in rows if float(r["margin"]) == m}
+    by = {m: {(r.get("set"), r.get("lang"), r.get("qid")): r for r in rows if float(r["margin"]) == m}
           for m in margins}
+    # Inside a pair only the margin may differ: the query, the row kind, the split and the target set are
+    # compared field by field, and a field one side does not carry refuses the pair (PR #31, item 2 —
+    # real keys used to come from the proposal alone and the targets from the default with a fallback,
+    # so a pair of different questions or different targets was reported as if it were one question).
+    for key in sorted(seen[margins[0]] & seen[margins[1]], key=str):
+        a, b = by[lo][key], by[hi][key]
+        for field in ("q", "kind", "split"):
+            if field not in a or field not in b:
+                raise SystemExit(f"unpaired {key}: {field} missing — a pair may differ only in margin")
+            if a[field] != b[field]:
+                raise SystemExit(f"unpaired {key}: {field} {a[field]!r} != {b[field]!r}")
+        if "targets" not in a or "targets" not in b:
+            raise SystemExit(f"unpaired {key}: targets missing — a pair may differ only in margin")
+        if set(a["targets"]) != set(b["targets"]):
+            raise SystemExit(f"unpaired {key}: targets {a['targets']} != {b['targets']}")
+    # both sides carry the same kind (checked above): the proposal alone no longer decides what is real
     real_keys = [k for k, r in by[lo].items() if r.get("kind") == "real"]
 
     hit = {m: {k: bool(by[m][k].get("hit5")) for k in real_keys} for m in margins}
@@ -200,7 +238,7 @@ def report_margins(paths: list[str]) -> None:
 
     gained, lost = [], []
     for k in real_keys:
-        targets = set(by[hi][k].get("targets") or set(by[lo][k].get("targets") or []))
+        targets = set(by[hi][k]["targets"])  # equal on both sides: checked per pair above
         for t in sorted(targets & (top5(lo, k) - top5(hi, k))):
             gained.append(f"{k[0]}/{k[1]} {k[2]} -> {t}")
         for t in sorted(targets & (top5(hi, k) - top5(lo, k))):
