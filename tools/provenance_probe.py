@@ -388,7 +388,9 @@ def run_multilingual(langs, modes, emb, endpoint, extra: dict | None = None) -> 
                     miss_cls = next((classify(next((f for f, k in back.items() if k == rk), None), ctx)
                                      for rk in relevant if rk not in keys), "-")
                 rows.append({"set": "multi", "lang": lang, "mode": mode, "emb": emb,
+                             "qid": str(i), "split": "all",
                              "kind": kind, "q": query, "keys": keys,
+                             "targets": list(relevant or []),
                              "sources": {str(f): ctx["tags"].get(f, ["pool-only"])
                                          for f in found},
                              "hit": hit, "wrong": wrong_keys,
@@ -440,7 +442,9 @@ def run_contrast(set_name, modes, emb, endpoint, extra: dict | None = None) -> l
                 miss_cls = classify(next((f for f, k in back.items() if k == target), None), ctx) \
                     if own_pos is None else "-"
                 rows.append({"set": set_name, "lang": set_name, "mode": mode, "emb": emb,
+                             "qid": f"p{pi}q{i}", "split": "all",
                              "kind": "real", "q": query, "keys": keys, "target": target,
+                             "targets": [target],
                              "own_pos": own_pos, "partner_pos": part_pos,
                              "sources": {str(f): ctx["tags"].get(f, ["pool-only"]) for f in found},
                              "hit": own_pos is not None, "wrong": part_pos is not None and part_pos <= 5,
@@ -456,7 +460,9 @@ def run_contrast(set_name, modes, emb, endpoint, extra: dict | None = None) -> l
             found = parse_ids(block)
             keys = [back[f] for f in found if f in back]
             rows.append({"set": set_name, "lang": set_name, "mode": mode, "emb": emb,
+                         "qid": f"c{i}", "split": "all",
                          "kind": "chit", "cat": cat, "q": query, "keys": keys,
+                         "targets": [],
                          "sources": {str(f): ctx["tags"].get(f, ["pool-only"]) for f in found},
                          "hit": None, "wrong": [], "hit5": None, "out_n": len(keys), "miss_cls": "-",
                          "pool_n": len(ctx.get("pool") or []),
@@ -692,6 +698,11 @@ def summarize(rows: list[dict]) -> None:
 
 def main(argv):
     global ENDPOINT, SCALE
+    # Every override below is process-global: a later main([]) in the same process must not run at this
+    # run's margin, endpoint or scale under the plain file name and overwrite a baseline (review of PR #31:
+    # item 3 for RECALL_MARGIN; ENDPOINT is also --endpoint's default below, so it leaked the same way).
+    saved_endpoint, saved_scale = ENDPOINT, SCALE
+    saved_margin = _holographic_embeddings.RECALL_MARGIN
     ap = argparse.ArgumentParser(description="Provenance probe: the sources of facts in prefetch")
     ap.add_argument("--set", default="multi",
                     help="multi | contrast_ru | contrast_en | contrast_zh | household")
@@ -709,50 +720,62 @@ def main(argv):
     ap.add_argument("--out", default=None, help="JSONL directory (default: results/)")
     ap.add_argument("--label", default=None,
                     help="a label in the file name (e.g. jina): does not overwrite the rows of another reranker")
+    ap.add_argument("--recall-margin", default=None, type=float,
+                    help="override embeddings.RECALL_MARGIN for this run and stamp the value into every row "
+                         "and the file name (the 0.6 gate, PR #17); default: the module's own value")
     args = ap.parse_args(argv)
+    try:
+        if args.recall_margin is not None:
+            _holographic_embeddings.RECALL_MARGIN = args.recall_margin
 
-    ENDPOINT = args.endpoint
-    SCALE = args.rerank_scale
+        ENDPOINT = args.endpoint
+        SCALE = args.rerank_scale
 
-    out_dir = Path(args.out) if args.out else (_REPO / "results")
-    out_dir.mkdir(exist_ok=True)
-    embs = ["off", "on"] if args.emb == "both" else [args.emb]
-    modes = [m.strip() for m in args.modes.split(",") if m.strip()]
-    all_rows: list[dict] = []
+        out_dir = Path(args.out) if args.out else (_REPO / "results")
+        out_dir.mkdir(exist_ok=True)
+        embs = ["off", "on"] if args.emb == "both" else [args.emb]
+        modes = [m.strip() for m in args.modes.split(",") if m.strip()]
+        all_rows: list[dict] = []
 
-    # a mock runner when no endpoint is set — as in benchmark_rerank
-    if not args.endpoint:
-        print("warning: no endpoint set — using a mock order (no real scores)")
+        # a mock runner when no endpoint is set — as in benchmark_rerank
+        if not args.endpoint:
+            print("warning: no endpoint set — using a mock order (no real scores)")
 
-    for emb in embs:
-        if args.set == "multi":
-            rows = run_multilingual([lg.strip() for lg in args.langs.split(",") if lg.strip()],
-                                    modes, emb, args.endpoint)
-        elif args.set == "household":
-            rows = run_household(modes, emb, args.endpoint, split=args.split,
-                                 names_fit=args.names_fit)
-        else:
-            rows = run_contrast(args.set, modes, emb, args.endpoint)
-        suffix = "" if args.set != "household" else (
-            f"_{args.split}" + ("_nfoff" if args.names_fit == "off" else ""))
-        # --label: the second reranker/model must not overwrite the first one's file (item 9: bge vs jina)
-        label = f"_{args.label}" if args.label else ""
-        path = out_dir / f"provenance_{args.set}{suffix}{label}_{emb}.jsonl"
-        sha = _git_sha()
-        for r in rows:
-            r["git_sha"] = sha
-            r["endpoint"] = args.endpoint or "mock"
-            r["scale"] = SCALE  # which scale was set for the run
-        with open(path, "w", encoding="utf-8") as fh:
+        for emb in embs:
+            if args.set == "multi":
+                rows = run_multilingual([lg.strip() for lg in args.langs.split(",") if lg.strip()],
+                                        modes, emb, args.endpoint)
+            elif args.set == "household":
+                rows = run_household(modes, emb, args.endpoint, split=args.split,
+                                     names_fit=args.names_fit)
+            else:
+                rows = run_contrast(args.set, modes, emb, args.endpoint)
+            suffix = "" if args.set != "household" else (
+                f"_{args.split}" + ("_nfoff" if args.names_fit == "off" else ""))
+            # --label: the second reranker/model must not overwrite the first one's file (item 9: bge vs jina)
+            label = f"_{args.label}" if args.label else ""
+            # --recall-margin: two margins must not overwrite each other (PR #17 recipe, 2026-10-24)
+            margin_sfx = "" if args.recall_margin is None else f"_m{args.recall_margin!r}"
+            path = out_dir / f"provenance_{args.set}{suffix}{label}{margin_sfx}_{emb}.jsonl"
+            sha = _git_sha()
             for r in rows:
-                fh.write(json.dumps(r, ensure_ascii=False) + "\n")
-        print(f"\n=== {args.set} emb={emb}: {len(rows)} queries -> {path}")
-        if args.set == "household":
-            summarize_household(rows)
-        else:
-            summarize(rows)
-        all_rows.extend(rows)
-    return all_rows
+                r["git_sha"] = sha
+                r["endpoint"] = args.endpoint or "mock"
+                r["scale"] = SCALE  # which scale was set for the run
+                r["margin"] = _holographic_embeddings.RECALL_MARGIN  # which RECALL_MARGIN the run used
+            with open(path, "w", encoding="utf-8") as fh:
+                for r in rows:
+                    fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+            print(f"\n=== {args.set} emb={emb}: {len(rows)} queries -> {path}")
+            if args.set == "household":
+                summarize_household(rows)
+            else:
+                summarize(rows)
+            all_rows.extend(rows)
+        return all_rows
+    finally:
+        ENDPOINT, SCALE = saved_endpoint, saved_scale
+        _holographic_embeddings.RECALL_MARGIN = saved_margin
 
 
 if __name__ == "__main__":

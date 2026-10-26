@@ -1048,6 +1048,15 @@ CI runs the suite on Linux, macOS and Windows against hermes-agent `main`, `ruff
 `pyproject.toml`, and `hermes plugins validate`, the check the plugin catalog runs at admission. 0.11.0: 612 tests pass without the core (2 skipped; the auto-extraction tests
 need it), 600 with snowballstemmer 2.2.0 (14 skipped: no Polish stemmer).
 
+The `RECALL_MARGIN` gate runs on recorded rows, never on a live model: `tools/provenance_probe.py --modes off
+--recall-margin <v>` per margin writes `results/provenance_*_m<v>_<emb>.jsonl`, and
+`tools/mcnemar_gate.py --margin-pair <files>` pairs the two runs per `(set, lang, qid)` and reports the four
+guards — no target lost, noise not higher, confusion not higher, pooled exact McNemar p < 0.05. The pair
+needs rows of a **single mode**: the probe writes three by default (`off,reorder_only,gate_only`) and the
+gate refuses mixed runs, so pass `--modes off`. One `endpoint`, one `git_sha`, one `scale` and one `emb`
+per comparison, and inside a pair only the margin may differ — a pair whose query, kind, split or targets
+disagree is refused instead of reported.
+
 Original plugin by dusterbloom (hermes-agent PR #2351); its history is in hermes-agent
 (`git log -- plugins/memory/holographic`). MIT licence. The bundled language data live in `dictionaries/` (the list
 with sources in its `__init__.py`, rebuilt by the scripts in `tools/`); the Traditional → Simplified Chinese table in `cjk_fold.py` is
