@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Changed
+
+- **The block says when to store a standing rule** (issue #34, KostinPavel): "Store a lasting preference, rule or
+  limitation in the same turn the person states it, even in passing; not a request limited to the current task."
+  The line before it now reads "Not task progress, tool output or one-off task instructions", so the two agree. The
+  case: a rule given as an aside at the start of a task was not stored while three other facts of the same session
+  were, and a nightly extraction found it five days later (five such misses in six days in that setup). The block
+  stays a fixed text, one line longer.
+
 ### Fixed
 
 - **A long message no longer fails the rerank call.** jina-reranker-v2 takes 1,024 tokens per query-document pair, and
