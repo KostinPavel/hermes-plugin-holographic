@@ -887,7 +887,9 @@ class HolographicMemoryProvider(MemoryProvider):
                  "- Facts relevant to a message are recalled before your turn; for more, fact_store search "
                  "(or probe a person/thing by name).",
                  "- Store durable facts as short standalone sentences: people, projects, decisions, preferences, "
-                 "corrections. Not task progress, tool output or instructions.",
+                 "corrections. Not task progress, tool output or one-off task instructions.",
+                 "- Store a lasting preference, rule or limitation in the same turn the person states it, even in "
+                 "passing; not a request limited to the current task.",
                  "- One-word names (a first name, a pet): pass entities=[\"Masha\"] when adding, so later facts link to them.",
                  "- A stored fact that is no longer true: change it (it changed), end it (it no longer holds), correct "
                  "it (it was wrong); the history is kept. \"Forget it\" from the user: forget {fact_id}.",
