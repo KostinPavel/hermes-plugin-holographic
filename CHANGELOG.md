@@ -1,5 +1,105 @@
 # Changelog
 
+## 0.19.0 — 2026-10-26
+
+### Added
+
+- **`fact_store merge {fact_id: <keep>, from: [ids], keywords?, expect?}`**: two facts that say the same thing become
+  one without losing either history. Each copy's current version is closed as `merged` (a new status), a
+  `fact_merges` row (`from_fact_id, into_fact_id, into_version_id, merged_at`) says where it went, its names move to
+  the keep, its row leaves search, recall and `list`; its versions, sources and confirmations stay under its own id,
+  shown by `history {keep}` under `merged_from` (with `merged_confirmations`) and by `history {copy}` as
+  `merged_into`. Every version in `history` now carries its `version_id`. The keep keeps its trust, origin, category
+  and user tags; the group's `retrieval_count` / `helpful_count` are added once (the same merge again changes
+  nothing); keywords are the keep's first, then each copy's, or the list given (`[]` clears). `expect`
+  (`{"<fact_id>": <version_id>}`) makes the merge conditional: a participant at another version answers
+  `changed_since` with the current ids, nothing written. Chains are rebound to the root; a merge into a copy, of the
+  keep itself, of an ended or unknown fact, or of more than 20 is refused without changes. One transaction.
+- The last text of a merged copy does not come back: `add` (also from a scheduled job), `change`, `update content=`
+  and a resume answer with the keep (`exists`, `merged_from`); auto-extraction skips it; the write check lists it
+  under `past_versions` with `merged_into`. A copy's earlier changed version stays a `past_version`; a corrected one
+  is nothing. `add` with a `similar` fact now suggests `merge` instead of "forget the new one and confirm the old".
+  This holds while the keep is still at the version it had at the merge (`into_version_id`): once the keep is
+  changed or ended, the copy's text is the keep's past claim (`past_version`), not the new one; auto-extraction skips
+  it after a change, end or correction of the keep; a chain rebound to a new root keeps that link.
+- `as_of` (list and search): a merged version holds on `[valid_from, min(valid_to, the local day of the merge))`,
+  under its own id with `merged_into`; after `change` or `end` of the keep the copy does not hold the old claim on.
+- `fact_feedback confirmed` on the keep: a person (or session) that confirmed a copy before the merge does not raise
+  the keep's trust again. `origins` still count the keep's own rows only.
+- `forget {keep}` forgets its copies too, a tombstone each (`merged_copies`); `forget {copy}` erases the copy's
+  history and says the keep still holds the text (`merged_into`). `stats.history` gains `merged_facts`; a fact
+  that ended, resumed and was merged is not an `ended_facts`. `export` lists what was merged into the facts shown.
+- A scheduled job (`cron_writes`) merges only facts it stored in this very session (contract addition 2026-10-26),
+  checked in the merge's transaction, where the keep's keywords are joined too: what another session changed a
+  moment earlier is not merged away or overwritten.
+
+### Changed
+
+- **History schema 2.** The first merge in a file raises `meta.history_schema` to 2; a file without merges stays at 1
+  and an older release still writes it. After a merge, a writer of 0.15–0.18 refuses the file (`HistoryTooNew`) and
+  does not stamp it back: the main agent of an older release has no memory on that file until the plugin is
+  0.19.0 again or the file is restored from a backup (`UPDATE meta SET value='1'` by hand is not a fix: the old
+  forget of a keep leaves its copies' text). An older writer already open when the mark rose is not stopped: its
+  forget of a keep leaves the copies, which this version erases (a tombstone each) on its next writer open, as it
+  does for a keep a release without history deleted; a merge row whose copy an older writer forgot is dropped.
+  Readers of 0.15–0.18 see the keep only, the copy in `as_of` under its own id without the clip, `history` without
+  `merged_into`. v0.7.0 and older read `facts` as before; what they add of a copy's text is a second fact that is
+  not folded back.
+- **The block says when to store a standing rule** (issue #34, KostinPavel): "Store a lasting preference, rule or
+  limitation in the same turn the person states it, even in passing; not a request limited to the current task."
+  The line before it now reads "Not task progress, tool output or one-off task instructions", so the two agree. The
+  case: a rule given as an aside at the start of a task was not stored while three other facts of the same session
+  were, and a nightly extraction found it five days later (five such misses in six days in that setup). The block
+  stays a fixed text, one line longer.
+
+### Fixed
+
+- **A long message no longer fails the rerank call.** jina-reranker-v2 takes 1,024 tokens per query-document pair, and
+  llama-server refuses the whole request when one pair runs over: on Mia's night jobs, whose prompts are long, that was
+  36 failed calls in a week, each pausing the endpoint. A message over 500 characters is not sent (`skipped_long`,
+  the rerank-off order, not a failure — also while the endpoint is paused), and each fact is cut to what the message
+  leaves of 1,000 characters for the pair (was 2,000 for each): a token of XLM-RoBERTa's tokenizer covers at least one
+  character, so the pair stays under 1,024 tokens for CJK and emoji too.
+- **Three log lines printed a database error's text.** SQLite quotes a column's value in some messages, so the
+  text could carry a fact into the log. The deferred recall counts (store and provider) and the prompt block that
+  cannot count the facts now log the error's kind (`OperationalError (SQLITE_BUSY)`), as the rerank stage has since
+  0.18.2. `error_kind` moves to `history.py` so the store can use it; `retrieval.error_kind` still works.
+
+## 0.18.3 — 2026-10-26
+
+A case form of a Russian name the store knows meets its other forms before the turn («Яне» finds «у Яны»), and
+the recall stages can be traced at debug level by fact id (PR #29, KostinPavel). With rerank off, recall changes
+only where a question holds such a form and the store holds the name.
+
+### Added
+
+- **Stage traces at debug level** — statistics over the pipeline, fact ids only, never fact text (README,
+  "Data and privacy"). `embed`: the fact vectors written after a turn, the facts the meaning stream admitted before
+  a turn, and the meaning matches a tool search returned. `rescore`: the pool and the candidates the cross-encoder
+  would score, and its `#id=score` answer — at both call sites (prefetch and `fact_store search`) — or why no call
+  was made (`skipped_single`, `skipped_secret`, `skipped_busy`, a failure). `fact_store search` now goes through
+  `Rescorer.scores()` instead of `order()`: the same indexes, plus the score the trace needs. Off at the normal
+  log level (`logging.level` in `config.yaml`): no new config key, and no work at that level — every trace line
+  sits behind an `isEnabledFor(DEBUG)` guard.
+
+### Fixed
+
+- **«Яне» did not meet «Яна» or «Яны».** A family store asked «что Яне нужно взять с собой во вторник и какой чай
+  она любит?» got the fact about Tuesdays and not «Яна любит жасминовый чай…»: the coverage gate cut it at 0.25. In
+  plain Russian text «Яна», «Яны» and «Яне» share only Snowball's stem «ян», which is under `_MIN_STEM` and left out
+  of a word's keys (as a prefix it would find «январь»), so the name's case forms never met, while «Ксюша» and «Ксюше»
+  share «ксюш»; the same for «Оля», «Аня», «Юля», «Ира» and every name whose stem is two letters. The gate now
+  credits a term that is a form of a name the store knows (an entity's name or alias; a one-word name whether
+  declared or guessed) to a fact holding another form of it, by the key the two share with the name, and counts
+  such a term's document frequency over the texts, which the FTS index cannot. Nothing else reads these keys: not
+  `Word.keys`, the FTS index, the duplicate and conflict checks at write time or entity linking; words that are not
+  names («ель» / «ели», «уха» / «ухо», «рой» / «рою») stay apart; a store that does not hold the name recalls as
+  before; a Latin name matches as written. Measured with rerank and embeddings off on the Russian contrast set (30
+  questions, 45 of chit-chat), the household set (210 questions in three languages, 135 of chit-chat) and the
+  multilingual set (ru): hits, noise and confusion unchanged, no target lost; one household question («Во сколько
+  начинается смена Оли в аптеке?») now brings two more facts about Olya's pharmacy, as its English and Chinese
+  versions did.
+
 ## 0.18.2 — 2026-10-25
 
 Fixes from two independent reviews of the outside code merged in 0.18.0 and of the last three days' changes. The
@@ -190,7 +290,7 @@ common word with the message.
   word that only one fact holds, and scripts without capitals (README, Languages). Codex review: three findings (the
   FTS prefix count, names compared by spelling, caseless scripts and German), each fixed with a test.
   `test_holographic_v0140_embeddings.py` pinned prefetch to 0.13.0; four of its thirteen questions now recall fewer
-  facts, the ones that share only "run", "Lena", «Ева» or «Антон» with the question, and the test says which.
+  facts, the ones that share only "run", "Lena", «Яна» or «Антон» with the question, and the test says which.
 
 ### Internal
 
@@ -817,7 +917,7 @@ version numbers, words like `count` and short phrases from the chat).
   - a version number with nothing beside it that names a thing ("0.17.0 installed", «версия 0.17.0»; "Python 3.12",
     "Ubuntu 24.04 LTS" and «1С:Предприятие 8.3» stay: a word with a capital, or in a script without case, names one);
   - in quotes, a span all in lower case in a script with letter case and no identifier in it ('count', 'max', 'run
-    fast', «быстро беги»; 'kanban.db', 'gpt-4o', 'hr-ovh' stay);
+    fast', «быстро беги»; 'kanban.db', 'gpt-4o', 'hr-vps' stay);
   - in quotes, a greeting or a courtesy ("Good morning", «Спасибо большое», “谢谢”; "Good Morning America" and
     "Hello Kitty" stay);
   - in quotes, a Chinese span that reads as something said (`text.zh_phrase`): its last word is a sentence-final
@@ -1431,7 +1531,7 @@ Chinese, Spanish `va`).
   way. A question in kanji only cannot be told from Chinese and is still folded, so a Japanese fact keeps that
   form too (`締切` still meets `締切は明日`); the Chinese-question → Japanese-fact direction through that form
   remains, and needs the question's script in the n-gram match to close.
-- **Spanish `va`, `van`, `vas`, `voy` tell the language** without being dropped as function words: "Eva va a la
+- **Spanish `va`, `van`, `vas`, `voy` tell the language** without being dropped as function words: "Irma va a la
   escuela" was determined as French / Italian (no Spanish stems, no verb forms); the forms of `ir` now vote for
   Spanish and stay words of the question ("¿Cómo va Javier?" still meets `fue`).
 
@@ -1509,7 +1609,7 @@ Italian, Turkish, Polish and Dutch at the level of Spanish and French.
 - **Italian, Turkish, Polish, Dutch.** Snowball stems (each word stemmed as written and folded, so a word typed
   without its marks still meets one typed with them), function words, greetings and courtesy pieces, negators,
   "with" / "without" and "but" words. Turkish: `İ`, `I`, `ı` and `i` compare as one (`İstanbul` / `ISTANBUL`, `KIZIM`
-  / `kızım`); a case ending after an apostrophe comes off a name (`Ankara'da`, `Ayşe'nin`, `HR24'ün`, `hr-ovh'de`), so
+  / `kızım`); a case ending after an apostrophe comes off a name (`Ankara'da`, `Ayşe'nin`, `HR24'ün`, `hr-vps'de`), so
   the name is mentioned and an identifier stays required; the noun without the possessive `s` Snowball leaves
   (`kedisi` / `kedi`). Polish: `ł` compares as `l` and is still searched as written (`szkoła` / `szkole` / `szkola`).
   Italian: elision after `quest'`, `quell'`, `dov'`, `com'`, `cos'`, `anch'` and the like (not before a lone `s`:
@@ -1542,9 +1642,9 @@ Italian, Turkish, Polish and Dutch at the level of Spanish and French.
 - Latin text of no determined language is stemmed in English, Spanish, French, Portuguese, Indonesian and German as
   before; in Turkish, Polish or Dutch only when it has their letters, in Italian never (Polish stems joined `army` /
   `arm`, `apply` / `apple`).
-- A host name stays required in Turkish, Italian, Polish and Dutch text (`hr-ovh'de`): only Spanish, French,
+- A host name stays required in Turkish, Italian, Polish and Dutch text (`hr-vps'de`): only Spanish, French,
   Portuguese, Indonesian and German text reads a letters-only hyphenated word as a compound, and only when every tied
-  language does ("De server hr-ovh" ties Dutch with Spanish).
+  language does ("De server hr-vps" ties Dutch with Spanish).
 - A Japanese fact whose spelling the variants changed also keeps it as written, so a question in kanji only (not
   folded: it has no kana) still meets it (`締切` / `締切は明日`). A hiragana variant starts after other hiragana only
   when that is a particle after a kanji or katakana word (`かいちょう` holds no `いちょう`).
@@ -1844,10 +1944,10 @@ Reviewed before release by Codex CLI; its findings are fixed below, each with a 
 - **Folding**: Latin accents and ligatures, Arabic vowel marks and letter variants (`أ` = `ا`, `ة` = `ه`), the Indic
   nukta, native digits (searched in each digit system too, inside identifiers as well: `2027` finds `২০২৭`, `HR24`
   finds `HR২৪`). Control characters never reach an FTS5 expression.
-- **Tokens**: Unicode punctuation stripped (`¿`, `؟`, `।`); French elision (`d'Eva`) and, in French text, inversion
+- **Tokens**: Unicode punctuation stripped (`¿`, `؟`, `।`); French elision (`d'Irma`) and, in French text, inversion
   (`prend-il`, `est-ce`, but not `rendez-vous`); Portuguese enclisis in Portuguese text; reduplication (`anak-anak`); a
-  hyphen between scripts splits (`hr-ovh-এর`). Letters-only hyphenated tokens stay identifiers in English text and
-  text of no determined language (`hr-ovh`, also inside Chinese text); in Spanish, French, Portuguese and Indonesian
+  hyphen between scripts splits (`hr-vps-এর`). Letters-only hyphenated tokens stay identifiers in English text and
+  text of no determined language (`hr-vps`, also inside Chinese text); in Spanish, French, Portuguese and Indonesian
   text they are compound words.
 - **Greetings** in the seven languages; negators (`no`, `pas`, `não`, `tidak`, `لا`, `नहीं`, `না`).
 
@@ -1875,7 +1975,7 @@ Language quality, measured on English, Russian and Chinese stores (see README, "
   "可以，继续吧" recalled a fact that also said 可以. Recall before the turn also accepts IDF-weighted coverage of the
   meaningful characters (stricter, 0.5), since a one-character word (猫) or a reordered phrase (名字 / 名叫) shares
   characters rather than bigrams. Main-set recall 75 % → 100 %.
-- **Latin words inside Chinese text** ("猎头公司HR24", "服务器hr-ovh运行") are found: the tokenizer glues them to the
+- **Latin words inside Chinese text** ("猎头公司HR24", "服务器hr-vps运行") are found: the tokenizer glues them to the
   characters around them, so they are matched as substrings, and an ASCII identifier's word boundary is ASCII-only.
 - **Declared Chinese names** are recognised inside a message (no spaces around them), so their facts join the recall.
 - **reason** with a name that is not an entity matches it in any word form ("allergy" finds "allergic"; was an exact

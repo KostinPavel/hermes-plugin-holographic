@@ -52,15 +52,15 @@ def test_an_unknown_origin_is_refused(p):
 
 def test_said_again_in_a_later_session_is_a_confirmation_once_per_session(tmp_path):
     first = _provider(tmp_path, "s1")
-    fact = _add(first, "Eva's school starts at 8", "said")["fact_id"]
-    again = _add(first, "Eva's school starts at 8", "said")  # the session that stored it: the agent repeating itself
+    fact = _add(first, "Irma's school starts at 8", "said")["fact_id"]
+    again = _add(first, "Irma's school starts at 8", "said")  # the session that stored it: the agent repeating itself
     assert again["status"] == "exists" and "confirmations" not in again and _trust(first, fact) == pytest.approx(0.6)
     first.shutdown()
     second = _provider(tmp_path, "s2")
-    assert _add(second, "Eva's school starts at 8", "said")["confirmations"] == 1
-    assert _add(second, "Eva's school starts at 8", "said")["confirmations"] == 1  # once per session
+    assert _add(second, "Irma's school starts at 8", "said")["confirmations"] == 1
+    assert _add(second, "Irma's school starts at 8", "said")["confirmations"] == 1  # once per session
     assert _trust(second, fact) == pytest.approx(0.65)
-    assert "confirmations" not in _add(second, "Eva's school starts at 8", "inferred")  # re-inferring is not confirming
+    assert "confirmations" not in _add(second, "Irma's school starts at 8", "inferred")  # re-inferring is not confirming
     second.shutdown()
 
 
@@ -129,14 +129,14 @@ def test_the_starting_trust_stays_within_bounds(tmp_path):
 
 
 def test_a_confirmed_inference_reads_as_confirmed(p):
-    fact = _add(p, "The family flies to Chiang Mai in spring", "inferred")["fact_id"]
-    assert "(inferred)" in p.prefetch("when does the family fly to Chiang Mai", session_id="q1")
+    fact = _add(p, "The family flies to Hua Hin in spring", "inferred")["fact_id"]
+    assert "(inferred)" in p.prefetch("when does the family fly to Hua Hin", session_id="q1")
     got = _call(p, "fact_feedback", action="confirmed", fact_id=fact)
     assert got["confirmed"] and got["origin"] == "confirmed" and got["trust_score"] == pytest.approx(0.45)
     assert _call(p, "fact_feedback", action="confirmed", fact_id=fact)["confirmed"] is False  # same session
     p._injected.clear()
-    assert "(inferred)" not in p.prefetch("when does the family fly to Chiang Mai", session_id="q2")
-    found = _call(p, action="search", query="Chiang Mai flight")["results"]
+    assert "(inferred)" not in p.prefetch("when does the family fly to Hua Hin", session_id="q2")
+    found = _call(p, action="search", query="Hua Hin flight")["results"]
     assert found[0]["origin"] == "confirmed" and found[0]["confirmations"] == 1
 
 

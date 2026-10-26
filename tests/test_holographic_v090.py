@@ -230,7 +230,7 @@ def test_courtesy_messages_are_greetings(message):
 @pytest.mark.parametrize("message", [
     "How is Tim doing at school?", "good morning routine for Leo", "what time is the morning swim",
     "thanks, and when is the dentist?", "как дела у Тимура в школе", "что сегодня на ужин",
-    "доброе утро, во сколько у Евы балет?", "какая сегодня погода",
+    "доброе утро, во сколько у Яны балет?", "какая сегодня погода",
 ])
 def test_a_question_with_courtesy_words_is_not_a_greeting(message):
     assert not text.is_greeting(message)

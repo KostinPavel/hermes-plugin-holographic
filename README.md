@@ -88,7 +88,7 @@ type only: a YAML error quotes the line it stopped at, which may hold a key.
 
 | Tool | Description |
 |------|-------------|
-| `fact_store` | add, search, probe, related, reason, contradict, change, end, correct, revert, forget, history, update, remove, list, stats, export, review, entities, alias, rename, delete_entity, split, rebuild_entities, enrich |
+| `fact_store` | add, search, probe, related, reason, contradict, change, end, correct, revert, merge, forget, history, update, remove, list, stats, export, review, entities, alias, rename, delete_entity, split, rebuild_entities, enrich |
 | `fact_feedback` | Rate a fact helpful or unhelpful (moves its trust score), or record that the person confirmed it (0.15.0) |
 
 - **search**: keyword candidates in any word form (`Маши` finds `Маша`, `deploys` finds `deploy`, `kucingnya` finds
@@ -206,6 +206,7 @@ A fact that stops being current is not overwritten. The agent says what happened
 | `end {fact_id, valid_to?}` | it no longer holds and nothing replaces it | the fact leaves the current store; its history stays |
 | `correct {fact_id, content?, valid_from?}` | it was wrong | the wrong version is never shown as the past |
 | `revert {fact_id}` | undo the last change, correction or end | the previous version is current again |
+| `merge {fact_id, from, keywords?, expect?}` | two or more facts say the same thing (0.19.0) | the copies leave the present into the keep; each keeps its history under its own id |
 | `forget {fact_id}` | the user asks to forget it | deleted for good, every version included; only a tombstone without text stays |
 
 - **Ordinary recall sees only the present.** Past versions live in their own table and index; `search` and `list`
@@ -220,6 +221,18 @@ A fact that stops being current is not overwritten. The agent says what happened
   rebuilt, the file is rewritten (`VACUUM`, with `secure_delete` on) and the write-ahead log emptied, so no copy of the
   text stays in free pages. A tombstone (the id and keyed hashes, never the text) stops auto-extraction from bringing
   the fact back from old messages and tells other tools which ids to clean from their own copies.
+- **Merge, not forget, for duplicates (0.19.0).** `merge {fact_id: <keep>, from: [ids]}` closes each copy's current
+  version as `merged`: the copy leaves search, recall and `list`; its versions, sources and confirmations stay under
+  its own id (`history {keep}` shows them under `merged_from`, `history {copy}` says `merged_into`), and its last text
+  answers `exists` with the keep when added again, also from auto-extraction — while the keep is still at the
+  version it had at the merge (`into_version_id`); once the keep is changed or ended, the copy's text is its past
+  claim (`past_version`); after a change, end or correction of the keep auto-extraction still skips it. The keep
+  keeps its own text, trust and origin; keywords are joined (or given), the counts added once.
+  `expect: {"<id>": <version_id>}` merges only if every named fact is still at that version (`version_id` is in
+  `history`), otherwise `changed_since` and nothing is written, so a merge a person approved merges exactly the
+  texts they saw. A scheduled job merges only facts it stored in the same session. There is no unmerge; `forget` of
+  the keep forgets its copies too. The first merge raises the history schema (see
+  [Database and downgrades](#database-and-downgrades)).
 - Older prompts keep working: `add supersedes=X` is `change X` (the id now stays `X`), `update content=` is `correct`,
   `remove` is `forget`.
 
@@ -286,7 +299,7 @@ A word matches another when they share its plain form or its stem in the languag
 - **Stems**: Snowball for English, Russian, Spanish, French, Portuguese, Indonesian, German, Hindi, Italian, Turkish,
   Polish and Dutch, with two plural rules it lacks (Portuguese `ação` / `ações`, Spanish `lápiz` / `lápices`); for
   Arabic, Larkey's light stemmer (the one Lucene ships) next to Snowball's, plus the word without a glued conjunction or
-  preposition before an alef (`لإيفا`, "for Eva"; `ولإيفا`, "and for Eva"); for Bengali, a light suffix stripper
+  preposition before an alef (`لإيرما`, "for Irma"; `ولإيرما`, "and for Irma"); for Bengali, a light suffix stripper
   (Snowball has none) that leaves at least three letters, so `মাটি` (soil) is not `মা` (mother). Italian, Turkish,
   Polish and Dutch words (0.11.0) are stemmed as written and folded: Snowball's Turkish and Polish read the letters
   folding drops (`çocuğun` is `çocuk`, `domów` is `dom`), and a word typed without its marks still meets one typed with
@@ -323,16 +336,16 @@ A word matches another when they share its plain form or its stem in the languag
   `уберу`, of `убрать`), and a short one is searched by its forms as whole words, so `бот` does not bring in
   `ботинки`. Words two languages share by meaning, not spelling (`password` / `пароль`), are not listed: that is what
   keywords are for.
-- **Hyphens**: French elision and inversion (`d'Eva`, `prend-il`, `est-ce`) and Portuguese enclisis (`chama-se`) are
+- **Hyphens**: French elision and inversion (`d'Irma`, `prend-il`, `est-ce`) and Portuguese enclisis (`chama-se`) are
   taken apart in text of that language, reduplication (`anak-anak`) in any; a hyphen between scripts splits
-  (`hr-ovh-এর`). A letters-only hyphenated token is an identifier in English text or text of no determined language
-  (`hr-ovh`, `carry-on`): a message naming it is about that one, and a fact about `hr-other` is not recalled for it.
+  (`hr-vps-এর`). A letters-only hyphenated token is an identifier in English text or text of no determined language
+  (`hr-vps`, `carry-on`): a message naming it is about that one, and a fact about `hr-other` is not recalled for it.
   In Spanish, French, Portuguese, Indonesian and German text it is a compound word (`week-end`, `sexta-feira`,
   `IT-Treffen`), so a host name in a question in those languages is matched like any word, not enforced.
 - **Apostrophes**: Italian elision as French (`dell'anno`, `l'ospedale`, `quest'anno`, `dov'è`, `anch'io`; not before
   a lone `s`, so English `dev's` stays). A Turkish case ending after a name comes off in text that may be Turkish
-  (`Ankara'da`, `Ayşe'nin`, `HR24'ün`, `hr-ovh'de` are Ankara, Ayşe, HR24, hr-ovh), so the name is mentioned and an
-  identifier stays required; only Turkish endings, so `Eva's`, `o'clock` and `rock'n'roll` are left alone. In Dutch
+  (`Ankara'da`, `Ayşe'nin`, `HR24'ün`, `hr-vps'de` are Ankara, Ayşe, HR24, hr-vps), so the name is mentioned and an
+  identifier stays required; only Turkish endings, so `Irma's`, `o'clock` and `rock'n'roll` are left alone. In Dutch
   text the plural and possessive `'s` comes off (`pinda's`).
 - **German compounds** (0.11.0): in text determined as German, a compound is split by a dictionary of German lexemes
   from Wikidata (CC0): parts of three letters or more joined by German linking elements (`-s-`, `-es-`, `-n-`, `-en-`,
@@ -400,7 +413,7 @@ A word matches another when they share its plain form or its stem in the languag
   at word boundaries; padding alone ("fine?", "сегодня?") is a question. Russian question words (`какой`, `который`,
   `сколько`, `почему` …) are left out of a query's terms, like English `what` / `which` / `how`, but kept in facts.
 - **Names** in Latin script are matched as written (and with an English `'s`): `Jean` is not mentioned by `jeans`.
-  Names in other scripts carry their inflections (`Маши` mentions `Маша`, `لإيفا` mentions `إيفا`).
+  Names in other scripts carry their inflections (`Маши` mentions `Маша`, `لإيرما` mentions `إيرما`).
 - **Chinese, Japanese, Korean, Thai** (no spaces between words): character n-grams, bigrams for Chinese, Japanese and
   Korean, trigrams for Thai. Grammar weighs less: Chinese function characters (的 是 了), Japanese particles (は が を
   に の), Thai function words (ของ ที่ และ); a message that is only a filler (はい, 네, โอเค) recalls nothing. Chinese
@@ -503,7 +516,7 @@ How the numbers were obtained, honestly:
   mornings), and the quiet column includes that fix. Spanish to Indonesian: first run before the review fixes below,
   with the same found and recalled numbers. Japanese, Korean, Thai, German: run once; nothing changed after.
 - **An independent review (Codex CLI) of 0.4.2 and 0.5.0** found regressions the sets did not: a lone "son" dropped as
-  a Spanish function word, `hr-ovh` no longer enforced, `ação` / `ações` apart, "with" / "without" sugar no longer a
+  a Spanish function word, `hr-vps` no longer enforced, `ação` / `ações` apart, "with" / "without" sugar no longer a
   conflict, `Jean` mentioned by `jeans`, and others. Each is fixed with a test, and every set was run again. One of
   those fixes made French `est-ce` a required identifier, which the unseen set showed (French recalled 88 %); the
   remedy (compound words in Romance-language text, a hyphenated word votes for a language with its first part) was
@@ -589,7 +602,7 @@ How the numbers were obtained, honestly:
     sets are unchanged.
 - **Review of 0.11.0 (Codex CLI)**, each fixed with a test (`tests/test_holographic_v0110_review.py`): Polish stems in
   text of no determined language joined English words (`army` / `arm`; now only with Polish letters); a host name in a
-  Turkish, Italian or Dutch question was no longer required (`hr-ovh'de`); a hiragana variant was replaced inside
+  Turkish, Italian or Dutch question was no longer required (`hr-vps'de`); a hiragana variant was replaced inside
   another word (`かいちょう`); English links of a rare sense were applied to the common one (`butter` / `butt`, `tower`
   / `tow`, `pear` / `pearl`); a Chinese one-character word recalled an idiom (`猫` / `猫腻`; now it needs a pair of the
   question or a second character); a kanji-only Japanese question missed a fact whose kana folded its spelling (a
@@ -597,7 +610,7 @@ How the numbers were obtained, honestly:
   "Günaydın canlarım!" recalled facts about Can; a damaged data file broke recall instead of being skipped. A second
   review (of German and Spanish, and of these fixes) found verb forms recalling facts alone (`tuviese` / `contiene`,
   `gelegt` / `liegt`, `Lucía` / `luce`, `fue` / `va`: now 0.6, never alone), a three-letter compound head doing the
-  same (`Alltag` / `Tag`), a host name lost in a Dutch tie with Spanish (`De server hr-ovh`: compounds only when every
+  same (`Alltag` / `Tag`), a host name lost in a Dutch tie with Spanish (`De server hr-vps`: compounds only when every
   tied language writes them), and a malformed compound row raising instead of being skipped; each has a test. The
   German set gives the same numbers after these fixes, quiet 8 of 10 again; every other set is unchanged.
 - **Not measured**: other languages (exact words, no stems, no function-word list): among them Vietnamese, Ukrainian
@@ -619,7 +632,7 @@ nightly (`keywords.enabled`).
 Measured on a third set per language: 8 questions that share no word with their fact except a name ("Where are we
 relocating?", "What breed is our pet?", "Can my office computer handle AI models?"), written after the keywords. The
 keywords came from a separate agent that saw only the facts and the description of `keywords`, not the questions; a
-first batch was thrown away because the description's example then was the store's own "we move to Chiang Mai".
+first batch was thrown away because the description's example then was the store's own "we move to Hua Hin".
 
 | | Without keywords: found / recalled | With keywords: found / recalled |
 |---|---|---|
@@ -639,7 +652,7 @@ first batch was thrown away because the description's example then was the store
 | German | 25 % / 38 % | 62 % / 75 % |
 | **All 112** | **42 / 33** | **94 / 88** |
 
-Without keywords, what is found comes through the name in three of the eight questions (Eva, Anton). With them, the
+Without keywords, what is found comes through the name in three of the eight questions (Irma, Anton). With them, the
 main sets lose nothing (280 / 280 found and recalled), one more extra fact comes per ten questions, and one chit-chat
 line of 70 recalls a fact ("Apa ibu kota Australia?" shares "kota", city, with a keyword "ganti kota"). The misses
 left are words the keywords did not include ("перебираемся" against "переселение", "morar" against "moradia"):
@@ -900,7 +913,11 @@ the endpoint's score scale, set explicitly: ``logit`` (raw llama-server logits; 
 default ``logit`` the sigmoid runs on scores that were normalised once already, the gaps shrink and the window
 keeps more than it should. A value outside that pair is a config problem that names the key and turns
 memory off for the session, like any other out-of-set value — never a silent fallback.
-A query that holds a secret is never sent.
+A query that holds a secret is never sent. A message over 500 characters (a night job's prompt, a pasted log) is not rescored either:
+with a fact beside it, it could run past the model's 1,024 tokens, and the server refuses the whole call; its order
+stays the rerank-off order, and it is not a failure, also while the endpoint is paused (`skipped_long`). Each fact is
+cut to what the message leaves of 1,000 characters for the pair; with XLM-RoBERTa's tokenizer (jina-reranker-v2,
+bge-reranker-v2-m3) a token covers at least one character, so the pair stays under the limit for CJK and emoji too.
 With ``rerank_weight: 0`` the cross-encoder judges text only and ignores trust: a fact whose trust
 was lowered (by feedback or by a dreaming plugin) can move back to the top of what is admitted.
 
@@ -950,10 +967,17 @@ for commercial use. The plugin ships neither model.
   makes is a fact's vector when search by meaning is on.
 - With `auto_extract` on, user messages matching the preference/decision patterns are stored at session end.
 - `retrieval_count` counts how often a fact was handed to the model; nothing else is tracked.
+- For statistics, `logger.debug` stage traces name fact ids, never their text: `embed` — the fact vectors stored
+  after a turn, the facts the meaning stage admitted before a turn and the meaning matches a tool search returned;
+  `rescore` — the pool and the candidates the cross-encoder would score and its `#id=score` answer, or why no
+  made. Set `logging.level: DEBUG` in `config.yaml` to see them in `logs/agent.log`; at the normal level they are
+  not emitted, and there is no extra switch for them.
 - Each version keeps its source: platform, chat type, chat / thread / session id, the author of the turn (id and
   display name) and, from 0.15.0, its origin (said / confirmed / inferred). Chat names are not kept. Each confirmation
   keeps its time, session id and the person's id, no text. `forget` deletes the source and the confirmations with
   the fact.
+- `merge` (0.19.0) removes a duplicate from the present but keeps its text, versions, sources and confirmations in
+  the file under its own id; to erase it, `forget` the copy (or the keep, which takes its copies with it).
 - `forget` deletes a fact for good (see [History](#history-sources-and-forgetting-080)); copies outside this database
   (Hermes's session transcripts, backups, other tools' caches) are not the plugin's to rewrite.
 - Dependencies: `numpy` (HRR algebra) and `snowballstemmer` (word forms; pure Python; Polish stems need 3.1 or
@@ -964,7 +988,7 @@ for commercial use. The plugin ships neither model.
 
 Schema changes are additive: 0.4.0 adds a `meta` table (schema version, HRR dimension), an `entity_aliases` table and
 an `entities.name_key` column; nothing older is dropped or rewritten, and the new column is nullable, so earlier
-versions (including the copy bundled in Hermes core) keep reading and writing the file. When this version opens a
+versions keep reading and writing the file. When this version opens a
 file an older one wrote to, it reconciles: missing keys are filled in, entities with the same key are merged (links,
 aliases and names kept), aliases of entities the older version deleted are dropped, and vectors whose size does not
 match `hrr_dim` are re-encoded. Only a writable agent does this; subagents, cron and flush contexts never migrate.
@@ -997,6 +1021,20 @@ new fact's text, and this version's next open does not notice: run `rebuild_enti
 0.17.0 changes no schema. An older version reads and writes the file as before, but does not keep the rule of 0.17.0:
 it resolves a declared name through an alias a fact's text gave, as 0.16.x did. After going back and forth, read
 `review` (`alias_candidates`) and `entities` (`text_aliases`). 0.17.1 changes no schema either.
+
+**0.19.0 is the first release an older one cannot write after.** It adds `fact_merges` and the version status
+`merged`. A file without a merge stays at history schema 1 and every release since 0.15.0 keeps reading and writing
+it. The first `merge` raises `meta.history_schema` to 2; from then on a writer of 0.15–0.18 refuses the file
+(`HistoryTooNew`) and does not stamp it back, so **going back below 0.19.0 after a merge switches the main agent's
+memory off** until 0.19.0 is installed again or the file is restored from a backup made before the merge. Setting the
+schema back by hand is no fix: an older release's `forget` of a keep would leave its copies' text in the file. An
+older writer already open when the schema rose is not stopped; what it leaves (copies of a keep it forgot, a merge
+row of a copy it forgot) this version cleans on its next writer open, a tombstone for each erased copy. Readers of
+0.15–0.18 (subagents, flush, cron without `cron_writes`) see only the keep; their `as_of` shows a copy under its own
+id without the merge-day clip. Releases before 0.15.0 do not check the schema: they read `facts` as before, and a
+copy's text they add again is a second fact, not folded back. The schema mark is per file, so with `scope: user`,
+`chat` or `thread` a merge in one file does not lock the others. See
+[docs/history.md](docs/history.md#migration-and-older-versions-on-the-same-file).
 
 ## Development
 

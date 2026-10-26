@@ -76,7 +76,7 @@ FACTS = {
     "andrey_cat": ("安德鲁一天喂两次猫。", ["安德鲁"]),
 
     # --- c2: paraphrase bridge (the hard query shares no hanzi with the target) ---
-    "sergey_pattaya": ("谢尔盖选择清迈，不去曼谷。", ["谢尔盖"]),
+    "sergey_pattaya": ("谢尔盖选择华欣，不去曼谷。", ["谢尔盖"]),
     "sergey_fear": ("谢尔盖怕坐飞机去泰国。", ["谢尔盖"]),
     "sergey_dog": ("谢尔盖一天遛两次狗。", ["谢尔盖"]),
     "sergey_guitar": ("谢尔盖晚上学弹吉他。", ["谢尔盖"]),
@@ -171,7 +171,7 @@ PAIRS = [
     {"id": "c2-2", "type": "c2", "queries": [
         ("他最后落脚泰国哪座城？", "sergey_pattaya"),
         ("谢尔盖没去曼谷，去了哪儿？", "sergey_pattaya")],
-     "note": "HARD: «落脚泰国哪座城» не делит иероглифов с «清迈/曼谷»; "
+     "note": "HARD: «落脚泰国哪座城» не делит иероглифов с «华欣/曼谷»; "
              "ловушка sergey_fear делится 泰/国 и по лексике ближе цели "
              "(то же гнездо 泰国). B — контроль (точные 曼谷)."},
     {"id": "c2-3", "type": "c2", "queries": [

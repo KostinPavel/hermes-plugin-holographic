@@ -413,7 +413,7 @@ def test_stats_count_the_history(provider, clock):
     gone = _call(provider, action="add", content="Uma Bell lives in Vilnius")["fact_id"]
     _call(provider, action="forget", fact_id=gone)
     stats = _call(provider, action="stats")
-    assert stats["history"] == {"past_versions": 1, "corrected": 0, "ended_facts": 0, "forgotten": 1}
+    assert stats["history"] == {"past_versions": 1, "corrected": 0, "ended_facts": 0, "merged_facts": 0, "forgotten": 1}
 
 
 def test_version_state_rules():

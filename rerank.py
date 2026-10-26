@@ -33,6 +33,16 @@ logger = logging.getLogger(__name__)
 
 PAUSE_FIRST, PAUSE_MAX = 60.0, 900.0  # seconds the endpoint is left alone after a failure, doubling
 MAX_RESPONSE = 64 << 20
+# What one query-document pair may hold (2026-10-26): jina-reranker-v2 and bge-reranker-v2-m3 take 1024 tokens per
+# pair, and llama-server refuses the whole request when one pair runs over (500 past its batch, 400 past the
+# context), which paused the endpoint on Mia's long night-job prompts. Both use XLM-RoBERTa's SentencePiece without
+# byte fallback: every token covers at least one character, the word-start mark stands for a space of the text or
+# one added at the start, and an unknown character is one token — so a pair of RERANK_PAIR_CHARS characters is at
+# most that many tokens plus the start marks and the 4 special tokens, under 1024 for CJK, emoji and dense text
+# alike. A message over RERANK_MAX_QUERY_CHARS is not sent (cutting it would rescore by its first lines); each
+# document is cut to what the query leaves of the pair.
+RERANK_PAIR_CHARS = 1000
+RERANK_MAX_QUERY_CHARS = 500
 DEFAULT_TOP_K = 40  # depth of the pool the cross-encoder sees; the first stage's limit is widened to match
 DEFAULT_TIMEOUT = 3.0  # seconds; 3.0, not 2.0: a slow local endpoint is the normal case (issue #5)
 
@@ -148,8 +158,8 @@ _OPENER = urllib.request.build_opener(_NoRedirect)
 
 
 class Rescorer:
-    """The endpoint: (query, documents) in, indexes in descending relevance order out. Shared by every store a
-    provider opens; thread-safe. ``order`` returns None on any failure (the caller keeps the current order)."""
+    """The endpoint: (query, documents) in, ``(index, score)`` pairs out. Shared by every store a provider opens;
+    thread-safe. ``scores`` returns None on any failure (the caller keeps the current order)."""
 
     def __init__(self, settings: Settings, secret_check=None):
         self.settings = settings
@@ -163,8 +173,8 @@ class Rescorer:
         self._epoch = 0
         self.calls = 0  # requests sent (stats, tests)
         self.failures = 0  # counted fallbacks: scores() returned None on a failure (diagnostics)
-        # The outcome of the last scores(): answered / failed: ... / skipped_single / skipped_secret / skipped_busy /
-        # not_called.
+        # The outcome of the last scores(): answered / failed: ... / skipped_single / skipped_secret / skipped_long /
+        # skipped_busy / not_called.
         # Stamped into the runner lines; the run fails on failed (PR #10, 19:07 fix list).
         self.last_status = "not_called"
         # The live worker of the previous request (point 5 of the 24:10 checklist): after join(timeout) the thread
@@ -201,12 +211,6 @@ class Rescorer:
         self.last_status = f"failed: {why}"
         self._failed(why)
 
-    def order(self, query: str, documents: list[str]) -> list[int] | None:
-        """Indexes of *documents* in descending relevance to *query*, top_k at most, or None: unusable, a secret in
-        *query*, or a request failed (logged; paused). The caller keeps the current order on None."""
-        ranked = self.scores(query, documents)
-        return [i for i, _ in ranked] if ranked is not None else None
-
     def scores(self, query: str, documents: list[str]) -> list[tuple[int, float]] | None:
         """``(index, relevance_score)`` pairs of *documents* in descending relevance, top_k at most; None when the
         call must not be made (a secret in *query*), or failed (logged; paused). The caller keeps the current order
@@ -214,18 +218,24 @@ class Rescorer:
         if not documents:
             self.last_status = "not_called"
             return None
+        query = (query or "").strip()  # what is measured below is what is sent
+        # The screen runs the WHOLE query, not the cut: a key starting before the 2000th character in [:2000]
+        # landed as a fragment ("pas"), passed the screen, while the first letters went to the endpoint — the send
+        # stays truncated while the check is gone (maintainer 24:10, point 2; the same bug in main —
+        # their PR #21).
+        if self._secret and self._secret(query):
+            self.last_status = "skipped_secret"
+            return None  # no call at all: what recall must not inject is never sent
+        if len(query) > RERANK_MAX_QUERY_CHARS:
+            # A message this long (a night job's prompt, a pasted log) would not fit the model with a fact beside it.
+            # Not a failure, and not one while the endpoint is paused either: the rerank-off order stays.
+            self.last_status = "skipped_long"
+            return None
         if not self.usable():
             # paused/unavailable: this call did not happen and will not be retried until the pause ends —
             # a failure for the run's zero-failed-calls budget, not a neutral skip.
             self.last_status = f"failed: {self.status()}"
             return None
-        # The screen runs the WHOLE query, not the cut: a key starting before the 2000th character in [:2000]
-        # landed as a fragment ("pas"), passed the screen, while the first letters went to the endpoint — the send
-        # stays truncated while the check is gone (maintainer 24:10, point 2; the same bug in main —
-        # their PR #21).
-        if self._secret and self._secret(query or ""):
-            self.last_status = "skipped_secret"
-            return None  # no call at all: what recall must not inject is never sent
         if len(documents) == 1:
             # One sendable document: nothing to reorder, the window cannot drop the only candidate
             # (a cut judged from the top always keeps the top) and the blend of a single score is
@@ -234,8 +244,8 @@ class Rescorer:
             return [(0, 1.0)]
         limit = int(self.settings.top_k)
         docs = [documents[i] for i in range(min(limit, len(documents)))]
-        body = {"model": self.settings.model, "query": (query or "")[:2000],
-                "documents": [str(d)[:2000] for d in docs],
+        body = {"model": self.settings.model, "query": query,
+                "documents": [str(d)[:RERANK_PAIR_CHARS - len(query)] for d in docs],
                 "top_n": limit}
         ranked = self._request(body)
         if ranked is _BUSY:
