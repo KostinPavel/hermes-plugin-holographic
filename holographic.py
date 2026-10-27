@@ -18,11 +18,13 @@ def _numpy():
     """numpy, imported on first use; None when it is not installed."""
     global np, _TRIED
     if not _TRIED:
-        _TRIED = True
         try:
             import numpy as np
         except ImportError:
-            return None
+            np = None
+        # Publish only a completed attempt. Concurrent callers must reach Python's
+        # import lock rather than mistake an in-progress import for missing numpy.
+        _TRIED = True
     return np
 
 

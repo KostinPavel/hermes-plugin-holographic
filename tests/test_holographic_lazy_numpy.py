@@ -52,3 +52,59 @@ def test_loading_the_modules_does_not_import_numpy():
         assert state["atom"] == 8 and state["blob"] == 16 and state["numpy_imported_after_use"] is True
     else:  # pragma: no cover - the CI images install numpy
         pytest.skip("numpy is not installed here")
+
+
+def test_concurrent_first_use_waits_for_numpy_instead_of_reporting_it_missing():
+    """A second provider cannot permanently disable HRR while another imports numpy."""
+    probe = _PROBE.split("out = ")[0] + r'''
+import builtins
+import queue
+import threading
+
+events = queue.Queue()
+release = threading.Event()
+real_import = builtins.__import__
+
+def gated_import(name, *args, **kwargs):
+    if name == "numpy" and args and args[0] is hrr.__dict__:
+        events.put(("enter", threading.current_thread().name))
+        if not release.wait(10):
+            raise RuntimeError("test did not release numpy import")
+    return real_import(name, *args, **kwargs)
+
+# Only delay this module's import statement; the real numpy import still runs.
+builtins.__import__ = gated_import
+
+def use():
+    try:
+        events.put(("done", threading.current_thread().name, hrr.has_numpy()))
+    except Exception as exc:
+        events.put(("error", threading.current_thread().name, repr(exc)))
+
+first = threading.Thread(target=use, name="first")
+second = threading.Thread(target=use, name="second")
+first.start()
+try:
+    initial = events.get(timeout=10)
+    second.start()
+    observed = events.get(timeout=10)
+finally:
+    release.set()
+    first.join(10)
+    if second.ident is not None:
+        second.join(10)
+    builtins.__import__ = real_import
+records = []
+while not events.empty():
+    records.append(events.get_nowait())
+print(json.dumps({"initial": initial, "observed": observed, "records": records,
+                  "workers_alive": first.is_alive() or second.is_alive(),
+                  "available_after": hrr.has_numpy()}))
+'''
+    result = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, timeout=40)
+    assert result.returncode == 0, result.stderr
+    state = json.loads(result.stdout)
+    assert state["initial"] == ["enter", "first"]
+    assert state["observed"] == ["enter", "second"], "a concurrent first use reported numpy missing"
+    assert sorted(state["records"]) == [["done", "first", True], ["done", "second", True]]
+    assert state["available_after"] is True and state["workers_alive"] is False
