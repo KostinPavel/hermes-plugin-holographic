@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.20.0 — 2026-10-27
+
+### Added
+- Opt-in local task-outcome journal and recorded memory explanations, separate from fact truth/trust. Bounded receipts retain exact versions, revision-safe outcomes and correction references; forgetting a dependency erases the associated journal. See docs/experience.md. No new model calls; collection is off by default.
+
 ## 0.19.2 — 2026-10-27
 
 ### Fixed

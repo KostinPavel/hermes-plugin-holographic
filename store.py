@@ -16,6 +16,7 @@ from .entity_names import (  # noqa: F401 - re-exported: they lived here, and th
     _RE_TOKEN, _capitalized_phrases, _entity_key_0160, _name_shaped, _outside_plain_quotes, _script_pieces, _valid_entity,
     _without_code, unusable_names)
 from .history import HISTORY_SCHEMA, HistoryMixin, NotFound, error_kind, parse_day
+from .experience import ExperienceMixin
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +160,7 @@ def _restrict_permissions(db_path: Path) -> None:
                 logger.warning("holographic: could not make %s readable by its owner only (%s)", path, exc)
 
 
-class MemoryStore(EntityMixin, HistoryMixin):
+class MemoryStore(EntityMixin, HistoryMixin, ExperienceMixin):
     """SQLite-backed fact store with entity resolution and trust scoring.
 
     Process-wide shared connection registry: SQLite allows one writer at a time and several providers
