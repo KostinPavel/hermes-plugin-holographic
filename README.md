@@ -11,6 +11,29 @@ shipped inside Hermes core as `plugins/memory/holographic/`; Nous Research
 copy was scheduled to leave core (announced for October 15, 2026). Same provider name, same config, same database:
 users who have `memory.provider: holographic` keep their facts. See [CHANGELOG.md](CHANGELOG.md) for what changed.
 
+## Task outcomes and memory explanations (0.20.0)
+
+An accurate fact can still be the wrong answer to a task — for example, a fact about another person with the same
+name. The optional local experience journal records the actual fact versions returned, the task outcome and a
+short correction separately from truth/trust. It does not change ranking or automatically correct a fact.
+
+Add to `plugins.hermes-memory-store` in `config.yaml`, then restart the gateway or start a new CLI session:
+
+```yaml
+experience: on
+experience_trace: on  # optional: candidate/stage ids as well as the actual emission receipt
+```
+
+Both are off by default. When enabled, `fact_experience` provides `recent`, `outcome` and `explain`; a search returns
+`memory_attempt`, and prefetch identifies a nonempty emission. Explain reads that original snapshot without replaying
+search or calling a model. Task outcomes are agent reports, never authenticated human confirmations; old
+`fact_feedback` calls keep their original meaning and are not imported as duplicate evidence.
+
+Records expire after 30 days, with at most 1000 attempts per scoped database and 10 revisions per attempt. Forgetting
+a referenced fact/version also erases the dependent task/correction; merge and end preserve history. Detailed tracing
+costs local storage and synchronous writes; no fixed latency or token-saving percentage is promised.
+Dreaming 3.6.0 can read live summaries without another correction-text cache. See [the full contract and examples](docs/experience.md).
+
 ## How it works
 
 ![Architecture: before each turn Hermes core sends the message through the relevance gate and search; writes pass a
@@ -83,6 +106,9 @@ gateway log that names the key. A `config.yaml` the core cannot parse: Hermes se
 the plugin uses its settings from it with a warning; with no such copy (or a core that raises) nothing tells what
 `scope` was, so memory is off until the file reads (0.17.8; it used to run on the defaults). Warnings give the error's
 type only: a YAML error quotes the line it stopped at, which may hold a key.
+
+Optional task outcomes and recorded explanations (separate from trust, off by default):
+[docs/experience.md](docs/experience.md).
 
 ## Tools
 

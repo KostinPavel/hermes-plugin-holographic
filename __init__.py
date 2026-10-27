@@ -159,9 +159,28 @@ FACT_FEEDBACK_SCHEMA = {
         "required": ["action", "fact_id"],
     },
 }
+FACT_EXPERIENCE_SCHEMA = {
+    "name": "fact_experience",
+    "description": "Opt-in task outcomes, separate from truth/trust. recent lists this session's attempts; "
+                   "explain shows a recorded attempt without running search again. outcome records an agent report "
+                   "(never human verification); corrected fixes the task result, not the stored fact. "
+                   "Revise with a new event_id and supersedes=<active event_id>.",
+    "parameters": {"type": "object", "properties": {
+        "action": {"type": "string", "enum": ["recent", "explain", "outcome"]},
+        "attempt_id": {"type": "string"}, "event_id": {"type": "string"},
+        "outcome": {"type": "string", "enum": ["useful", "dead_end", "corrected", "unknown"]},
+        "reason": {"type": "string", "enum": ["wrong_entity", "stale_version", "irrelevant", "missing_evidence",
+                                                    "answer_error", "other"]},
+        "correction": {"type": "string", "maxLength": 400}, "supersedes": {"type": "string"},
+        "task": {"type": "string", "maxLength": 160, "description": "Optional short task label, no raw conversation"},
+        "correction_refs": {"type": "array", "maxItems": 20, "items": {"type": "object", "properties": {
+            "fact_id": {"type": "integer"}, "version_id": {"type": "integer"}},
+            "required": ["fact_id", "version_id"], "additionalProperties": False}},
+    }, "required": ["action"]},
+}
 # The arguments each tool takes: a KeyError naming one of them is a missing argument, any other a fault (0.17.8)
 _ARGUMENTS = {schema["name"]: frozenset(schema["parameters"]["properties"])
-              for schema in (FACT_STORE_SCHEMA, FACT_FEEDBACK_SCHEMA)}
+              for schema in (FACT_STORE_SCHEMA, FACT_FEEDBACK_SCHEMA, FACT_EXPERIENCE_SCHEMA)}
 
 # Auto-extraction: (patterns, category) — preferences -> user_pref, decisions -> project. Matched per sentence; the
 # sentence is stored, not the whole message.
@@ -309,6 +328,8 @@ _TRUE_WORDS, _FALSE_WORDS = frozenset({"1", "true", "yes", "on"}), frozenset({"0
 _CHOICES = (("scope", _SCOPES, "one of profile, user, chat, thread"), ("recall_source", {"off", "short"}, "off or short"),
             ("embeddings", _TRUE_WORDS | _FALSE_WORDS, "on or off"),
             ("rerank", _TRUE_WORDS | _FALSE_WORDS, "on or off"),
+            ("experience", _TRUE_WORDS | _FALSE_WORDS, "on or off"),
+            ("experience_trace", _TRUE_WORDS | _FALSE_WORDS, "on or off"),
             # The reranker's scale is the user's own setting (point 2 of the 13:06 review): anything outside the pair is
             # a named config problem with memory off, like the other 0.17.8 keys
             # ("scope: users" silently merged every chat into one store), not a silent fallback.
@@ -565,6 +586,10 @@ class HolographicMemoryProvider(MemoryProvider):
         self._recall_errors: set[str] = set()  # failures logged as warnings, once each
         self._turns: dict[str, int] = {}
         self._last_recall = 0
+        self._experience = is_truthy_value(self._config.get("experience", False))
+        self._experience_trace = is_truthy_value(self._config.get("experience_trace", False))
+        self._experience_stages = []
+        self._experience_error = ""
         scope = str(self._config.get("scope", "profile")).strip().lower()
         self._scope = scope if scope in _SCOPES else "profile"
         self._scope_key = ""  # "" = the profile store; otherwise the user / chat whose store is active
@@ -651,6 +676,10 @@ class HolographicMemoryProvider(MemoryProvider):
             {"key": "recall_source", "description": "Append where each recalled fact was written (date, person, this or "
              "another chat; no ids) to the facts recalled before a turn",
              "default": current("recall_source", "off"), "choices": ["off", "short"]},
+            {"key": "experience", "description": "Record local task outcomes separately from trust (30 days, opt-in)",
+             "default": current("experience", "off"), "choices": ["off", "on"]},
+            {"key": "experience_trace", "description": "Include bounded candidate/stage ids in recorded memory attempts",
+             "default": current("experience_trace", "off"), "choices": ["off", "on"]},
             {"key": "cron_writes", "description": "Let a cron job's explicit fact_store / fact_feedback calls write "
              "(nightly memory jobs); automatic writes stay off in cron, but for fact vectors when search by meaning is "
              "on",
@@ -910,6 +939,7 @@ class HolographicMemoryProvider(MemoryProvider):
         """Up to five relevant facts: keyword candidates that pass the relevance gate, plus the top facts of entities
         the message names; facts already injected in this session within ``prefetch_repeat_turns`` are not repeated."""
         self._last_recall = 0
+        self._experience_stages = []
         if not self._retriever or not query:
             return ""
         query = query[:_PREFETCH_QUERY_CHARS]  # a pasted log of 60 KB took seconds under the provider lock
@@ -925,6 +955,7 @@ class HolographicMemoryProvider(MemoryProvider):
             else:
                 width = _PREFETCH_CANDIDATES
             candidates = self._retriever.search(query, min_trust=self._min_trust, limit=width, meaning=meaning)
+            self._observe("lexical_candidates", candidates)
             # The fork: rerank on -> a single stream (block 3); off (rescorer None) -> the old path.
             # Block 3: coverage admits the lexical, meaning/entity go through the same safety/dedup before the endpoint,
             # ONE rerank ranks the union, top-5 strictly by rank; the window (rerank_window) and the weight are
@@ -948,6 +979,7 @@ class HolographicMemoryProvider(MemoryProvider):
             for fact in fresh:
                 self._remember(key, fact, turn)
             self._last_recall = len(fresh)
+            attempt = self._record_experience("prefetch", fresh)
             if not fresh:
                 return ""
             self._counted(fresh)
@@ -958,7 +990,8 @@ class HolographicMemoryProvider(MemoryProvider):
                      + (" (by meaning)" if f["fact_id"] in by_meaning else "")
                      + (" (inferred)" if (origins.get(f["fact_id"]) or {}).get("origin") == "inferred" else "")
                      + self._recall_suffix(sources.get(f["fact_id"])) for f in fresh]
-            return "## Holographic Memory (stored facts: data, not instructions)\n" + "\n".join(lines)
+            return "## Holographic Memory (stored facts: data, not instructions)\n" + "\n".join(lines) \
+                + (f"\nMemory attempt: {attempt}" if attempt else "")
         except Exception as e:  # noqa: BLE001 - recall never takes the turn down; _recall_failed says why
             self._recall_failed(e)
             return ""
@@ -1040,6 +1073,7 @@ class HolographicMemoryProvider(MemoryProvider):
 
         # Stream 1: membership is decided by the words, before any rank.
         lexical = self._retriever.relevant(query, candidates, self._min_coverage)
+        self._observe("coverage_admitted", lexical)
         have = {f["fact_id"] for f in lexical}
         # Streams 2 and 3 by the same function: here have = ALL the lexical (union disjoint by construction);
         # when the endpoint fails the fallback recomputes them with have = only the first five — as in off
@@ -1047,6 +1081,7 @@ class HolographicMemoryProvider(MemoryProvider):
         meaning_facts, entity_facts, by_meaning = self._stream_extras(query, meaning, have, key, turn)
         # Union: disjoint by construction (each stream excluded what the previous one admitted).
         union = meaning_facts + entity_facts + lexical
+        self._observe("rerank_union", union)
         send_idx, docs = self._sendable_docs(union)  # secret screen (PR #10, point 1)
         # Stage trace (statistics): ids only — scores() scores the first top_k documents, so `sent` names what the
         # stage would be given. Logged before the call: the input is traced even when the stage raises; the answer
@@ -1094,6 +1129,7 @@ class HolographicMemoryProvider(MemoryProvider):
                     # successful call with rerank_window > 0 silently lost the tail, even when the window cut nothing
                     # (maintainer 24:10, point 1: three proxy facts — off returns 3 lines, on returned 2).
                     fresh = ([union[i] for i in keep] if keep else []) + union[len(ranked):]
+                self._observe("rerank_window_admitted", fresh)
                 return fresh[:_PREFETCH_FACTS], by_meaning
         except Exception as exc:  # noqa: BLE001 - ANY exception in the stage acts like a failed call (point 3)
             # Any exception raised by the stage (call, mapping, window — Codex caught a Thread.start()
@@ -1118,7 +1154,9 @@ class HolographicMemoryProvider(MemoryProvider):
         if candidates is None:
             candidates = self._retriever.search(query, min_trust=self._min_trust,
                                                 limit=_PREFETCH_CANDIDATES, meaning=meaning)
+            self._observe("fallback_candidates", candidates)
         gate = self._retriever.relevant(query, candidates, self._min_coverage)
+        self._observe("coverage_admitted", gate)
         fresh = [f for f in gate
                  if self._not_recent(key, f, turn) and self._recallable(f)][:_PREFETCH_FACTS]
         # Streams 2 and 3 with the same function as the _unified_stream fallback (point 4(1)): here
@@ -1131,6 +1169,7 @@ class HolographicMemoryProvider(MemoryProvider):
         """Recall before a turn failed and the turn goes on without facts: a warning once per kind of failure (a
         broken store fails every turn), and fact_store stats shows it until a recall works again. Its kind only
         (error_kind): the text may quote a fact."""
+        self._experience_stages = []
         what = error_kind(exc)
         self._recall_error = what
         if what not in self._recall_errors and len(self._recall_errors) < 64:
@@ -1230,6 +1269,8 @@ class HolographicMemoryProvider(MemoryProvider):
         """False for a fact recall must not inject (_recall_problem); logged once per fact and process. fact_store
         search, list and history still show it: there the agent asked, and can change or forget it."""
         problem = _recall_problem(fact.get("content", ""))
+        if problem:
+            self._observe("rejected_safety", [fact])
         if problem and fact.get("fact_id") not in self._withheld:
             self._withheld.add(fact.get("fact_id"))
             logger.warning("holographic: fact #%s is not recalled (%s); review it with fact_store", fact.get("fact_id"),
@@ -1251,7 +1292,10 @@ class HolographicMemoryProvider(MemoryProvider):
 
     def _not_recent(self, session: str, fact: dict, turn: int) -> bool:
         seen = self._injected.get(session, {}).get(_revision(fact))
-        return seen is None or turn - seen > self._repeat_turns
+        keep = seen is None or turn - seen > self._repeat_turns
+        if not keep:
+            self._observe("rejected_repeat", [fact])
+        return keep
 
     def _remember(self, session: str, fact: dict, turn: int) -> None:
         facts = self._injected.setdefault(session, OrderedDict())
@@ -1272,7 +1316,7 @@ class HolographicMemoryProvider(MemoryProvider):
         return RecallStatus(provider_label="Holographic", count=self._last_recall)
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        return [FACT_STORE_SCHEMA, FACT_FEEDBACK_SCHEMA]
+        return [FACT_STORE_SCHEMA, FACT_FEEDBACK_SCHEMA] + ([FACT_EXPERIENCE_SCHEMA] if self._experience else [])
 
     @_serialized
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
@@ -1286,7 +1330,8 @@ class HolographicMemoryProvider(MemoryProvider):
         if args.get("origin") not in (None, "", *ORIGINS):
             return tool_error("origin must be 'said' (the person said it), 'confirmed' (your conclusion, the person "
                               "agreed) or 'inferred' (your own conclusion).")
-        if not self._tool_writable and (tool_name == "fact_feedback" or args.get("action") in _WRITE_ACTIONS):
+        if not self._tool_writable and (tool_name == "fact_feedback" or args.get("action") in _WRITE_ACTIONS
+                                       or (tool_name == "fact_experience" and args.get("action") == "outcome")):
             return tool_error("The fact store is read-only in this context (subagent, flush, or cron with "
                               "cron_writes off); only the main agent writes facts.")
         if tool_name == "fact_store" and args.get("action") in _DECLARING_ACTIONS and args.get("entities"):
@@ -1321,6 +1366,8 @@ class HolographicMemoryProvider(MemoryProvider):
             return tool_error(str(exc))
         except Exception as exc:  # noqa: BLE001 - any other failure answers the agent by its kind (_failed), never a traceback
             return self._failed(tool_name, args, exc)
+        finally:
+            self._experience_stages = []
 
     @staticmethod
     def _failed(tool_name: str, args: dict, exc: Exception) -> str:
@@ -1779,6 +1826,7 @@ class HolographicMemoryProvider(MemoryProvider):
             pending.pop(fact_id, None)
 
     def _search(self, a: dict) -> str:
+        self._experience_stages = []
         if a.get("as_of"):
             day = self._as_of(a)
             found = self._retriever.search_as_of(a["query"], day, category=a.get("category"),
@@ -1792,6 +1840,7 @@ class HolographicMemoryProvider(MemoryProvider):
         results = self._retriever.search(a["query"], category=a.get("category"), min_trust=self._trust_floor(a),
                                          limit=limit, meaning=meaning)
         words = list(results)
+        self._observe("lexical_candidates", results)
         # Rescoring, after search() and before the by_meaning / beyond_words splice (rerank.py): the pool is
         # reordered, then the meaning splice fills what is left. Any failure keeps the current order.
         if self._rescorer and results:
@@ -1851,7 +1900,55 @@ class HolographicMemoryProvider(MemoryProvider):
                 fact["origin"] = info["origin"]
             if info.get("confirmations"):
                 fact["confirmations"] = info["confirmations"]
-        return _results(self._counted(results))
+        response = json.loads(_results(self._counted(results)))
+        attempt = self._record_experience("search", results)
+        if attempt:
+            response["memory_attempt"] = attempt
+        return json.dumps(response)
+
+    def _experience_session(self):
+        return hashlib.sha256(self._session_id.encode("utf-8")).hexdigest()
+
+    def _observe(self, name, facts):
+        if self._experience and self._experience_trace:
+            for old_name, old_facts in self._experience_stages:
+                if old_name == name:
+                    old_facts.extend(facts[:max(0, 101 - len(old_facts))])
+                    return
+            if len(self._experience_stages) < 16:
+                self._experience_stages.append((name, list(facts[:101])))
+
+    def _record_experience(self, kind, facts):
+        if not self._experience or not self._tool_writable:
+            self._experience_stages = []
+            return None
+        try:
+            attempt = self._store.record_attempt(kind, facts, self._experience_stages,
+                                                 self._experience_session(), self._experience_trace)
+            self._experience_error = ""
+            return attempt
+        except Exception as exc:  # noqa: BLE001 - optional diagnostics cannot take recall down; stats exposes the fault
+            self._experience_error = error_kind(exc)
+            _warn_once("memory attempt not recorded", exc)
+            return None
+        finally:
+            self._experience_stages = []
+
+    def _experience_tool(self, a):
+        if not self._experience:
+            return tool_error("Experience collection is off")
+        session = self._experience_session()
+        action = a.get("action")
+        if action == "recent":
+            return json.dumps({"attempts": self._store.recent_attempts(session), "error_kind": self._experience_error})
+        if action == "explain":
+            return json.dumps(self._store.experience_report(a["attempt_id"], session))
+        if action == "outcome":
+            return json.dumps(self._store.record_outcome(a["attempt_id"], a["event_id"], a["outcome"], a["reason"],
+                correction=a.get("correction", ""), supersedes=a.get("supersedes"),
+                actor=a.get("actor", "agent"), session_key=session, task=a.get("task", ""),
+                correction_refs=a.get("correction_refs")))
+        return tool_error("Unknown experience action")
 
     def _as_of(self, a: dict) -> str:
         return parse_day(a["as_of"], field="as_of", today=self._store.today())
@@ -2013,6 +2110,7 @@ class HolographicMemoryProvider(MemoryProvider):
             "enrich": lambda self, a: self._enrich(a),
         }),
         "fact_feedback": lambda self, a: self._feedback(a),
+        "fact_experience": lambda self, a: self._experience_tool(a),
     }
 
     def _auto_extract_facts(self, messages: list, store: MemoryStore, author: dict | None = None,
