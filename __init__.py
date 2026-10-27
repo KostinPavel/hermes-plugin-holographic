@@ -894,7 +894,7 @@ class HolographicMemoryProvider(MemoryProvider):
                  "- A stored fact that is no longer true: change it (it changed), end it (it no longer holds), correct "
                  "it (it was wrong); the history is kept. \"Forget it\" from the user: forget {fact_id}.",
                  "- Rate recalled facts (#id) with fact_feedback when they help or are wrong."]
-        if not hrr._HAS_NUMPY:
+        if not hrr.has_numpy():
             lines.append("- numpy is not installed: keyword recall only (no structural 'related').")
         if self._scope == "user":
             lines.append("- Facts are kept per user: what one person tells you is not recalled for another.")
@@ -1923,7 +1923,7 @@ class HolographicMemoryProvider(MemoryProvider):
             "low_trust": read("SELECT COUNT(*) FROM facts WHERE trust_score < ?", (self._min_trust,))[0][0],
             "history": self._store.history_counts() or "not set up yet",
             "origin": self._origin_counts(),
-            "structural_recall": "on" if hrr._HAS_NUMPY else "off (numpy missing)",
+            "structural_recall": "on" if hrr.has_numpy() else "off (numpy missing)",
             "search_by_meaning": self._meaning_stats(),
             "database": str(self._store.db_path),
             **({"recall_error": self._recall_error} if self._recall_error else {}),

@@ -178,7 +178,8 @@ class MemoryStore(EntityMixin, HistoryMixin):
             db_path = str(get_hermes_home() / "memory_store.db")
         self.db_path = Path(db_path).expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.default_trust, self.hrr_dim, self._hrr_available = _clamp_trust(default_trust), hrr_dim, hrr._HAS_NUMPY
+        self.default_trust, self.hrr_dim = _clamp_trust(default_trust), hrr_dim
+        self._hrr_available = hrr.has_numpy()
         self.tz = tz  # local dates of the history (recorded_on, "today"); None = UTC
         try:  # resolve() so symlinked/relative paths to the same file share ONE connection
             self._key = str(self.db_path.resolve())

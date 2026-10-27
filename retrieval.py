@@ -160,7 +160,7 @@ class FactRetriever:
     def __init__(self, store: MemoryStore, temporal_decay_half_life: int = 0,  # days, 0 = disabled
                  fts_weight: float = 0.4, jaccard_weight: float = 0.3, hrr_weight: float = 0.3, hrr_dim: int = 1024):
         self.store, self.half_life, self.hrr_dim = store, temporal_decay_half_life, hrr_dim
-        if hrr_weight > 0 and not hrr._HAS_NUMPY:  # redistribute weights without numpy
+        if hrr_weight > 0 and not hrr.has_numpy():  # redistribute weights without numpy
             fts_weight, jaccard_weight, hrr_weight = 0.6, 0.4, 0.0
         self.fts_weight, self.jaccard_weight, self.hrr_weight = fts_weight, jaccard_weight, hrr_weight
         # row id -> (text, Analysis), for word-level scans: one cache for the current facts, one for versions
@@ -580,7 +580,7 @@ class FactRetriever:
     def related(self, entity: str, category: str | None = None, limit: int = 10, min_trust: float = 0.3) -> list[dict]:
         """Facts structurally connected to an entity (the entity's atom unbinds to a role), above a noise floor.
         Keyword search without numpy, vectors, or any fact over the floor."""
-        if not hrr._HAS_NUMPY:
+        if not hrr.has_numpy():
             return self.search(entity, category=category, min_trust=min_trust, limit=limit)
         entity_vec = self._atom(entity.strip().lower())  # bare atom, not role-bound: ANY structural match
         roles = (self._atom(_ROLE_ENTITY), self._atom(_ROLE_CONTENT))  # loop-invariant: encode once

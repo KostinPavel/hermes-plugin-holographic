@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- Load numpy only when the provider first needs it, avoiding C-extension imports while the plugin loader holds its lock (PR #45, KostinPavel). Concurrent first callers wait for the import instead of treating an unfinished attempt as a missing dependency and disabling structural recall.
+
 ## 0.19.2 — 2026-10-27
 
 ### Fixed
