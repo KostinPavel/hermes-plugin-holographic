@@ -1,6 +1,9 @@
 """Opt-in, bounded task outcomes. No truth votes, no model calls, no copy in the consumer."""
+import contextlib
 import json
+import logging
 import re
+import sqlite3
 import time
 import uuid
 
@@ -11,6 +14,11 @@ TTL = 30 * 86400
 MAX_ATTEMPTS = 1000
 MAX_REVISIONS = 10
 MAX_REFS = 100
+# The journal is optional: don't hold the answer behind another process's writer.
+_ATTEMPT_BUSY_MS = 50
+_ATTEMPT_MAX_TRIES = 3
+_SLOW_ATTEMPT_MS = 25
+logger = logging.getLogger(__name__)
 _ID = re.compile(r"[A-Za-z0-9_-]{1,80}\Z")
 OUTCOMES = frozenset(("useful", "dead_end", "corrected", "unknown"))
 REASONS = frozenset(("wrong_entity", "stale_version", "irrelevant", "missing_evidence", "answer_error", "other"))
@@ -82,8 +90,71 @@ class ExperienceMixin:
                            "memory_attempts ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET ?)", (MAX_ATTEMPTS,))
 
     def record_attempt(self, kind, emitted, stages, session_key, trace=False):
-        self._experience_schema()
-        with self._tx():
+        # This connection is shared by providers in the process, so hold its lock
+        # until the original timeout is restored, even when a transaction fails.
+        started = time.perf_counter()
+        lock_ms = schema_ms = transaction_ms = 0.0
+        timings = {}
+        status = "error"
+        tries = 0
+        with self._lock:
+            lock_ms = (time.perf_counter() - started) * 1000
+            prior_timeout = self._conn.execute("PRAGMA busy_timeout").fetchone()[0]
+            self._conn.execute(f"PRAGMA busy_timeout={min(prior_timeout, _ATTEMPT_BUSY_MS)}")
+            try:
+                for tries in range(1, _ATTEMPT_MAX_TRIES + 1):
+                    timings.clear()
+                    try:
+                        phase = time.perf_counter()
+                        try:
+                            self._experience_schema()
+                        finally:
+                            schema_ms += (time.perf_counter() - phase) * 1000
+                        phase = time.perf_counter()
+                        try:
+                            result = self._record_attempt(kind, emitted, stages, session_key, trace, timings)
+                        finally:
+                            transaction_ms += (time.perf_counter() - phase) * 1000
+                        status = "ok"
+                        return result
+                    except sqlite3.OperationalError as exc:
+                        code = getattr(exc, "sqlite_errorcode", None)
+                        busy = (code is not None and (code & 0xff) == sqlite3.SQLITE_BUSY) or (
+                            code is None and str(exc) == "database is locked")
+                        if not busy or tries == _ATTEMPT_MAX_TRIES or self._conn.in_transaction:
+                            raise
+            finally:
+                self._conn.execute(f"PRAGMA busy_timeout={prior_timeout}")
+                total_ms = (time.perf_counter() - started) * 1000
+                if total_ms >= _SLOW_ATTEMPT_MS:
+                    logger.warning("holographic: experience slow lock_ms=%.1f schema_ms=%.1f begin_ms=%s "
+                                   "work_ms=%s commit_ms=%s transaction_ms=%.1f total_ms=%.1f tries=%d status=%s",
+                                   lock_ms, schema_ms, *(f"{timings[k]:.1f}" if k in timings else "-"
+                                                         for k in ("begin", "work", "commit")),
+                                   transaction_ms, total_ms, tries, status)
+
+    @contextlib.contextmanager
+    def _timed_experience_tx(self, timings):
+        started = time.perf_counter()
+        work_done = None
+        try:
+            with self._tx():
+                work_start = time.perf_counter()
+                timings["begin"] = (work_start - started) * 1000
+                try:
+                    yield
+                finally:
+                    work_done = time.perf_counter()
+                    timings["work"] = (work_done - work_start) * 1000
+        finally:
+            end = time.perf_counter()
+            if "begin" not in timings:
+                timings["begin"] = (end - started) * 1000
+            elif work_done is not None:
+                timings["commit"] = (end - work_done) * 1000
+
+    def _record_attempt(self, kind, emitted, stages, session_key, trace=False, timings=None):
+        with self._timed_experience_tx(timings if timings is not None else {}):
             self._prune_experiences()
             refs = {}
 

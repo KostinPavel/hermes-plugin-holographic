@@ -32,6 +32,10 @@ search or calling a model. Task outcomes are agent reports, never authenticated 
 Records expire after 30 days, with at most 1000 attempts per scoped database and 10 revisions per attempt. Forgetting
 a referenced fact/version also erases the dependent task/correction; merge and end preserve history. Detailed tracing
 costs local storage and synchronous writes; no fixed latency or token-saving percentage is promised.
+If the journal encounters a busy SQLite writer, it retries briefly with limited SQLite busy waits. After repeated
+failure the search still returns, but that attempt has no `memory_attempt` and cannot
+receive an outcome. Slow-operation warnings contain stage timings only, not fact or query text. This is best-effort
+recording, not a guarantee against long locks, disk failures or process termination. See [the full behavior](docs/experience.md).
 Dreaming 3.6.0 can read live summaries without another correction-text cache. See [the full contract and examples](docs/experience.md).
 
 ## How it works
