@@ -31,13 +31,25 @@ import urllib.parse
 import urllib.request
 from collections import OrderedDict
 
-try:
-    import numpy as np
-except ImportError:  # pragma: no cover - optional, as for HRR: without it the feature stays off
-    np = None
-
 from . import net  # the socket of the in-flight request, for the caller to end the read (issue #26)
 from .text import UNSEGMENTED, is_greeting, query_terms
+
+np = None  # numpy is optional and loaded on first use (see _numpy): this module is imported from
+# inside the plugin loader's lock while a managed worker starts its reader thread, and a top-level
+# numpy import there deadlocked Kanban workers inside numpy._core._multiarray_umath's create_module.
+# Embeddings are off unless the user turns them on, so nothing here needs the array library at load.
+
+
+def _numpy():
+    """numpy, imported on first use; None when it is not installed (the feature stays off)."""
+    global np
+    if np is None:
+        try:
+            import numpy as _np
+        except ImportError:  # pragma: no cover - optional, as for HRR: without it the feature stays off
+            return None
+        np = _np
+    return np
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +113,7 @@ def text_hash(text: str) -> str:
 
 
 def to_blob(vector) -> bytes:
-    return np.asarray(vector, dtype="<f4").tobytes()
+    return _numpy().asarray(vector, dtype="<f4").tobytes()
 
 
 def _number(config: dict, key: str, default, low, high, kind=float):
@@ -228,6 +240,7 @@ def _vectors(payload, count: int, dimensions: int | None = None) -> list:
         if sorted(i if isinstance(i, int) and not isinstance(i, bool) else -1 for i in indexes) != list(range(count)):
             raise ValueError("the answer's vector indexes do not match the texts sent")
         data = [item for _, item in sorted(zip(indexes, data), key=lambda pair: pair[0])]
+    np = _numpy()
     out, size = [], None
     for item in data:
         values = item.get("embedding") if isinstance(item, dict) else None
@@ -316,7 +329,7 @@ class Embedder:
     def unavailable(self) -> str:
         """Why the endpoint cannot be used at all ("" when it can): numpy, the address, the key. Never the key's value:
         a key with a line break inside would make the HTTP library raise an error quoting the header."""
-        if np is None:
+        if _numpy() is None:
             return "numpy is not installed"
         if self._refused:
             return self._refused
@@ -721,6 +734,7 @@ class Meaning:
         # The text hash each vector was made from: a fact read again later (another writer may have changed it
         # meanwhile) keeps its score only while its text is still that one (fits).
         self.hashes = dict(zip(ids, hashes)) if hashes is not None else None
+        np = _numpy()
         self.neutral = float(np.median(sims)) if len(ids) else 0.0  # a fact without a vector neither gains nor loses
         self.mean = float(np.mean(sims)) if len(ids) else 0.0
         self.std = float(np.std(sims)) if len(ids) else 0.0
@@ -812,6 +826,7 @@ class VectorIndex:
 
     def matrix_with_hashes(self, dim: int) -> tuple[list[int], object, list[str]]:
         """matrix() plus, for each row, the hash of the text its vector was made from."""
+        np = _numpy()
         with self._lock:
             fresh = tuple((fact_id, (digest, size, revision)) for fact_id, _, digest, made_from, size, revision
                           in self._state() if made_from == digest and size > 0 and size % 4 == 0)

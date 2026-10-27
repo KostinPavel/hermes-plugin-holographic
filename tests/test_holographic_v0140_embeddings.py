@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
 import threading
 import time
 import urllib.error
@@ -526,6 +527,9 @@ def test_off_scores_and_recall_are_those_of_0130(tmp_path, endpoint):
 
 
 def test_without_numpy_it_stays_off_and_says_why(tmp_path, endpoint, monkeypatch):
+    # numpy is imported on first use now (issue #43), so "missing" is an import that fails, not a cleared
+    # name: block the import, and clear what an earlier test already imported for this process.
+    monkeypatch.setitem(sys.modules, "numpy", None)
     monkeypatch.setattr(embeddings, "np", None)
     p = _provider(tmp_path, **ON)
     _fill(p, BACKUP)

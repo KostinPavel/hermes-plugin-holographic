@@ -8,12 +8,30 @@ import hashlib
 import math
 import struct
 
-try:
-    import numpy as np
-    _HAS_NUMPY = True
-except ImportError:
-    np = None  # type: ignore[assignment]
-    _HAS_NUMPY = False
+np = None  # numpy is loaded on first use (see _numpy): this module is imported from inside the
+# plugin loader's lock while a managed worker starts its reader thread, and a top-level numpy
+# import there deadlocked Kanban workers inside numpy._core._multiarray_umath's create_module.
+_TRIED = False  # _numpy() has tried already; np alone cannot say (None is both "not yet" and "missing")
+
+
+def _numpy():
+    """numpy, imported on first use; None when it is not installed."""
+    global np, _TRIED
+    if not _TRIED:
+        try:
+            import numpy as np
+        except ImportError:
+            np = None
+        # Publish only a completed attempt. Concurrent callers must reach Python's
+        # import lock rather than mistake an in-progress import for missing numpy.
+        _TRIED = True
+    return np
+
+
+def has_numpy() -> bool:
+    """Whether numpy can be imported (tried once, then cached): the gates that used to read a
+    module-level flag ask this instead, so "not loaded yet" is never read as "not installed"."""
+    return _numpy() is not None
 
 _TWO_PI = 2.0 * math.pi
 _FLOAT32_BLOB_PREFIX = b"HRR1"
@@ -22,7 +40,7 @@ ROLE_CONTENT, ROLE_ENTITY = "__hrr_role_content__", "__hrr_role_entity__"  # rol
 
 
 def _require_numpy() -> None:
-    if not _HAS_NUMPY:
+    if _numpy() is None:
         raise RuntimeError("numpy is required for holographic operations")
 
 
