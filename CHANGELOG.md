@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.21.0 — 2026-10-28
+
+### Added
+- `prefetch_max_tokens` (default `0` = off): a budget, in approximate tokens, for the whole block recalled before a turn — header, every fact line with its markers and source, and the experience journal's attempt line. A fact that does not fit is left out whole, never cut (a cut can lose a "not", a condition or a date); the facts that go in keep their ranking order, and a later, shorter fact may still fit. A left-out fact gets no recall count, no journal receipt and no repeat suppression, so the next turn can bring it. `fact_store stats` shows `prefetch_budget` (kept / left out / tokens of the last recall, total left out) while it is on; the debug log gives counts and fact ids, never text. A value that is not a whole number, or is negative, is a config problem. Unset or `0`: recall, stats and schemas are exactly as in 0.20.3.
+- The token count is an estimate without a tokenizer (ASCII ~4 characters per token, CJK/kana/Hangul/emoji ~1, other non-ASCII ~2), rounded up per line; no new dependency. See docs/context-budget.md.
+
+### Tooling
+- Measurement stand: `tools/provenance_probe.py --set budget` over the new synthetic `tools/budget_set.py` (40 questions in six slices, dev/test split, no network): hit, extra and namesake facts, stale versions, lines cut by the existing 300-character cap, approximate tokens, facts left out and latency per budget. Results: `results/provenance_budget_all*.json*`. The run also shows that the pre-existing 300-character line cap can cut the asked part of a long fact; that cap is unchanged here.
+
 ## 0.20.3 — 2026-10-28
 
 ### Changed

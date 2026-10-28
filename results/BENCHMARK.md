@@ -130,6 +130,14 @@ p50 4 / **p95 118 ms**; over 155 warmed calls (31 warm-up excluded, 0 errors) p5
 max 138 ms, pools 2–4 docs, p50 58 / max 83 prompt tokens — the forward pass is the cost, transport
 ≈ 5 ms. **p95 < 300 ms holds with margin on a laptop CPU at 4 threads.**
 
+**Context budget (0.21.0, `prefetch_max_tokens`).** `tools/provenance_probe.py --set budget --budgets 0,150,100,60`
+over the synthetic `tools/budget_set.py` (38 facts, 40 questions: direct / paraphrase / namesake / changed fact /
+no answer / long fact; dev 23, held-out test 17), rerank and embeddings off, `git_sha e91cb47`. Raw rows:
+`results/provenance_budget_all.jsonl`; table: `results/provenance_budget_all_summary.json`; reading and the table
+itself: [docs/context-budget.md](../docs/context-budget.md). In short: unlimited ≈ 86 approximate tokens per block;
+100 tokens ≈ 64 with one labelled fact lost (the one longer than the 300-character line cap); 60 tokens loses every
+long-fact answer; no stale version at any budget; no measurable latency cost.
+
 **History.** The per-model table (bge/jina, CPU vs GPU, 360 queries, measured before the fixes) and
 its raw rows (the `*_[...].jsonl` files) live at commit
 [`634cfea`](https://github.com/itpartypattaya/hermes-plugin-holographic/blob/634cfea/results/BENCHMARK.md);
