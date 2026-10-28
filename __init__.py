@@ -572,7 +572,9 @@ class HolographicMemoryProvider(MemoryProvider):
         self._min_coverage = self._number("prefetch_min_coverage", 0.3)
         self._repeat_turns = self._number("prefetch_repeat_turns", 6, int)
         # Approximate tokens the block recalled before a turn may take (0.21.0); 0 = no limit beyond five facts
-        self._max_tokens = self._number("prefetch_max_tokens", 0, int)
+        raw = self._config.get("prefetch_max_tokens", 0)
+        # int() would make 0.5 a 0 (no limit) and 60.9 a 60 without a word: a fraction is refused like a negative
+        self._max_tokens = -1 if isinstance(raw, float) and not raw.is_integer() else             self._number("prefetch_max_tokens", 0, int)
         if self._max_tokens < 0:
             self._config_problems.append("plugins.hermes-memory-store.prefetch_max_tokens must be 0 (off) or more")
             self._max_tokens = 0
@@ -988,6 +990,8 @@ class HolographicMemoryProvider(MemoryProvider):
         the message names; facts already injected in this session within ``prefetch_repeat_turns`` are not repeated."""
         self._last_recall = 0
         self._experience_stages = []
+        if self._max_tokens:  # the last recall's counts describe this one, also when it finds nothing (the total stays)
+            self._budget_last = {"kept": 0, "dropped": 0, "tokens": 0}
         if not self._retriever or not query:
             return ""
         query = query[:_PREFETCH_QUERY_CHARS]  # a pasted log of 60 KB took seconds under the provider lock

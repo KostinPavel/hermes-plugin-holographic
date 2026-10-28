@@ -98,6 +98,21 @@ def test_a_left_out_fact_is_counted_without_its_text_and_is_not_marked_recalled(
         p.shutdown()
 
 
+def test_a_recall_that_finds_nothing_reports_nothing_left_out(tmp_path):
+    """The last recall's counts describe the last recall: after a turn that left two facts out, a turn whose message
+    matches nothing must not still report them (Codex review of #50); the running total stays."""
+    p, _ = _provider(tmp_path, "quiet", prefetch_max_tokens=85)
+    try:
+        p.prefetch(QUERY, session_id="talk")
+        assert _stats(p)["prefetch_budget"]["last"]["dropped"] == 2
+        assert p.prefetch("zebra violin satellite", session_id="talk") == ""
+        budget = _stats(p)["prefetch_budget"]
+        assert budget["last"] == {"kept": 0, "dropped": 0, "tokens": 0}
+        assert budget["dropped_total"] == 2
+    finally:
+        p.shutdown()
+
+
 def test_unset_or_zero_injects_what_it_did_before(tmp_path):
     unset, _ = _provider(tmp_path, "unset")
     zero, _ = _provider(tmp_path, "zero", prefetch_max_tokens=0)
@@ -111,7 +126,8 @@ def test_unset_or_zero_injects_what_it_did_before(tmp_path):
         zero.shutdown()
 
 
-@pytest.mark.parametrize("value", ["a lot", -5])
+@pytest.mark.parametrize("value", ["a lot", -5, 0.5, -0.5, 60.9])  # a fraction is no budget either: int() would
+# turn 0.5 into 0 (no limit) and 60.9 into 60 without a word (Codex review of #50)
 def test_a_value_that_is_no_budget_is_a_config_problem(tmp_path, value):
     p = HolographicMemoryProvider({"db_path": str(tmp_path / "bad.db"), "prefetch_max_tokens": value})
     p.initialize(session_id="bad")
