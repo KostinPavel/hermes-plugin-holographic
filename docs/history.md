@@ -57,6 +57,23 @@ previous version moves with it when that version was closed exactly at the old s
 
 Changing tags, keywords, category or trust is not a new version: it edits the current version in place.
 
+### Who a new text is about (Unreleased)
+
+`change`, `correct` and `update` with a new text link the fact again from that text. Names given with it in
+`entities` replace the names declared on the fact before: changed from "Leo's guitar teacher is Ben Cole." into
+"... is Omar Reid." with `entities: ["Leo", "Omar Reid"]`, the fact is no longer found by `probe {entity: "Ben Cole"}`
+(before, the old declaration stayed and attributed the new text to the old person). A name the new text itself
+gives stays linked whether or not it is given again. Without `entities`, names declared before stay: a fact about
+"my teacher" declared as Ben Cole keeps him across a rewording that names nobody. A list whose names are all
+unusable (blank, a path, a URL) replaces nothing. With the same text (`correct` of the date only, `update` with the
+text it already has, a change into a text another fact holds, `merge`) names given are added, as before.
+
+`revert` undoes a new text without new names: versions keep their text, not the names declared with it, so the
+restored text is linked from itself and a declared name stays unless the undone text named it and the restored one
+does not (reverting the change above brings back Ben Cole and drops Omar Reid). The limit: a name no text says
+cannot be told apart — a person declared on "my teacher" and replaced by another stays replaced after the revert,
+and is given again with `update {fact_id, entities}`.
+
 ### Merge (0.19.0)
 
 `merge {fact_id: <keep>, from: [ids], keywords?, expect?}` is for duplicates, where `forget` was the only tool and
