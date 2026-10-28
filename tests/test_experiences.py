@@ -674,3 +674,52 @@ def test_trace_keeps_receipt_when_an_unemitted_candidate_changes_during_rerank(t
         other.shutdown()
         sys.modules.pop(module_name, None)
         p.shutdown()
+
+
+# 0.20.3: with collection on, the system prompt asks for an outcome when the person corrects or rejects a recalled
+# answer; nothing else asked, so a real install collected receipts and no outcomes at all.
+def _outcome_lines(block):
+    return [line for line in block.splitlines() if "fact_experience" in line]
+
+
+def test_collection_on_asks_for_an_outcome_after_a_correction(provider):
+    fid, _ = seed(provider)
+    before = call(provider, "history", fact_id=fid)
+    lines = _outcome_lines(provider.system_prompt_block())
+    assert len(lines) == 1
+    guidance = lines[0]
+    for said in ("corrects or rejects", "outcome", "corrected", "dead_end", "useful", "Memory attempt",
+                 "Not every turn", "not their confirmation", "changes no fact", "change/correct"):
+        assert said in guidance
+    # What the line names is what the agent sees and can send: the prefetch id, a useful with reason other.
+    block = provider.prefetch("What does Alice work on at the observatory?", session_id="task-session")
+    aid = block.rsplit("Memory attempt: ", 1)[1].strip()
+    assert experience(provider, "outcome", attempt_id=aid, event_id="confirmed-1", outcome="useful",
+                      reason="other")["recorded"]
+    assert experience(provider, "outcome", attempt_id=aid, event_id="rejected-1", outcome="corrected",
+                      reason="wrong_entity", correction="The person meant another Alice.",
+                      supersedes="confirmed-1")["recorded"]
+    assert call(provider, "history", fact_id=fid) == before  # the outcome changed no fact
+
+
+def test_collection_off_keeps_the_prompt_and_tools_as_before(tmp_path):
+    on = HolographicMemoryProvider({"db_path": str(tmp_path / "on.db"), "experience": "on"})
+    off = HolographicMemoryProvider({"db_path": str(tmp_path / "off.db")})
+    sub = HolographicMemoryProvider({"db_path": str(tmp_path / "on.db"), "experience": "on"})
+    on.initialize(session_id="on")
+    off.initialize(session_id="off")
+    sub.initialize(session_id="sub", agent_context="subagent")  # records no attempts: nothing to report on
+    try:
+        off_block = off.system_prompt_block()
+        assert not _outcome_lines(off_block)
+        assert not _outcome_lines(sub.system_prompt_block())
+        # Off differs from on by that line only, and the schemas off are the ones on without fact_experience.
+        on_block = on.system_prompt_block()
+        assert [line for line in on_block.splitlines() if line not in _outcome_lines(on_block)] == \
+            off_block.splitlines()
+        assert json.dumps(off.get_tool_schemas(), sort_keys=True) == \
+            json.dumps([s for s in on.get_tool_schemas() if s["name"] != "fact_experience"], sort_keys=True)
+    finally:
+        on.shutdown()
+        off.shutdown()
+        sub.shutdown()
