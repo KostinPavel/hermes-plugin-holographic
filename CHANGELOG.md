@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.22.0 — 2026-10-29
 
 ### Fixed
 - A fact changed or corrected with `entities` is no longer linked to a person it stopped naming. "Leo's guitar teacher is Ben Cole." (entities Leo, Ben Cole) changed into "... is Omar Reid." (entities Leo, Omar Reid) was still returned by `probe {entity: "Ben Cole"}`, because names declared before survived every new text. Now a non-empty `entities` list given with a new text (`change`, `correct`, `update`) replaces the names declared before; names the new text itself gives are linked as before. Without `entities`, a declared name the old text named and the new text does not is dropped too; a declared name no text says still survives a rewording ("my teacher" declared as a person). A list of only unusable names replaces nothing. Same-text declarations (a date-only correct, a change into another fact's text, `update` with the same text or names alone, `merge`) still add.
