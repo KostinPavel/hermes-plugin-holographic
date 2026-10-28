@@ -57,7 +57,7 @@ previous version moves with it when that version was closed exactly at the old s
 
 Changing tags, keywords, category or trust is not a new version: it edits the current version in place.
 
-### Who a new text is about (Unreleased)
+### Who a new text is about (0.22.0)
 
 `change`, `correct` and `update` with a new text link the fact again from that text. Names given with it in
 `entities` replace the names declared on the fact before: changed from "Leo's guitar teacher is Ben Cole." into
@@ -242,7 +242,7 @@ CREATE TABLE forgotten (fact_id INTEGER PRIMARY KEY, forgotten_at TEXT NOT NULL,
 -- 0.19.0; status also takes 'merged'
 CREATE TABLE fact_merges (from_fact_id INTEGER PRIMARY KEY, into_fact_id INTEGER NOT NULL,
                           into_version_id INTEGER NOT NULL, merged_at TEXT NOT NULL);
--- Unreleased: names declared on the fact while the version was current, kept when change / correct / update
+-- 0.22.0: names declared on the fact while the version was current, kept when change / correct / update
 -- closes it; a row with an empty name marks every record (it exists, even with no name left in it); closed_by is
 -- the version that closed it. A revert that undoes exactly that closing declares the names again and deletes the
 -- record. d_key / d_fold / d_old: the name's keyed hashes in the three forms a tombstone is written under (no
