@@ -9,6 +9,7 @@ the texts tell them. Names here are made up."""
 from __future__ import annotations
 
 import json
+import sqlite3
 
 import pytest
 
@@ -161,6 +162,7 @@ def test_a_reverted_name_someone_deleted_stays_deleted(p):
 def test_forget_leaves_no_name_a_version_held(p, tmp_path):
     fid = _add(p, "My teacher plays jazz on Fridays.", "Quill Varga")
     _call(p, action="change", fact_id=fid, content="My teacher plays blues on Fridays.", entities=["Pia Lund"])
+    assert _saved(p) == ["Quill Varga"]  # the version's name was kept, so forget has something to remove
     _call(p, action="forget", fact_id=fid)
     p.shutdown()
     data = b"".join(f.read_bytes() for f in tmp_path.iterdir() if f.name.startswith("m.db"))
@@ -187,3 +189,104 @@ def test_a_name_the_new_text_gives_by_an_alias_stays(p, alias, new):
     _call(p, action="alias", entity="Robert Lane", content=alias)
     _call(p, action="change", fact_id=fid, content=new)
     assert _names(p, fid) == ["Robert Lane"]
+
+
+# Second review of PR #52 (Codex): what the saved names of a version may and may not bring back
+def _open(tmp_path):
+    provider = HolographicMemoryProvider(config={"db_path": str(tmp_path / "m.db"), "hrr_dim": DIM})
+    provider.initialize(session_id="s")
+    return provider
+
+
+def _saved(provider):
+    return sorted(r[0] for r in provider._store.read("SELECT name FROM version_names WHERE name_key != ''"))
+
+
+def _file_bytes(tmp_path):
+    return b"".join(f.read_bytes() for f in tmp_path.iterdir() if f.name.startswith("m.db"))
+
+
+def _older_delete_entity(store, name):
+    """What delete_entity of 0.20.2 writes (it knows no version_names): the links, the entity row and its aliases go,
+    the name gets its tombstones, and the file is rewritten."""
+    with store._tx():
+        (entity_id,) = store.entity_ids(name)
+        store._write("DELETE FROM fact_entities WHERE entity_id = ?", (entity_id,))
+        store._drop_entity_row(entity_id)
+        for digest in sorted(store._name_digests(name)):
+            store._write("INSERT OR IGNORE INTO entity_tombstones (digest) VALUES (?)", (digest,))
+        store._set_meta("scrub_pending", "1")
+    assert store.scrub()
+
+
+def test_a_name_an_older_release_deleted_goes_from_the_saved_names_on_the_next_open(tmp_path):
+    p = _open(tmp_path)
+    fid = _add(p, "My teacher plays jazz on Fridays.", "Quill Varga")
+    _add(p, "My neighbour fixes bikes.", "Quill Varga")
+    _call(p, action="change", fact_id=fid, content="My teacher plays blues on Fridays.", entities=["Pia Lund"])
+    _older_delete_entity(p._store, "Quill Varga")
+    p.shutdown()
+    p = _open(tmp_path)
+    assert _saved(p) == []
+    p.shutdown()
+    assert b"Quill Varga" not in _file_bytes(tmp_path)
+    p = _open(tmp_path)
+    try:
+        _add(p, "Quill Varga sings in a choir.", "Quill Varga")  # named again: the tombstone is lifted
+        _call(p, action="revert", fact_id=fid)
+        assert _names(p, fid) == []
+    finally:
+        p.shutdown()
+
+
+def test_naming_a_deleted_name_again_does_not_bring_back_what_a_version_saved_of_it(p):
+    fid = _add(p, "My teacher plays jazz on Fridays.", "Quill Varga")
+    _add(p, "My neighbour fixes bikes.", "Quill Varga")
+    _call(p, action="change", fact_id=fid, content="My teacher plays blues on Fridays.", entities=["Pia Lund"])
+    _older_delete_entity(p._store, "Quill Varga")  # while this process holds the file: no open in between
+    _add(p, "Quill Varga sings in a choir.", "Quill Varga")
+    _call(p, action="revert", fact_id=fid)
+    assert _names(p, fid) == []
+
+
+def test_a_version_whose_only_saved_name_was_deleted_brings_back_none(p):
+    fid = _add(p, "My teacher plays jazz on Fridays.", "Ben Cole")
+    _add(p, "My neighbour fixes bikes.", "Ben Cole")
+    _call(p, action="change", fact_id=fid, content="My teacher plays blues on Fridays.", entities=["Pia Lund"])
+    _call(p, action="delete_entity", entity="Ben Cole")
+    _call(p, action="revert", fact_id=fid)
+    assert _names(p, fid) == []
+
+
+@pytest.mark.parametrize("form", ["entity", "entities"])
+def test_delete_entity_finds_a_name_only_a_version_holds(p, tmp_path, form):
+    fid = _add(p, "My teacher plays jazz on Fridays.", "Quill Varga")
+    _call(p, action="change", fact_id=fid, content="My teacher plays blues on Fridays.", entities=["Pia Lund"])
+    args = {"entity": "Quill Varga"} if form == "entity" else {"entities": ["Quill Varga"]}
+    out = _call(p, action="delete_entity", **args)
+    assert "Quill Varga" in json.dumps(out)
+    _call(p, action="revert", fact_id=fid)
+    assert _names(p, fid) == []
+    p.shutdown()
+    assert b"Quill Varga" not in _file_bytes(tmp_path)
+
+
+def test_saved_names_are_not_used_again_once_their_version_came_back(tmp_path):
+    p = _open(tmp_path)
+    fid = _add(p, "My teacher plays jazz on Fridays.", "Ben Cole")
+    _call(p, action="change", fact_id=fid, content="My teacher plays blues on Fridays.", entities=["Pia Lund"])
+    _call(p, action="revert", fact_id=fid)
+    _call(p, action="update", fact_id=fid, entities=["Ada Moss"])
+    p.shutdown()
+    # A release before 0.8.0 (no history) changes the text in place; this one reads that as a change of the fact
+    conn = sqlite3.connect(str(tmp_path / "m.db"))
+    conn.execute("UPDATE facts SET content = ?, updated_at = CURRENT_TIMESTAMP WHERE fact_id = ?",
+                 ("My teacher plays rock on Fridays.", fid))
+    conn.commit()
+    conn.close()
+    p = _open(tmp_path)
+    try:
+        assert _call(p, action="revert", fact_id=fid)["status"] == "reverted"
+        assert _names(p, fid) == ["Ada Moss", "Ben Cole"]
+    finally:
+        p.shutdown()

@@ -823,11 +823,18 @@ class EntityMixin:
                          digests) is not None
 
     def _lift_tombstones(self, *names: str) -> None:
-        """Someone named it (entities=[...], alias, rename): a deleted name may be created from text again."""
+        """Someone named it (entities=[...], alias, rename): a deleted name may be created from text again. What a
+        version kept of the name before it was deleted goes first (_drop_deleted_version_names): naming it again is
+        not undoing the deletion."""
         if not self._entry.get("migrated") or self._one("SELECT 1 FROM entity_tombstones LIMIT 1") is None:
             return
         for name in names:
             if entity_key(name or ""):
+                digests = sorted(self._name_digests(name))
+                lifted = {r[0] for r in self._conn.execute(
+                    f"SELECT digest FROM entity_tombstones WHERE digest IN ({','.join('?' * len(digests))})", digests)}
+                if lifted:
+                    self._drop_deleted_version_names(lifted)
                 for digest in sorted(self._name_digests(name)):
                     self._write("DELETE FROM entity_tombstones WHERE digest = ?", (digest,))
 
@@ -880,7 +887,9 @@ class EntityMixin:
             plan, ambiguous, textual = [], [], []
             for name in wanted:
                 ids = self.entity_ids(name)
-                if not ids:
+                if not ids and self._version_history_names(name):
+                    plan.append((name, None))  # only what a version kept of it is left (_delete_history_name)
+                elif not ids:
                     missing.append(name)
                 elif len(ids) > 1:
                     ambiguous.append(name)
@@ -896,13 +905,14 @@ class EntityMixin:
                                  + (f" (also: {', '.join(repr(n) for n in textual[1:])})" if textual[1:] else ""))
             if not plan:
                 raise NotFound("no entity is named " + ", ".join(f"'{n}'" for n in missing))
-            done: set[int] = set()
+            done: set = set()
             for name, entity_id in plan:
-                if entity_id in done:
+                seen = entity_id if entity_id is not None else ("history", entity_key(name))
+                if seen in done:
                     covered.append(name)
                     continue
                 deleted.append(self._delete_entity(name))
-                done.add(entity_id)
+                done.add(seen)
         return {"deleted": deleted, "covered": covered, "not_found": missing,
                 "scrub": "done" if self.scrub() else "pending"}
 
@@ -910,6 +920,8 @@ class EntityMixin:
         self._require_writer()
         with self._tx():
             ids = self.entity_ids(name or "")
+            if not ids and self._version_history_names(name):
+                return self._delete_history_name(name)
             if not ids:
                 raise NotFound(f"no entity is named '{(name or '').strip()}'")
             if len(ids) > 1:  # one entity's name and another's alias, in a store an older version wrote (review 0.16.2)
@@ -952,6 +964,20 @@ class EntityMixin:
             if textual_names:
                 result["text_aliases_dropped"] = sorted({entity_key(n): n for n in textual_names}.values())
             return result
+
+    def _delete_history_name(self, name: str) -> dict:
+        """delete_entity of a name no entity has any more but a version kept (version_names: declared on a fact whose
+        text changed since, so a revert would bring it back): those rows go, the name gets its tombstone, and the file
+        is rewritten, as for an entity."""
+        spelt = self._version_history_names(name)
+        versions = max(self._write("DELETE FROM version_names WHERE name_key = ?", (entity_key(name),)).rowcount, 0)
+        if self._entry.get("migrated"):
+            for digest in sorted({d for n in (name, *spelt) for d in self._name_digests(n)}):
+                self._write("INSERT OR IGNORE INTO entity_tombstones (digest) VALUES (?)", (digest,))
+        self._set_meta("scrub_pending", "1")
+        self._bump()
+        return {"entity": spelt[0] if spelt else name.strip(), "deleted": True, "facts_unlinked": 0, "aliases_dropped": 0,
+                "facts_deleted": 0, "past_versions_cleared": versions}
 
     def rename_entity(self, name: str, new_name: str) -> dict:
         """Give an entity another name; its id, links and aliases stay, the old name becomes an alias, and the entity
