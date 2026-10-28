@@ -14,6 +14,7 @@ import sqlite3
 import pytest
 
 from hermes_plugin_holographic import HolographicMemoryProvider
+from hermes_plugin_holographic.store import MemoryStore
 
 DIM = 64
 
@@ -290,3 +291,62 @@ def test_saved_names_are_not_used_again_once_their_version_came_back(tmp_path):
         assert _names(p, fid) == ["Ada Moss", "Ben Cole"]
     finally:
         p.shutdown()
+
+
+# Third review of PR #52 (Codex): a deleted name leaves no saved copy, whichever writer deleted it and however spelt
+def test_a_name_an_older_release_deletes_is_gone_for_a_second_provider_of_the_process(tmp_path):
+    first = _open(tmp_path)
+    try:
+        fid = _add(first, "My teacher plays jazz on Fridays.", "Quill Varga")
+        _add(first, "My neighbour fixes bikes.", "Quill Varga")
+        _call(first, action="change", fact_id=fid, content="My teacher plays blues on Fridays.", entities=["Pia Lund"])
+        _older_delete_entity(first._store, "Quill Varga")
+        second = _open(tmp_path)  # the same process: it shares the connection the first one migrated
+        try:
+            assert _saved(second) == []
+        finally:
+            second.shutdown()
+    finally:
+        first.shutdown()
+
+
+def test_naming_a_deleted_name_again_leaves_no_copy_of_what_versions_kept(p, tmp_path):
+    fid = _add(p, "My teacher plays jazz on Fridays.", "Quill Varga")
+    _add(p, "My neighbour fixes bikes.", "Quill Varga")
+    _call(p, action="change", fact_id=fid, content="My teacher plays blues on Fridays.", entities=["Pia Lund"])
+    _older_delete_entity(p._store, "Quill Varga")
+    _add(p, "QUILL VARGA sings in a choir.", "QUILL VARGA")  # the same name again, spelt otherwise
+    assert b"Quill Varga" not in _file_bytes(tmp_path)  # the file and its WAL while the store is open
+
+
+def test_opening_the_store_does_not_hash_the_saved_names_again(tmp_path, monkeypatch):
+    p = _open(tmp_path)
+    fid = _add(p, "My teacher plays jazz on Fridays.", "Quill Varga", "Ada Moss")
+    _call(p, action="change", fact_id=fid, content="My teacher plays blues on Fridays.", entities=["Pia Lund"])
+    _add(p, "My neighbour fixes bikes.", "Bo Lin")
+    _call(p, action="delete_entity", entity="Bo Lin")  # a tombstone exists, none was added since
+    p.shutdown()
+    hashed = []
+    real = MemoryStore.digest
+    monkeypatch.setattr(MemoryStore, "digest", lambda self, text: hashed.append(text) or real(self, text))
+    p = _open(tmp_path)
+    p.shutdown()
+    assert not [t for t in hashed if "quill" in t or "ada moss" in t], hashed
+
+
+@pytest.mark.parametrize("first,second", [("José", "Jose"), ("Łukasz", "Lukasz")], ids=["accent", "polish-l"])
+@pytest.mark.parametrize("held", ["history-only", "entity"])
+def test_delete_entity_clears_every_spelling_its_tombstone_covers(p, tmp_path, first, second, held):
+    a = _add(p, "My teacher plays jazz on Fridays.", first)
+    b = _add(p, "My coach runs on Sundays.", second)
+    if held == "entity":
+        _add(p, "My neighbour fixes bikes.", first)
+    _call(p, action="change", fact_id=a, content="My teacher plays blues on Fridays.", entities=["Pia Lund"])
+    _call(p, action="change", fact_id=b, content="My coach swims on Sundays.", entities=["Pia Lund"])
+    assert _saved(p) == sorted([first, second])
+    out = _call(p, action="delete_entity", entity=first)
+    assert out["scrub"] == "done"
+    assert _saved(p) == []
+    p.shutdown()
+    data = _file_bytes(tmp_path)
+    assert first.encode() not in data and second.encode() not in data

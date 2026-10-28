@@ -109,18 +109,36 @@ CREATE INDEX IF NOT EXISTS idx_merges_into ON fact_merges(into_fact_id);
 -- closes that version, so revert links them again — a new text given with names replaces them, and a name no text
 -- says could not be told otherwise. Every record has a row with an empty name (the record exists, even when no name
 -- is left in it); closed_by is the version that closed it (a record another closing made is stale). A revert to the
--- version uses the record up. Additive: an older release ignores the table (its revert keeps the names as before)
--- and its forget deletes the rows too, through the trigger in the file.
+-- version uses the record up. d_key / d_fold / d_old: the name's keyed hashes in the three forms a tombstone of
+-- delete_entity is written under (_name_digest_forms), so a tombstone finds every spelling it covers by index.
+-- Additive: an older release ignores the table (its revert keeps the names as before), and its forget and its
+-- delete_entity remove the rows too, through the triggers in the file (VERSION_NAMES_TRIGGERS).
 CREATE TABLE IF NOT EXISTS version_names (
     version_id INTEGER NOT NULL,
     name       TEXT NOT NULL,
     name_key   TEXT NOT NULL,
     closed_by  INTEGER NOT NULL,
+    d_key      TEXT,
+    d_fold     TEXT,
+    d_old      TEXT,
     PRIMARY KEY (version_id, name_key)
 );
 CREATE INDEX IF NOT EXISTS idx_version_names_key ON version_names(name_key);
+CREATE INDEX IF NOT EXISTS idx_version_names_d_key ON version_names(d_key);
+CREATE INDEX IF NOT EXISTS idx_version_names_d_fold ON version_names(d_fold);
+CREATE INDEX IF NOT EXISTS idx_version_names_d_old ON version_names(d_old);
 CREATE TRIGGER IF NOT EXISTS version_names_ad AFTER DELETE ON fact_versions BEGIN
     DELETE FROM version_names WHERE version_id = old.version_id;
+END;
+"""
+
+# Run after the entity schema (entity_tombstones): a tombstone written by any writer, an older release's
+# delete_entity included, removes in its own transaction every name a version kept that the tombstone covers, before
+# that writer rewrites the file. Nothing is left for an open to reconcile, so no open hashes the kept names.
+VERSION_NAMES_TRIGGERS = """
+CREATE TRIGGER IF NOT EXISTS version_names_tombstoned AFTER INSERT ON entity_tombstones BEGIN
+    DELETE FROM version_names
+     WHERE name_key != '' AND (d_key = new.digest OR d_fold = new.digest OR d_old = new.digest);
 END;
 """
 
@@ -292,7 +310,6 @@ class HistoryMixin:
                                 f"version knows {HISTORY_SCHEMA_VERSION}): update the plugin; not opened for writing")
         self._tombstone_key()
         self._reconcile_history()
-        self._drop_deleted_version_names()  # names an older release's delete_entity left in version_names
         # The mark says what the file holds, not who opened it: a file without merges keeps 1 (an older release
         # still writes it; a downgrade costs nothing), one a merge raised to 2 keeps 2 (merge_facts stamps it).
         if found is None or not found.strip().isdigit() or int(found) < _HISTORY_SCHEMA_BASE:
@@ -1087,7 +1104,7 @@ class HistoryMixin:
 
     def _version_names_ready(self) -> bool:
         if not self._entry.get("version_names"):  # with closed_by: a table without it is not one this code writes
-            self._entry["version_names"] = "closed_by" in {
+            self._entry["version_names"] = {"closed_by", "d_fold"} <= {
                 r[1] for r in self._conn.execute("PRAGMA table_info(version_names)")}
         return self._entry["version_names"]
 
@@ -1102,8 +1119,9 @@ class HistoryMixin:
             names.setdefault(entity_key(r[0]), r[0])
         self._write("DELETE FROM version_names WHERE version_id = ?", (version_id,))
         for key, name in names.items():
-            self._write("INSERT INTO version_names (version_id, name, name_key, closed_by) VALUES (?, ?, ?, ?)",
-                        (version_id, name, key, closed_by))
+            forms = self._name_digest_forms(name) if key else (None, None, None)
+            self._write("INSERT INTO version_names (version_id, name, name_key, closed_by, d_key, d_fold, d_old) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?)", (version_id, name, key, closed_by, *forms))
 
     def _take_version_names(self, version_id: int, closed_by: int) -> list[str] | None:
         """The names declared on the fact while *version_id* was current, for a revert that undoes *closed_by*; the
@@ -1120,33 +1138,26 @@ class HistoryMixin:
             return None
         return [r["name"] for r in rows if r["name_key"] and not self._tombstoned(r["name"])]
 
-    def _drop_deleted_version_names(self, digests=None) -> int:
-        """Remove from version_names the names delete_entity tombstoned (all tombstones, or those of *digests*): a
-        release that does not know the table deleted them and left them there, or a name is about to be declared again
-        (_lift_tombstones), and what a version kept of it before the deletion must not come back with it. The file is
-        rewritten afterwards (scrub). Returns how many rows went."""
-        if not self._version_names_ready() or not self._one("SELECT 1 FROM version_names WHERE name_key != '' LIMIT 1"):
-            return 0
-        if digests is None:
-            digests = {r[0] for r in self._conn.execute("SELECT digest FROM entity_tombstones")}
-        digests = set(digests)
-        if not digests:
-            return 0
-        gone = 0
-        for name, key in self._conn.execute("SELECT DISTINCT name, name_key FROM version_names "
-                                            "WHERE name_key != ''").fetchall():
-            if self._name_digests(name) & digests:
-                gone += max(self._write("DELETE FROM version_names WHERE name_key = ?", (key,)).rowcount, 0)
-        if gone:
-            self._set_meta("scrub_pending", "1")
-        return gone
+    _COVERED = "name_key != '' AND (d_key IN ({m}) OR d_fold IN ({m}) OR d_old IN ({m}))"
 
     def _version_history_names(self, name: str) -> list[str]:
-        """How versions spelt *name* in version_names, when no entity has it any more (removed with its last link)."""
-        key = entity_key(name or "")
-        if not key or not self._version_names_ready():
+        """The spellings version_names keeps of *name* as its tombstone would cover them (the digests of
+        _name_digests: "Jose" for "José", "Lukasz" for "Łukasz"), for a name no entity has any more."""
+        if not entity_key(name or "") or not self._version_names_ready():
             return []
-        return sorted({r[0] for r in self._conn.execute("SELECT name FROM version_names WHERE name_key = ?", (key,))})
+        digests = sorted(self._name_digests(name))
+        marks = ",".join("?" * len(digests))
+        return sorted({r[0] for r in self._conn.execute(
+            "SELECT name FROM version_names WHERE " + self._COVERED.format(m=marks), digests * 3)})
+
+    def _drop_version_names(self, names) -> int:
+        """Delete what versions kept of *names*, every spelling their tombstones cover (the trigger does the same for a
+        tombstone that is new; this also covers one written before). Returns how many rows went."""
+        digests = sorted({d for n in names if entity_key(n or "") for d in self._name_digests(n)})
+        if not digests or not self._version_names_ready():
+            return 0
+        marks = ",".join("?" * len(digests))
+        return max(self._write("DELETE FROM version_names WHERE " + self._COVERED.format(m=marks), digests * 3).rowcount, 0)
 
     def _confirmations_ready(self) -> bool:
         if not self._entry.get("confirmations"):
@@ -1265,5 +1276,5 @@ class HistoryMixin:
         return out
 
 
-__all__ = ["HISTORY_SCHEMA", "HistoryMixin", "HistoryUnavailable", "HistoryTooNew", "ChangedSince", "NotOwned",
+__all__ = ["HISTORY_SCHEMA", "VERSION_NAMES_TRIGGERS", "HistoryMixin", "HistoryUnavailable", "HistoryTooNew", "ChangedSince", "NotOwned",
            "NotFound", "CLOSED", "ORIGINS", "SOURCE_FIELDS", "normalize", "parse_day", "version_state", "source_of"]

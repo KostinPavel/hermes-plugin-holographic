@@ -810,8 +810,12 @@ class EntityMixin:
         """The digests a deleted name is kept under: its key, and its key folded as search folds words (Traditional and
         Simplified Chinese as one, accents dropped), so 台湾大学 is suppressed after 臺灣大學 was deleted (review 0.16.1).
         The first is what 0.16.0 wrote."""
+        return set(self._name_digest_forms(name))
+
+    def _name_digest_forms(self, name: str) -> tuple[str, str, str]:
+        """The three digests of _name_digests in order (key, folded key, key of 0.16.0), as version_names keeps them."""
         key = entity_key(name)
-        return {self.digest("entity " + k) for k in (key, text_fold(key), _entity_key_0160(name))}
+        return tuple(self.digest("entity " + k) for k in (key, text_fold(key), _entity_key_0160(name)))
 
     def _tombstoned(self, name: str) -> bool:
         """Whether delete_entity removed this name: text never creates it again."""
@@ -824,17 +828,12 @@ class EntityMixin:
 
     def _lift_tombstones(self, *names: str) -> None:
         """Someone named it (entities=[...], alias, rename): a deleted name may be created from text again. What a
-        version kept of the name before it was deleted goes first (_drop_deleted_version_names): naming it again is
-        not undoing the deletion."""
+        version kept of it went when the tombstone was written (trigger version_names_tombstoned): naming it again
+        brings none of that back."""
         if not self._entry.get("migrated") or self._one("SELECT 1 FROM entity_tombstones LIMIT 1") is None:
             return
         for name in names:
             if entity_key(name or ""):
-                digests = sorted(self._name_digests(name))
-                lifted = {r[0] for r in self._conn.execute(
-                    f"SELECT digest FROM entity_tombstones WHERE digest IN ({','.join('?' * len(digests))})", digests)}
-                if lifted:
-                    self._drop_deleted_version_names(lifted)
                 for digest in sorted(self._name_digests(name)):
                     self._write("DELETE FROM entity_tombstones WHERE digest = ?", (digest,))
 
@@ -950,8 +949,9 @@ class EntityMixin:
                 facts |= {r[0] for r in self._conn.execute("SELECT fact_id FROM fact_entities WHERE entity_id = ?", (entity_id,))}
                 self._write("DELETE FROM fact_entities WHERE entity_id = ?", (entity_id,))
                 self._drop_entity_row(entity_id)
-            if self._version_names_ready():  # what versions held of these names goes with them
-                for key in sorted({entity_key(n) for n in (*names, *textual_names) if entity_key(n)}):
+            if self._version_names_ready():  # what versions kept of these names goes, every spelling a tombstone covers
+                self._drop_version_names(names)
+                for key in sorted({entity_key(n) for n in textual_names if entity_key(n)}):
                     self._write("DELETE FROM version_names WHERE name_key = ?", (key,))
             if self._entry.get("migrated"):
                 for digest in sorted({d for n in names if entity_key(n) for d in self._name_digests(n)}):
@@ -970,7 +970,7 @@ class EntityMixin:
         text changed since, so a revert would bring it back): those rows go, the name gets its tombstone, and the file
         is rewritten, as for an entity."""
         spelt = self._version_history_names(name)
-        versions = max(self._write("DELETE FROM version_names WHERE name_key = ?", (entity_key(name),)).rowcount, 0)
+        versions = self._drop_version_names([name, *spelt])
         if self._entry.get("migrated"):
             for digest in sorted({d for n in (name, *spelt) for d in self._name_digests(n)}):
                 self._write("INSERT OR IGNORE INTO entity_tombstones (digest) VALUES (?)", (digest,))

@@ -15,7 +15,7 @@ from .entity_names import _clean_given, entity_key, fold
 from .entity_names import (  # noqa: F401 - re-exported: they lived here, and the provider and tests import them from store
     _RE_TOKEN, _capitalized_phrases, _entity_key_0160, _name_shaped, _outside_plain_quotes, _script_pieces, _valid_entity,
     _without_code, unusable_names)
-from .history import HISTORY_SCHEMA, HistoryMixin, NotFound, error_kind, parse_day
+from .history import HISTORY_SCHEMA, VERSION_NAMES_TRIGGERS, HistoryMixin, NotFound, error_kind, parse_day
 from .experience import ExperienceMixin
 
 logger = logging.getLogger(__name__)
@@ -249,7 +249,7 @@ class MemoryStore(EntityMixin, HistoryMixin, ExperienceMixin):
         by the user) and the tombstones of deleted names. The entity index is rebuilt after the migration, by
         _maybe_rebuild_entities. An older version reads such a store as before; one that writes to it as well may
         create a deleted name again from a new fact's text (its next open by this version does not notice that)."""
-        self._conn.executescript(HISTORY_SCHEMA + _EMBEDDINGS_SCHEMA + _ENTITY_SCHEMA)
+        self._conn.executescript(HISTORY_SCHEMA + _EMBEDDINGS_SCHEMA + _ENTITY_SCHEMA + VERSION_NAMES_TRIGGERS)
         with self._tx():
             if "source" not in {r[1] for r in self._conn.execute("PRAGMA table_info(entity_aliases)")}:
                 # 0.16.0. 'legacy': written before, or by an older release since; nothing says whether someone gave it

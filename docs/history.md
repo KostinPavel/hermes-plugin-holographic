@@ -245,21 +245,27 @@ CREATE TABLE fact_merges (from_fact_id INTEGER PRIMARY KEY, into_fact_id INTEGER
 -- Unreleased: names declared on the fact while the version was current, kept when change / correct / update
 -- closes it; a row with an empty name marks every record (it exists, even with no name left in it); closed_by is
 -- the version that closed it. A revert that undoes exactly that closing declares the names again and deletes the
--- record. Deleted with the version (trigger, also when an older release forgets the fact) and by delete_entity
--- with the name.
+-- record. d_key / d_fold / d_old: the name's keyed hashes in the three forms a tombstone is written under (no
+-- name in them), indexed. Deleted with the version and when a tombstone covers the name (triggers, which an older
+-- release's forget and delete_entity fire too).
 CREATE TABLE version_names (version_id INTEGER NOT NULL, name TEXT NOT NULL, name_key TEXT NOT NULL,
-                            closed_by INTEGER NOT NULL, PRIMARY KEY (version_id, name_key));
+                            closed_by INTEGER NOT NULL, d_key TEXT, d_fold TEXT, d_old TEXT,
+                            PRIMARY KEY (version_id, name_key));
 CREATE TRIGGER version_names_ad AFTER DELETE ON fact_versions
     BEGIN DELETE FROM version_names WHERE version_id = old.version_id; END;
+CREATE TRIGGER version_names_tombstoned AFTER INSERT ON entity_tombstones
+    BEGIN DELETE FROM version_names WHERE name_key != ''
+          AND (d_key = new.digest OR d_fold = new.digest OR d_old = new.digest); END;
 ```
 
 `version_names` is additive: any writer creates it on open, an older release ignores it (its own change and revert
-keep names as before, a version it closes gets no record) and still removes its rows when it forgets a fact, since
-the trigger is part of the file. A name an older release's `delete_entity` removed (it leaves the table as it is)
-goes on the next open by this release, which compares every kept name with the tombstones (the same keyed hashes)
-and rewrites the file when it removed one; declaring a tombstoned name again removes what versions kept of it before
-the tombstone is lifted. A record whose `closed_by` is not the version a revert undoes (an older release reverted
-and changed the fact in between) is not used.
+keep names as before, a version it closes gets no record) and still removes its rows, since the triggers are part
+of the file: its forget fires `version_names_ad`, and its `delete_entity` writes tombstones, which fire
+`version_names_tombstoned` inside its own transaction, before it rewrites the file — so the rows go with every
+spelling the tombstone covers ("Jose" with "José"), whoever deleted the name and whichever connection is open, and no
+open has anything to reconcile or hash. `delete_entity` of this release also deletes by the same digests what a
+tombstone written earlier covers. A record whose `closed_by` is not the version a revert undoes (an older release
+reverted and changed the fact in between) is not used.
 
 `facts` gets no new column, so older versions of the plugin and tools that read `facts` directly (hermes-dreaming)
 keep working. Every write is one transaction.
