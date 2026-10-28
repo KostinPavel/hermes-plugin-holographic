@@ -42,6 +42,14 @@ and operating-system scheduling can contribute to each phase; these timings don'
 The diagnostic includes no query, fact, correction, or identifier text.
 The timing starts when journal recording begins, so a search already delayed before that point is outside this log.
 
+With collection on, the memory block of the system prompt adds one line (about 100 tokens) for a writer context: when
+the person corrects or rejects an answer that used recalled facts, record an `outcome` (`corrected` or `dead_end`,
+a reason, an optional short correction) on the attempt id the recall showed; `useful` (reason `other`) only when the
+person says the answer was right; not on every turn. The line tells the agent that this is its own report, not the
+person's confirmation, and that it changes no fact: a wrong fact still needs `fact_store change`/`correct` with the
+person's say-so. Read-only contexts record no attempts and get no line. With collection off the prompt and the tool
+schemas are unchanged (0.20.3). It is a request to the model, not a guarantee that outcomes get recorded.
+
 The new tool is available only while collection is enabled:
 
 ```json

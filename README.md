@@ -26,6 +26,8 @@ experience_trace: on  # optional: candidate/stage ids as well as the actual emis
 
 Both are off by default. When enabled, `fact_experience` provides `recent`, `outcome` and `explain`; a search returns
 `memory_attempt`, and prefetch identifies a nonempty emission; a prefetch that recalls nothing writes nothing.
+With collection on, one line in the system prompt asks the agent to record an outcome when the person corrects or rejects
+an answer that used recalled facts (0.20.3); with it off the prompt is unchanged.
 Explain reads that original snapshot without replaying search or calling a model. Task outcomes are agent reports, never authenticated human confirmations; old
 `fact_feedback` calls keep their original meaning and are not imported as duplicate evidence.
 

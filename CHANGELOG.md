@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.20.3 — 2026-10-28
+
+### Changed
+- With `experience: on`, the system prompt now carries one line asking the agent to record `fact_experience outcome` when the person corrects or rejects an answer that used recalled facts (`corrected` or `dead_end` with a reason and an optional short correction), and `useful` only when the person says it was right; not on every turn. The line says the outcome is the agent's report, not the person's confirmation, and changes no fact (a wrong fact still goes through `change`/`correct`). Before, nothing asked for outcomes, so installs collected receipts and no outcomes. Read-only contexts (subagents, cron without writes) record no attempts and get no line. With `experience: off` the system prompt and the tool schemas are byte-identical to 0.20.2. The line is fixed per session, so the block stays prompt-cache stable.
+
 ## 0.20.2 — 2026-10-28
 
 ### Fixed
