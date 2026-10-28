@@ -128,3 +128,62 @@ def test_a_name_no_text_gives_survives_a_new_text_without_names(p, action):
     fid = _add(p, "My teacher plays in a jazz trio on Fridays.", "Ben Cole")
     _call(p, action=action, fact_id=fid, content="My teacher plays in a jazz trio on Saturdays.")
     assert _names(p, fid) == ["Ben Cole"]
+
+
+# Review of PR #52 (Codex): a revert brings back the names the version had, also those no text gives
+@pytest.mark.parametrize("action", ["change", "correct", "update"])
+def test_reverting_brings_back_a_one_word_name(p, action):
+    fid = _add(p, "Masha teaches piano.", "Masha")
+    _call(p, action=action, fact_id=fid, content="Olga teaches piano.", entities=["Olga"])
+    _call(p, action="revert", fact_id=fid)
+    assert _names(p, fid) == ["Masha"]
+    assert "Masha teaches piano." in _probed(p, "Masha")
+
+
+@pytest.mark.parametrize("action", ["change", "correct", "update"])
+def test_reverting_brings_back_a_name_no_text_gives(p, action):
+    fid = _add(p, "My teacher plays jazz on Fridays.", "Ben Cole")
+    _call(p, action=action, fact_id=fid, content="My teacher plays blues on Fridays.", entities=["Pia Lund"])
+    _call(p, action="revert", fact_id=fid)
+    assert _names(p, fid) == ["Ben Cole"]
+    assert "My teacher plays jazz on Fridays." not in _probed(p, "Pia Lund")
+
+
+def test_a_reverted_name_someone_deleted_stays_deleted(p):
+    fid = _add(p, "My teacher plays jazz on Fridays.", "Ben Cole", "Ada Moss")
+    _add(p, "Ben Cole tunes pianos.", "Ben Cole")
+    _call(p, action="change", fact_id=fid, content="My teacher plays blues on Fridays.", entities=["Pia Lund"])
+    _call(p, action="delete_entity", entity="Ben Cole")
+    _call(p, action="revert", fact_id=fid)
+    assert _names(p, fid) == ["Ada Moss"]
+
+
+def test_forget_leaves_no_name_a_version_held(p, tmp_path):
+    fid = _add(p, "My teacher plays jazz on Fridays.", "Quill Varga")
+    _call(p, action="change", fact_id=fid, content="My teacher plays blues on Fridays.", entities=["Pia Lund"])
+    _call(p, action="forget", fact_id=fid)
+    p.shutdown()
+    data = b"".join(f.read_bytes() for f in tmp_path.iterdir() if f.name.startswith("m.db"))
+    assert b"Quill Varga" not in data
+
+
+# Review of PR #52 (Codex): "still named by the new text" follows the rules of entity identity, aliases included
+@pytest.mark.parametrize("first,old,new", [
+    ("Straße", "Straße teaches piano.", "strasse teaches drums."),
+    ("José", "José teaches piano.", "Jose teaches drums."),
+    ("Маша", "Маша учит игре на пианино.", "МАША учит игре на барабанах."),
+    ("Семён", "Семён учит игре на пианино.", "Семен учит игре на барабанах."),
+], ids=["casefold-sharp-s", "accents", "cyrillic-case", "cyrillic-yo"])
+def test_a_name_the_new_text_still_gives_in_another_spelling_stays(p, first, old, new):
+    fid = _add(p, old, first)
+    _call(p, action="change", fact_id=fid, content=new)
+    assert _names(p, fid) == [first]
+
+
+@pytest.mark.parametrize("alias,new", [("Bobby", "bobby fixes cars now."), ("Großi", "grossi fixes cars now.")],
+                         ids=["as-written", "casefold-sharp-s"])
+def test_a_name_the_new_text_gives_by_an_alias_stays(p, alias, new):
+    fid = _add(p, "Robert Lane fixes bikes.", "Robert Lane")
+    _call(p, action="alias", entity="Robert Lane", content=alias)
+    _call(p, action="change", fact_id=fid, content=new)
+    assert _names(p, fid) == ["Robert Lane"]

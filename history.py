@@ -16,6 +16,8 @@ import sqlite3
 import unicodedata
 from datetime import date, datetime, timezone
 
+from .entity_names import entity_key
+
 logger = logging.getLogger(__name__)
 
 
@@ -102,6 +104,21 @@ CREATE TABLE IF NOT EXISTS fact_merges (
     merged_at       TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_merges_into ON fact_merges(into_fact_id);
+
+-- Unreleased: the names declared on a fact while a version was current, written when change / correct / update
+-- closes that version (a row with an empty name: it had none), so revert links them again — a new text given with
+-- names replaces them, and a name no text says could not be told otherwise. Additive: an older release ignores the
+-- table (its revert keeps the names as before) and its forget deletes the rows too, through the trigger in the file.
+CREATE TABLE IF NOT EXISTS version_names (
+    version_id INTEGER NOT NULL,
+    name       TEXT NOT NULL,
+    name_key   TEXT NOT NULL,
+    PRIMARY KEY (version_id, name_key)
+);
+CREATE INDEX IF NOT EXISTS idx_version_names_key ON version_names(name_key);
+CREATE TRIGGER IF NOT EXISTS version_names_ad AFTER DELETE ON fact_versions BEGIN
+    DELETE FROM version_names WHERE version_id = old.version_id;
+END;
 """
 
 # The history schema this version knows. 1: 0.8.0-0.18.x (0.15.0's additions were additive). 2 (0.19.0): a file that
@@ -400,6 +417,7 @@ class HistoryMixin:
         cur = self._current_version(fact_id)
         if cur is None:  # a writer of 0.8.0 keeps every fact versioned; an older one is reconciled before writes
             raise KeyError(f"fact_id {fact_id} has no current version")
+        self._record_version_names(cur["version_id"], fact_id)  # before the new text relinks the fact
         self._close_version(cur["version_id"], closing, valid_to=valid_to, exact=exact, trust=trust)
         new = self._insert_version(fact_id, content, category, tags, valid_from=valid_from, source=source,
                                    supersedes=cur["version_id"])
@@ -614,8 +632,10 @@ class HistoryMixin:
                         "superseded_by = NULL WHERE version_id = ?", (prev["version_id"],))
             self._fix_predecessor(prev["version_id"])
             trust = prev["trust_score"] if prev["trust_score"] is not None else fact["trust_score"]
+            # The names the version had come back (version_names); a version closed before this release: names only
+            # the undone text gave go with it (_relink_fact)
             self._rewrite_fact(fact_id, prev["content"], prev["category"], prev["tags"], old_category=fact["category"],
-                               trust=trust)  # names only the undone text gave go with it (_relink_fact)
+                               trust=trust, restore=self._version_names(prev["version_id"]))
             return {"fact_id": fact_id, "status": "reverted", "current_version": int(prev["seq"])}
 
     def forget_fact(self, fact_id: int) -> dict:
@@ -1060,6 +1080,44 @@ class HistoryMixin:
             have = {r[1] for r in self._conn.execute("PRAGMA table_info(fact_versions)")}
             cols = self._entry["source_columns"] = tuple(c for c in _SOURCE_COLUMNS if c in have)
         return cols
+
+    def _version_names_ready(self) -> bool:
+        if not self._entry.get("version_names"):
+            self._entry["version_names"] = bool(self._one(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'version_names'"))
+        return self._entry["version_names"]
+
+    def _record_version_names(self, version_id: int, fact_id: int) -> None:
+        """Keep the names declared on the fact now as those of *version_id*, which is being closed (version_names)."""
+        if not self._version_names_ready():
+            return
+        names: dict[str, str] = {}
+        for r in self._conn.execute("SELECT e.name FROM fact_entities fe JOIN entities e ON e.entity_id = fe.entity_id "
+                                    "WHERE fe.fact_id = ? AND e.entity_type = 'declared' ORDER BY e.name", (fact_id,)):
+            names.setdefault(entity_key(r[0]), r[0])
+        self._write("DELETE FROM version_names WHERE version_id = ?", (version_id,))
+        for key, name in (names or {"": ""}).items():
+            self._write("INSERT INTO version_names (version_id, name, name_key) VALUES (?, ?, ?)",
+                        (version_id, name, key))
+
+    def _version_names(self, version_id: int) -> list[str] | None:
+        """The names declared on the fact while *version_id* was current, or None when nothing recorded them (a version
+        closed before this release or by an older one). A name delete_entity removed since is not given back."""
+        if not self._version_names_ready():
+            return None
+        rows = self._conn.execute("SELECT name, name_key FROM version_names WHERE version_id = ? ORDER BY name",
+                                  (version_id,)).fetchall()
+        if not rows:
+            return None
+        names = []
+        for name, key in rows:
+            if not key:
+                continue
+            if self._tombstoned(name):  # deleted by a release that does not know this table: it goes now
+                self._write("DELETE FROM version_names WHERE name_key = ?", (key,))
+            else:
+                names.append(name)
+        return names
 
     def _confirmations_ready(self) -> bool:
         if not self._entry.get("confirmations"):

@@ -135,7 +135,7 @@ Optional task outcomes and recorded explanations (separate from trust, off by de
   correct lists it under `entities_not_linked` by its position in the list (`index`, from 0) with the reason, not
   the name itself (a refused name may be `KEY=secret`); the fact is stored all the same. `entities` given with a new
   text (change, correct, update) replace the names declared on the fact before; without them those stay, but for a
-  name only the old text gave (see
+  name only the old text gave; revert brings back the names of the version it restores (see
   [Who a new text is about](docs/history.md#who-a-new-text-is-about-unreleased)). Its answer lists `similar` facts,
   `possible_conflicts` (same subject, a different claim) and `past_versions`; the agent decides. Text that is not a
   fact (JSON, tool or chat-role markup, instruction-like phrasing, a credential with its value or a token whose shape

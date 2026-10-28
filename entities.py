@@ -30,6 +30,16 @@ _DELETE_MAX = 100  # names in one delete_entity call
 _MAX_COUNTED_IDS = 500  # record_retrievals batch cap (far under SQLite's bound-parameter limit)
 
 
+def _key_words(text: str) -> list[str]:
+    """The words of *text* as entity identity compares names (entity_key), accents folded: what _named_in matches."""
+    return [text_fold(w) for w in re.findall(r"\w+", entity_key(text))]
+
+
+def _in_a_row(words: list[str], name: list[str]) -> bool:
+    n = len(name)
+    return n > 0 and any(words[i:i + n] == name for i in range(len(words) - n + 1))
+
+
 class EntityMixin:
     """The entity half of MemoryStore. Expects _conn, _lock, _entry, _tx, _one, _write, read, _set_meta,
     _hrr_available, _compute_hrr_vector and _relink_fact of MemoryStore, and digest and scrub of HistoryMixin.
@@ -755,6 +765,25 @@ class EntityMixin:
         """Keys of the "Y" of every "X aka Y" in *texts* (what a forgotten fact said; see _prune_aka_aliases)."""
         return {entity_key(right) for text in texts if text for _, right in self._aka_pairs(text)}
 
+    def _named_in(self, text: str, entity_ids) -> set[int]:
+        """Which of *entity_ids* *text* names: a mention as recall reads it (mentioned_entity_ids), or the words of the
+        entity's name or one of its aliases in a row, compared as entity identity compares names (entity_key: NFKC,
+        casefold, so "strasse" names "Straße") with accents folded ("Jose" names "José")."""
+        wanted = set(entity_ids)
+        found = self.mentioned_entity_ids(text) & wanted
+        words = _key_words(text)
+        for entity_id in sorted(wanted - found):
+            row = self._one("SELECT name, aliases FROM entities WHERE entity_id = ?", (entity_id,))
+            if row is None:
+                continue
+            names = [row["name"], *(row["aliases"] or "").split(",")]
+            if self._entry.get("migrated"):
+                names += [r[0] for r in self._conn.execute("SELECT alias FROM entity_aliases WHERE entity_id = ?",
+                                                           (entity_id,))]
+            if any(_in_a_row(words, _key_words(name)) for name in names if name and name.strip()):
+                found.add(entity_id)
+        return found
+
     def _relink(self, fact_ids) -> None:
         """Link facts to their entities again from their own text, as a new text does (declared links stay)."""
         for fact_id in sorted(set(fact_ids)):
@@ -909,6 +938,9 @@ class EntityMixin:
                 facts |= {r[0] for r in self._conn.execute("SELECT fact_id FROM fact_entities WHERE entity_id = ?", (entity_id,))}
                 self._write("DELETE FROM fact_entities WHERE entity_id = ?", (entity_id,))
                 self._drop_entity_row(entity_id)
+            if self._version_names_ready():  # what versions held of these names goes with them
+                for key in sorted({entity_key(n) for n in (*names, *textual_names) if entity_key(n)}):
+                    self._write("DELETE FROM version_names WHERE name_key = ?", (key,))
             if self._entry.get("migrated"):
                 for digest in sorted({d for n in names if entity_key(n) for d in self._name_digests(n)}):
                     self._write("INSERT OR IGNORE INTO entity_tombstones (digest) VALUES (?)", (digest,))

@@ -66,14 +66,17 @@ Changing tags, keywords, category or trust is not a new version: it edits the cu
 gives stays linked whether or not it is given again. Without `entities`, a declared name the old text named and
 the new text does not goes with the old text (the same change without names is not found under Ben Cole either);
 a declared name no text says stays: a fact about "my teacher" declared as Ben Cole keeps him across a rewording.
-A list whose names are all unusable (blank, a path, a URL) replaces nothing and is read as no names. With the same text (`correct` of the date only, `update` with the
+"Named" is read as entity identity reads names: case folded ("strasse" names Straße, "МАША" names Маша), accents
+folded ("Jose" names José), and an alias counts as the name. A list whose names are all unusable (blank, a path, a
+URL) replaces nothing and is read as no names. With the same text (`correct` of the date only, `update` with the
 text it already has, a change into a text another fact holds, `merge`) names given are added, as before.
 
-`revert` is a new text without names: versions keep their text, not the names declared with it, so the restored
-text is linked from itself and a declared name stays unless the undone text named it and the restored one does not
-(reverting the change above brings back Ben Cole and drops Omar Reid). The limit: a name no text says
-cannot be told apart — a person declared on "my teacher" and replaced by another stays replaced after the revert,
-and is given again with `update {fact_id, entities}`.
+`revert` brings back the names the version had. When `change`, `correct` or `update` closes a version, the names
+declared on the fact then are kept for it (`version_names`), and a revert to it declares exactly those again: one-word
+names ("Masha") and names no text says ("my teacher" declared as Ben Cole and replaced by Pia Lund) included. A name
+`delete_entity` removed since is not given back. A version closed before this release, or by an older one, has no
+such record: its revert links the restored text from itself and keeps a declared name unless the undone text named
+it and the restored one does not.
 
 ### Merge (0.19.0)
 
@@ -235,7 +238,19 @@ CREATE TABLE forgotten (fact_id INTEGER PRIMARY KEY, forgotten_at TEXT NOT NULL,
 -- 0.19.0; status also takes 'merged'
 CREATE TABLE fact_merges (from_fact_id INTEGER PRIMARY KEY, into_fact_id INTEGER NOT NULL,
                           into_version_id INTEGER NOT NULL, merged_at TEXT NOT NULL);
+-- Unreleased: names declared on the fact while the version was current, kept when it is closed by a new text (an
+-- empty name: none); revert declares them again. Deleted with the version (trigger, also when an older release
+-- forgets the fact) and by delete_entity with the name.
+CREATE TABLE version_names (version_id INTEGER NOT NULL, name TEXT NOT NULL, name_key TEXT NOT NULL,
+                            PRIMARY KEY (version_id, name_key));
+CREATE TRIGGER version_names_ad AFTER DELETE ON fact_versions
+    BEGIN DELETE FROM version_names WHERE version_id = old.version_id; END;
 ```
+
+`version_names` is additive: any writer creates it on open, an older release ignores it (its own change and revert
+keep names as before, a version it closes gets no record) and still removes its rows when it forgets a fact, since
+the trigger is part of the file. A name an older release's `delete_entity` removed stays in the table until the
+next revert to that version, which skips and deletes it (it checks the tombstone).
 
 `facts` gets no new column, so older versions of the plugin and tools that read `facts` directly (hermes-dreaming)
 keep working. Every write is one transaction.

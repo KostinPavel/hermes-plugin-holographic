@@ -478,10 +478,11 @@ class MemoryStore(EntityMixin, HistoryMixin, ExperienceMixin):
         self._invalidate_bank(category)
 
     def _rewrite_fact(self, fact_id: int, content: str, category, tags, *, entities=(), old_category=None,
-                      reset_trust: bool = False, trust: float | None = None) -> None:
+                      reset_trust: bool = False, trust: float | None = None, restore=None) -> None:
         """The current text of a fact changed (change / correct / revert): the row, its entity links (_relink_fact:
         names given with the new text replace the declared ones; without names those stay, but for one only the old
-        text gave), vector and banks follow. reset_trust: a changed fact starts over (default trust, no counts)."""
+        text gave; *restore*: a revert's names of the version it brings back), vector and banks follow. reset_trust: a
+        changed fact starts over (default trust, no counts)."""
         old = self._one("SELECT content FROM facts WHERE fact_id = ?", (fact_id,))
         sets = ["content = ?", "category = ?", "tags = ?", "updated_at = CURRENT_TIMESTAMP"]
         params: list = [content, category or "general", tags or ""]
@@ -496,7 +497,7 @@ class MemoryStore(EntityMixin, HistoryMixin, ExperienceMixin):
         except sqlite3.IntegrityError:
             raise self._duplicate(content) from None
         self._relink_fact(fact_id, content, entities, replace_declared=True,
-                          left_text=old["content"] if old is not None else None)
+                          left_text=old["content"] if old is not None else None, restore=restore)
         self._compute_hrr_vector(fact_id, content)
         self._drop_orphan_entities()
         self._invalidate_bank(old_category)
@@ -509,22 +510,26 @@ class MemoryStore(EntityMixin, HistoryMixin, ExperienceMixin):
         return DuplicateContentError(int(other["fact_id"]) if other else -1)
 
     def _relink_fact(self, fact_id: int, content: str, entities=(), *, replace_declared: bool = False,
-                     left_text: str | None = None) -> None:
+                     left_text: str | None = None, restore=None) -> None:
         """Link a fact to its entities again from *content*, *entities* declared with it. Names someone declared on it
         before stay (a rewording without names: "my teacher" stays the person someone named), unless
         *replace_declared* and *entities* hold a usable name: a new text given with names says who it is about, and the
         earlier declarations go (they used to stay: "Leo's teacher is Ben Cole." changed into "... is Omar Reid."
         with entities [Leo, Omar Reid] was still found by probe "Ben Cole"). Names the new text itself gives are
         linked either way. *left_text*: the text the fact stops saying (change, correct, update, revert): without
-        such names, a declared name it named and *content* does not goes with it, and one no text names stays
-        (versions keep no declared names; see docs/history.md)."""
+        such names, a declared name it named and *content* does not goes with it, and one no text names stays; named
+        is read as entity identity reads names (case folding, accents, aliases: _named_in). *restore*: the names a
+        revert brings back (version_names), declared instead of the current ones."""
         rows = self._conn.execute(
             "SELECT e.entity_id, e.name FROM fact_entities fe JOIN entities e ON e.entity_id = fe.entity_id "
             "WHERE fe.fact_id = ? AND e.entity_type = 'declared'", (fact_id,)).fetchall()
-        if replace_declared and any(_valid_entity(_clean_given(n), given=True) for n in entities or ()):
+        if restore is not None:
+            rows = [(None, name) for name in restore]
+        elif replace_declared and any(_valid_entity(_clean_given(n), given=True) for n in entities or ()):
             rows = []  # a list of blanks or junk replaces nothing: those names are reported as not linked
         elif left_text is not None and rows:
-            undone = self.mentioned_entity_ids(left_text) - self.mentioned_entity_ids(content)
+            ids = [r[0] for r in rows]
+            undone = self._named_in(left_text, ids) - self._named_in(content, ids)
             rows = [r for r in rows if r[0] not in undone]
         self._write("DELETE FROM fact_entities WHERE fact_id = ?", (fact_id,))
         self._link_entities(fact_id, content, [*(r[1] for r in rows), *(entities or ())])
