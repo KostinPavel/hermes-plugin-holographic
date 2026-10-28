@@ -30,6 +30,16 @@ _DELETE_MAX = 100  # names in one delete_entity call
 _MAX_COUNTED_IDS = 500  # record_retrievals batch cap (far under SQLite's bound-parameter limit)
 
 
+def _key_words(text: str) -> list[str]:
+    """The words of *text* as entity identity compares names (entity_key), accents folded: what _named_in matches."""
+    return [text_fold(w) for w in re.findall(r"\w+", entity_key(text))]
+
+
+def _in_a_row(words: list[str], name: list[str]) -> bool:
+    n = len(name)
+    return n > 0 and any(words[i:i + n] == name for i in range(len(words) - n + 1))
+
+
 class EntityMixin:
     """The entity half of MemoryStore. Expects _conn, _lock, _entry, _tx, _one, _write, read, _set_meta,
     _hrr_available, _compute_hrr_vector and _relink_fact of MemoryStore, and digest and scrub of HistoryMixin.
@@ -755,6 +765,25 @@ class EntityMixin:
         """Keys of the "Y" of every "X aka Y" in *texts* (what a forgotten fact said; see _prune_aka_aliases)."""
         return {entity_key(right) for text in texts if text for _, right in self._aka_pairs(text)}
 
+    def _named_in(self, text: str, entity_ids) -> set[int]:
+        """Which of *entity_ids* *text* names: a mention as recall reads it (mentioned_entity_ids), or the words of the
+        entity's name or one of its aliases in a row, compared as entity identity compares names (entity_key: NFKC,
+        casefold, so "strasse" names "Straße") with accents folded ("Jose" names "José")."""
+        wanted = set(entity_ids)
+        found = self.mentioned_entity_ids(text) & wanted
+        words = _key_words(text)
+        for entity_id in sorted(wanted - found):
+            row = self._one("SELECT name, aliases FROM entities WHERE entity_id = ?", (entity_id,))
+            if row is None:
+                continue
+            names = [row["name"], *(row["aliases"] or "").split(",")]
+            if self._entry.get("migrated"):
+                names += [r[0] for r in self._conn.execute("SELECT alias FROM entity_aliases WHERE entity_id = ?",
+                                                           (entity_id,))]
+            if any(_in_a_row(words, _key_words(name)) for name in names if name and name.strip()):
+                found.add(entity_id)
+        return found
+
     def _relink(self, fact_ids) -> None:
         """Link facts to their entities again from their own text, as a new text does (declared links stay)."""
         for fact_id in sorted(set(fact_ids)):
@@ -781,8 +810,12 @@ class EntityMixin:
         """The digests a deleted name is kept under: its key, and its key folded as search folds words (Traditional and
         Simplified Chinese as one, accents dropped), so 台湾大学 is suppressed after 臺灣大學 was deleted (review 0.16.1).
         The first is what 0.16.0 wrote."""
+        return set(self._name_digest_forms(name))
+
+    def _name_digest_forms(self, name: str) -> tuple[str, str, str]:
+        """The three digests of _name_digests in order (key, folded key, key of 0.16.0), as version_names keeps them."""
         key = entity_key(name)
-        return {self.digest("entity " + k) for k in (key, text_fold(key), _entity_key_0160(name))}
+        return tuple(self.digest("entity " + k) for k in (key, text_fold(key), _entity_key_0160(name)))
 
     def _tombstoned(self, name: str) -> bool:
         """Whether delete_entity removed this name: text never creates it again."""
@@ -794,7 +827,9 @@ class EntityMixin:
                          digests) is not None
 
     def _lift_tombstones(self, *names: str) -> None:
-        """Someone named it (entities=[...], alias, rename): a deleted name may be created from text again."""
+        """Someone named it (entities=[...], alias, rename): a deleted name may be created from text again. What a
+        version kept of it went when the tombstone was written (trigger version_names_tombstoned): naming it again
+        brings none of that back."""
         if not self._entry.get("migrated") or self._one("SELECT 1 FROM entity_tombstones LIMIT 1") is None:
             return
         for name in names:
@@ -851,7 +886,9 @@ class EntityMixin:
             plan, ambiguous, textual = [], [], []
             for name in wanted:
                 ids = self.entity_ids(name)
-                if not ids:
+                if not ids and self._version_history_names(name):
+                    plan.append((name, None))  # only what a version kept of it is left (_delete_history_name)
+                elif not ids:
                     missing.append(name)
                 elif len(ids) > 1:
                     ambiguous.append(name)
@@ -867,13 +904,14 @@ class EntityMixin:
                                  + (f" (also: {', '.join(repr(n) for n in textual[1:])})" if textual[1:] else ""))
             if not plan:
                 raise NotFound("no entity is named " + ", ".join(f"'{n}'" for n in missing))
-            done: set[int] = set()
+            done: set = set()
             for name, entity_id in plan:
-                if entity_id in done:
+                seen = entity_id if entity_id is not None else ("history", entity_key(name))
+                if seen in done:
                     covered.append(name)
                     continue
                 deleted.append(self._delete_entity(name))
-                done.add(entity_id)
+                done.add(seen)
         return {"deleted": deleted, "covered": covered, "not_found": missing,
                 "scrub": "done" if self.scrub() else "pending"}
 
@@ -881,6 +919,8 @@ class EntityMixin:
         self._require_writer()
         with self._tx():
             ids = self.entity_ids(name or "")
+            if not ids and self._version_history_names(name):
+                return self._delete_history_name(name)
             if not ids:
                 raise NotFound(f"no entity is named '{(name or '').strip()}'")
             if len(ids) > 1:  # one entity's name and another's alias, in a store an older version wrote (review 0.16.2)
@@ -909,6 +949,10 @@ class EntityMixin:
                 facts |= {r[0] for r in self._conn.execute("SELECT fact_id FROM fact_entities WHERE entity_id = ?", (entity_id,))}
                 self._write("DELETE FROM fact_entities WHERE entity_id = ?", (entity_id,))
                 self._drop_entity_row(entity_id)
+            if self._version_names_ready():  # what versions kept of these names goes, every spelling a tombstone covers
+                self._drop_version_names(names)
+                for key in sorted({entity_key(n) for n in textual_names if entity_key(n)}):
+                    self._write("DELETE FROM version_names WHERE name_key = ?", (key,))
             if self._entry.get("migrated"):
                 for digest in sorted({d for n in names if entity_key(n) for d in self._name_digests(n)}):
                     self._write("INSERT OR IGNORE INTO entity_tombstones (digest) VALUES (?)", (digest,))
@@ -920,6 +964,20 @@ class EntityMixin:
             if textual_names:
                 result["text_aliases_dropped"] = sorted({entity_key(n): n for n in textual_names}.values())
             return result
+
+    def _delete_history_name(self, name: str) -> dict:
+        """delete_entity of a name no entity has any more but a version kept (version_names: declared on a fact whose
+        text changed since, so a revert would bring it back): those rows go, the name gets its tombstone, and the file
+        is rewritten, as for an entity."""
+        spelt = self._version_history_names(name)
+        versions = self._drop_version_names([name, *spelt])
+        if self._entry.get("migrated"):
+            for digest in sorted({d for n in (name, *spelt) for d in self._name_digests(n)}):
+                self._write("INSERT OR IGNORE INTO entity_tombstones (digest) VALUES (?)", (digest,))
+        self._set_meta("scrub_pending", "1")
+        self._bump()
+        return {"entity": spelt[0] if spelt else name.strip(), "deleted": True, "facts_unlinked": 0, "aliases_dropped": 0,
+                "facts_deleted": 0, "past_versions_cleared": versions}
 
     def rename_entity(self, name: str, new_name: str) -> dict:
         """Give an entity another name; its id, links and aliases stay, the old name becomes an alias, and the entity

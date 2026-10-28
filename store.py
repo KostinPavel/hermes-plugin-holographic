@@ -11,11 +11,11 @@ from pathlib import Path
 from . import holographic as hrr
 from .embeddings import text_hash
 from .entities import _GIVEN_ALIAS, _MAX_COUNTED_IDS, _SPLITS, EntityMixin
-from .entity_names import entity_key, fold
+from .entity_names import _clean_given, entity_key, fold
 from .entity_names import (  # noqa: F401 - re-exported: they lived here, and the provider and tests import them from store
     _RE_TOKEN, _capitalized_phrases, _entity_key_0160, _name_shaped, _outside_plain_quotes, _script_pieces, _valid_entity,
     _without_code, unusable_names)
-from .history import HISTORY_SCHEMA, HistoryMixin, NotFound, error_kind, parse_day
+from .history import HISTORY_SCHEMA, VERSION_NAMES_TRIGGERS, HistoryMixin, NotFound, error_kind, parse_day
 from .experience import ExperienceMixin
 
 logger = logging.getLogger(__name__)
@@ -249,7 +249,7 @@ class MemoryStore(EntityMixin, HistoryMixin, ExperienceMixin):
         by the user) and the tombstones of deleted names. The entity index is rebuilt after the migration, by
         _maybe_rebuild_entities. An older version reads such a store as before; one that writes to it as well may
         create a deleted name again from a new fact's text (its next open by this version does not notice that)."""
-        self._conn.executescript(HISTORY_SCHEMA + _EMBEDDINGS_SCHEMA + _ENTITY_SCHEMA)
+        self._conn.executescript(HISTORY_SCHEMA + _EMBEDDINGS_SCHEMA + _ENTITY_SCHEMA + VERSION_NAMES_TRIGGERS)
         with self._tx():
             if "source" not in {r[1] for r in self._conn.execute("PRAGMA table_info(entity_aliases)")}:
                 # 0.16.0. 'legacy': written before, or by an older release since; nothing says whether someone gave it
@@ -435,8 +435,12 @@ class MemoryStore(EntityMixin, HistoryMixin, ExperienceMixin):
                     self._write(f"UPDATE facts SET {assignments} WHERE fact_id = ?", [*changes.values(), fact_id])
             except sqlite3.IntegrityError:
                 raise self._duplicate(content) from None
-            if content is not None:  # re-extract entities (declared links survive a rewording) and recompute the vector
-                self._relink_fact(fact_id, content, entities)
+            if content is not None:  # re-extract entities and recompute the vector; with a new text, names given replace
+                # the declared ones and a declared name only the old text gave goes (_relink_fact); with the same text
+                # names are added, as by entities alone
+                rewritten = content != row["content"]
+                self._relink_fact(fact_id, content, entities, replace_declared=rewritten,
+                                  left_text=row["content"] if rewritten else None)
                 self._compute_hrr_vector(fact_id, content)
                 self._drop_orphan_entities()
             elif entities:  # declare who the fact is about without rewording it
@@ -474,9 +478,12 @@ class MemoryStore(EntityMixin, HistoryMixin, ExperienceMixin):
         self._invalidate_bank(category)
 
     def _rewrite_fact(self, fact_id: int, content: str, category, tags, *, entities=(), old_category=None,
-                      reset_trust: bool = False, trust: float | None = None) -> None:
-        """The current text of a fact changed (change / correct / revert): the row, its entity links (declared ones
-        survive), vector and banks follow. reset_trust: a changed fact starts over (default trust, no counts)."""
+                      reset_trust: bool = False, trust: float | None = None, restore=None) -> None:
+        """The current text of a fact changed (change / correct / revert): the row, its entity links (_relink_fact:
+        names given with the new text replace the declared ones; without names those stay, but for one only the old
+        text gave; *restore*: a revert's names of the version it brings back), vector and banks follow. reset_trust: a
+        changed fact starts over (default trust, no counts)."""
+        old = self._one("SELECT content FROM facts WHERE fact_id = ?", (fact_id,))
         sets = ["content = ?", "category = ?", "tags = ?", "updated_at = CURRENT_TIMESTAMP"]
         params: list = [content, category or "general", tags or ""]
         if reset_trust:  # *trust*, when given, is where it starts over (its origin's, 0.15.0)
@@ -489,7 +496,8 @@ class MemoryStore(EntityMixin, HistoryMixin, ExperienceMixin):
             self._write(f"UPDATE facts SET {', '.join(sets)} WHERE fact_id = ?", [*params, fact_id])
         except sqlite3.IntegrityError:
             raise self._duplicate(content) from None
-        self._relink_fact(fact_id, content, entities)
+        self._relink_fact(fact_id, content, entities, replace_declared=True,
+                          left_text=old["content"] if old is not None else None, restore=restore)
         self._compute_hrr_vector(fact_id, content)
         self._drop_orphan_entities()
         self._invalidate_bank(old_category)
@@ -501,14 +509,30 @@ class MemoryStore(EntityMixin, HistoryMixin, ExperienceMixin):
         other = self._one("SELECT fact_id FROM facts WHERE content = ?", (content,))
         return DuplicateContentError(int(other["fact_id"]) if other else -1)
 
-    def _relink_fact(self, fact_id: int, content: str, entities=()) -> None:
-        """Link a fact to its entities again from *content*: names someone declared on it stay, *entities* are
-        declared with it (a new text, or the same text under other names)."""
-        kept = [r[0] for r in self._conn.execute(
-            "SELECT e.name FROM fact_entities fe JOIN entities e ON e.entity_id = fe.entity_id "
-            "WHERE fe.fact_id = ? AND e.entity_type = 'declared'", (fact_id,))]
+    def _relink_fact(self, fact_id: int, content: str, entities=(), *, replace_declared: bool = False,
+                     left_text: str | None = None, restore=None) -> None:
+        """Link a fact to its entities again from *content*, *entities* declared with it. Names someone declared on it
+        before stay (a rewording without names: "my teacher" stays the person someone named), unless
+        *replace_declared* and *entities* hold a usable name: a new text given with names says who it is about, and the
+        earlier declarations go (they used to stay: "Leo's teacher is Ben Cole." changed into "... is Omar Reid."
+        with entities [Leo, Omar Reid] was still found by probe "Ben Cole"). Names the new text itself gives are
+        linked either way. *left_text*: the text the fact stops saying (change, correct, update, revert): without
+        such names, a declared name it named and *content* does not goes with it, and one no text names stays; named
+        is read as entity identity reads names (case folding, accents, aliases: _named_in). *restore*: the names a
+        revert brings back (version_names), declared instead of the current ones."""
+        rows = self._conn.execute(
+            "SELECT e.entity_id, e.name FROM fact_entities fe JOIN entities e ON e.entity_id = fe.entity_id "
+            "WHERE fe.fact_id = ? AND e.entity_type = 'declared'", (fact_id,)).fetchall()
+        if restore is not None:
+            rows = [(None, name) for name in restore]
+        elif replace_declared and any(_valid_entity(_clean_given(n), given=True) for n in entities or ()):
+            rows = []  # a list of blanks or junk replaces nothing: those names are reported as not linked
+        elif left_text is not None and rows:
+            ids = [r[0] for r in rows]
+            undone = self._named_in(left_text, ids) - self._named_in(content, ids)
+            rows = [r for r in rows if r[0] not in undone]
         self._write("DELETE FROM fact_entities WHERE fact_id = ?", (fact_id,))
-        self._link_entities(fact_id, content, [*kept, *(entities or ())])
+        self._link_entities(fact_id, content, [*(r[1] for r in rows), *(entities or ())])
 
     def _insert_fact_row(self, fact_id: int, version, *, trust: float, entities=()) -> None:
         """Put an ended fact back into the current projection under its own id (resume / revert of an end)."""

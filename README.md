@@ -137,7 +137,10 @@ Optional task outcomes and recorded explanations (separate from trust, off by de
   `valid_from` (the date it started to hold, when the message says). A name in `entities` that cannot be one (a
   path, a URL, `key=value`, a single letter, not a string) is not linked, and the answer of add, update, change and
   correct lists it under `entities_not_linked` by its position in the list (`index`, from 0) with the reason, not
-  the name itself (a refused name may be `KEY=secret`); the fact is stored all the same. Its answer lists `similar` facts,
+  the name itself (a refused name may be `KEY=secret`); the fact is stored all the same. `entities` given with a new
+  text (change, correct, update) replace the names declared on the fact before; without them those stay, but for a
+  name only the old text gave; revert brings back the names of the version it restores (see
+  [Who a new text is about](docs/history.md#who-a-new-text-is-about-unreleased)). Its answer lists `similar` facts,
   `possible_conflicts` (same subject, a different claim) and `past_versions`; the agent decides. Text that is not a
   fact (JSON, tool or chat-role markup, instruction-like phrasing, a credential with its value or a token whose shape
   alone says it is one — an API key prefix, a Telegram bot token (also inside a Bot API address), a JWT, a private key

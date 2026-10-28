@@ -110,8 +110,9 @@ FACT_STORE_SCHEMA = {
             "status": {"type": "string", "enum": ["all", "established", "provisional"],
                        "description": "'entities': which names to list (default all)."},
             "entities": {"type": "array", "items": {"type": "string"},
-                         "description": "'reason': the entities to join. 'add'/'update': who or what the fact is about; "
-                                        "needed for one-word names (e.g. a first name), so later facts link to them. "
+                         "description": "'reason': the entities to join. 'add'/'update'/'change'/'correct': who or what the "
+                                        "fact is about; needed for one-word names (e.g. a first name), so later facts "
+                                        "link to them; with a new text they replace the names given before. "
                                         "'delete_entity': several names at once (up to 100)."},
             "supersedes": {"type": "integer", "description": "'add': the same as change on that id (older prompts)."},
             "origin": {"type": "string", "enum": ["said", "confirmed", "inferred"],
