@@ -13,12 +13,18 @@ experience_trace: on  # optional: bounded candidate/stage ids; off still records
 
 Both default to off. Restart the gateway / start a new session after configuration changes. With experience off,
 the extra tool is absent and no new journal tables or receipts are created. Existing receipts remain subject to
-forget triggers, even after collection is disabled. No new models, endpoints or dependencies are required.
+forget triggers and to the retention limits, even after collection is disabled. No new models, endpoints or
+dependencies are required.
 
-Search returns `memory_attempt`; nonempty prefetch appends an opaque attempt id. Empty successful prefetch also
-records a receipt, available through `fact_experience {action: recent}`. The id identifies an emission, not proof
-that the model used that fact. A record contains exact fact/version references; a concurrent text change makes
-recording fail safely rather than attach the wrong version. Failed collection does not suppress search results;
+Search returns `memory_attempt`; nonempty prefetch appends an opaque attempt id. A prefetch that emits no facts
+(nothing matched, or every match was filtered or recalled recently) records nothing and opens no journal write.
+An explicit `fact_store search` with no results still returns a receipt, so the agent can report a `dead_end` or
+`missing_evidence` outcome for the search it asked for. The id identifies an emission, not proof
+that the model used that fact. A record contains exact fact/version references; a concurrent text change of an
+emitted fact makes recording fail safely rather than attach the wrong version. With `experience_trace`, a
+non-emitted candidate that another writer changed or forgot during retrieval (for example while the reranker
+answers) is left out of its stage, and the stage carries `changed: <count>`; the receipt is still recorded.
+Failed collection does not suppress search results;
 warnings and `recent.error_kind` expose it. Historical `as_of` search is currently not recorded.
 When another process holds SQLite's write lock, recording an attempt uses a 50 ms SQLite busy timeout per lock
 acquisition (or less if the connection already has a smaller timeout) and retries a busy failure once.
@@ -69,7 +75,10 @@ Internal FTS scoring and every substage are not reconstructed. The default repor
 
 The lazy additive schema is `experience_schema=1`. Limits per store: 30 days, 1000 attempts, 10 outcome revisions per
 attempt, 16 stages with up to 100 candidate references each, 20 correction references. TTL/overflow pruning occurs
-on the next receipt write; expired receipts cannot be read or receive new feedback. The journal is bounded, but
+on the next receipt write and whenever a writer context opens the store, also with `experience: off`, so outcome
+text does not outlive the limits after collection is disabled. Opening never creates the journal and never removes
+unexpired receipts within the cap; a busy database skips this pruning until the next open or receipt write.
+Expired receipts cannot be read or receive new feedback. The journal is bounded, but
 small fixed limits are not a performance guarantee for any machine or corpus.
 
 Forgetting any referenced fact/version removes the entire dependent receipt, outcome text and correction references

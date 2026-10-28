@@ -481,3 +481,168 @@ def test_completed_trace_does_not_keep_a_second_in_memory_copy(provider):
     fid, _ = seed(provider)
     call(provider, "forget", fact_id=fid)
     assert provider._experience_stages == []
+
+
+@pytest.mark.parametrize("left_present", ["end", "merge"])
+def test_forget_of_a_fact_no_longer_current_erases_its_receipt(provider, left_present):
+    # An ended or merged fact has no `facts` row any more: only its versions tie the receipt to it.
+    fid, aid = seed(provider)
+    assert experience(provider, "outcome", attempt_id=aid, event_id="before-forget", outcome="corrected",
+                      reason="wrong_entity", correction="The corrected destination is the cobalt depot.")["recorded"]
+    if left_present == "end":
+        assert "error" not in call(provider, "end", fact_id=fid)
+    else:
+        keep = call(provider, "add", content="Alice Smith is working on the observatory project")["fact_id"]
+        assert "error" not in call(provider, "merge", fact_id=keep, **{"from": [fid]})
+    assert experience(provider, "explain", attempt_id=aid)["status"] == "ok"
+    assert call(provider, "forget", fact_id=fid)["forgotten"]
+    assert experience(provider, "explain", attempt_id=aid)["status"] == "not_recorded"
+    for table in ("memory_attempts", "memory_attempt_refs", "memory_outcomes"):
+        assert not provider._store.read(f"SELECT 1 FROM {table} WHERE attempt_id = ?", (aid,)), table
+    assert not provider._store.read("SELECT 1 FROM memory_attempt_refs WHERE fact_id = ?", (fid,))
+    assert b"cobalt depot" not in provider._store.db_path.read_bytes()
+
+
+def test_prefetch_that_recalls_nothing_writes_nothing(provider):
+    call(provider, "add", content="Alice Smith works on the observatory project")
+    begins = []
+    conn = provider._store._conn
+    conn.set_trace_callback(lambda sql: begins.append(sql) if sql.upper().startswith("BEGIN IMMEDIATE") else None)
+    try:
+        assert provider.prefetch("unicorn zeppelin", session_id="quiet-task") == ""
+        assert begins == []
+        assert not provider._store.experience_ready()
+        assert "Memory attempt:" in provider.prefetch("Alice observatory", session_id="quiet-task")
+        assert len(experience(provider, "recent")["attempts"]) == 1
+        # Found again, but already injected this session: nothing is emitted, so nothing is journaled.
+        begins.clear()
+        assert provider.prefetch("Alice observatory", session_id="quiet-task") == ""
+        assert begins == []
+    finally:
+        conn.set_trace_callback(None)
+    assert len(experience(provider, "recent")["attempts"]) == 1
+
+
+def test_retention_applies_when_a_writer_opens_the_store_with_collection_off(tmp_path):
+    from hermes_plugin_holographic import experience as journal
+    db = str(tmp_path / "facts.db")
+    on = HolographicMemoryProvider({"db_path": db, "experience": "on"})
+    on.initialize(session_id="earlier")
+    try:
+        call(on, "add", content="Alice Smith works on the observatory project")
+        old = call(on, "search", query="Alice observatory")["memory_attempt"]
+        recent = call(on, "search", query="Alice observatory")["memory_attempt"]
+        assert experience(on, "outcome", attempt_id=old, event_id="old-result", outcome="corrected",
+                          reason="wrong_entity", correction="Use the amber warehouse record instead.")["recorded"]
+        on._store._conn.execute("UPDATE memory_attempts SET created_at = ? WHERE attempt_id = ?",
+                                (time.time() - journal.TTL - 60, old))
+    finally:
+        on.shutdown()
+    off = HolographicMemoryProvider({"db_path": db})
+    off.initialize(session_id="later")
+    try:
+        assert [r[0] for r in off._store.read("SELECT attempt_id FROM memory_attempts")] == [recent]
+        assert not off._store.read("SELECT 1 FROM memory_outcomes")
+        assert not off._store.read("SELECT 1 FROM memory_attempt_refs WHERE attempt_id = ?", (old,))
+    finally:
+        off.shutdown()
+
+
+def test_retention_cap_applies_on_open_and_absent_journal_is_not_created(tmp_path):
+    from hermes_plugin_holographic import experience as journal
+    db = str(tmp_path / "facts.db")
+    on = HolographicMemoryProvider({"db_path": db, "experience": "on"})
+    on.initialize(session_id="earlier")
+    try:
+        call(on, "add", content="Alice Smith works on the observatory project")
+        newest = call(on, "search", query="Alice observatory")["memory_attempt"]
+        now = time.time()
+        on._store._conn.executemany("INSERT INTO memory_attempts VALUES (?,?,?,?,?,?,?)",
+            [(f"older-{i}", now - 3600 - i, "search", "s", "[]", "[]", "not_recorded")
+             for i in range(journal.MAX_ATTEMPTS)])
+    finally:
+        on.shutdown()
+    off = HolographicMemoryProvider({"db_path": db})
+    off.initialize(session_id="later")
+    try:
+        kept = {r[0] for r in off._store.read("SELECT attempt_id FROM memory_attempts")}
+        assert len(kept) == journal.MAX_ATTEMPTS
+        assert newest in kept and f"older-{journal.MAX_ATTEMPTS - 1}" not in kept
+    finally:
+        off.shutdown()
+    fresh = HolographicMemoryProvider({"db_path": str(tmp_path / "never.db")})
+    fresh.initialize(session_id="never")
+    try:
+        assert not fresh._store.experience_ready()
+    finally:
+        fresh.shutdown()
+
+
+class _RerankAnswer:
+    def __init__(self, body):
+        self.body, self.at = body, 0
+
+    def read(self, n=-1):
+        piece = self.body[self.at:] if n is None or n < 0 else self.body[self.at:self.at + n]
+        self.at += len(piece)
+        return piece
+
+    read1 = read
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _second_writer(db_path):
+    """Another provider on its own SQLite connection, as another process would have."""
+    module_file = sys.modules[HolographicMemoryProvider.__module__].__file__
+    spec = importlib.util.spec_from_file_location("journal_second_writer", module_file,
+        submodule_search_locations=[str(Path(module_file).parent)])
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    other = module.HolographicMemoryProvider({"db_path": str(db_path)})
+    other.initialize(session_id="second-writer")
+    return other, spec.name
+
+
+def test_trace_keeps_receipt_when_an_unemitted_candidate_changes_during_rerank(tmp_path, monkeypatch):
+    from hermes_plugin_holographic import rerank
+    p = HolographicMemoryProvider({"db_path": str(tmp_path / "facts.db"), "experience": "on", "experience_trace": "on",
+                                   "rerank": "on", "rerank_url": "https://rerank.example.net/v1/rerank",
+                                   "rerank_model": "stub-reranker"})
+    p.initialize(session_id="rerank-task")
+    other, module_name = _second_writer(p._store.db_path)
+    try:
+        call(p, "add", content="Boris Petrov maintains the harbour crane schedule")
+        call(p, "add", content="Boris Petrov prefers tea over coffee")
+        bystander = call(p, "add", content="The harbour crane schedule changes on Mondays")["fact_id"]
+
+        class Endpoint:
+            def open(self, request, timeout=None):
+                # The cross-encoder call takes a while; another writer changes a candidate meanwhile.
+                assert "error" not in call(other, "change", fact_id=bystander,
+                                           content="The harbour crane schedule changes on Tuesdays")
+                n = len(json.loads(request.data)["documents"])
+                return _RerankAnswer(json.dumps({"results": [{"index": i, "relevance_score": float(n - i)}
+                                                             for i in range(n)]}).encode())
+
+        monkeypatch.setattr(rerank, "_OPENER", Endpoint())
+        block = p.prefetch("Did Boris Petrov say anything about the crane?", session_id="turn")
+        assert f"#{bystander}" not in block
+        assert "Memory attempt:" in block, experience(p, "recent")["error_kind"]
+        aid = block.rsplit("Memory attempt: ", 1)[1].strip()
+        report = experience(p, "explain", attempt_id=aid)
+        assert report["status"] == "ok"
+        assert report["emitted"] and all(f"#{r['fact_id']} " in block for r in report["emitted"])
+        lexical = next(s for s in report["stages"] if s["stage"] == "lexical_candidates")
+        assert all(r["fact_id"] != bystander for s in report["stages"] for r in s["facts"])
+        assert lexical["changed"] == 1
+        assert "Mondays" not in json.dumps(report) and "Tuesdays" not in json.dumps(report)
+    finally:
+        other.shutdown()
+        sys.modules.pop(module_name, None)
+        p.shutdown()

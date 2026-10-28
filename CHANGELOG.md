@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.20.2 — 2026-10-28
+
+### Fixed
+- A prefetch that emits no facts no longer writes a task-outcome receipt or opens a journal write transaction on every quiet turn, and empty turns no longer push useful receipts out of the 1000-attempt cap. An explicit `fact_store search` with no results still returns `memory_attempt`, so the agent can rate it.
+- Journal retention (30 days, 1000 attempts) also runs when a writer opens the store with `experience: off`, so outcome and correction text does not stay forever after collection is disabled. Opening never creates the journal and keeps unexpired receipts.
+- With `experience_trace` on, a non-emitted candidate changed or forgotten by another writer during recall (for example while the reranker answers) no longer drops the whole receipt: it is left out of its stage and counted as `changed`. A changed emitted fact still refuses the receipt.
+- Test coverage for forgetting an ended or merged fact: its receipt, outcome and correction are erased through the version trigger.
+
 ## 0.20.1 — 2026-10-27
 
 ### Fixed

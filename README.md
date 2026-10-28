@@ -25,11 +25,12 @@ experience_trace: on  # optional: candidate/stage ids as well as the actual emis
 ```
 
 Both are off by default. When enabled, `fact_experience` provides `recent`, `outcome` and `explain`; a search returns
-`memory_attempt`, and prefetch identifies a nonempty emission. Explain reads that original snapshot without replaying
-search or calling a model. Task outcomes are agent reports, never authenticated human confirmations; old
+`memory_attempt`, and prefetch identifies a nonempty emission; a prefetch that recalls nothing writes nothing.
+Explain reads that original snapshot without replaying search or calling a model. Task outcomes are agent reports, never authenticated human confirmations; old
 `fact_feedback` calls keep their original meaning and are not imported as duplicate evidence.
 
-Records expire after 30 days, with at most 1000 attempts per scoped database and 10 revisions per attempt. Forgetting
+Records expire after 30 days, with at most 1000 attempts per scoped database and 10 revisions per attempt; the limits
+also apply when a writer opens the store with collection turned off. Forgetting
 a referenced fact/version also erases the dependent task/correction; merge and end preserve history. Detailed tracing
 costs local storage and synchronous writes; no fixed latency or token-saving percentage is promised.
 If the journal encounters a busy SQLite writer, it retries briefly with limited SQLite busy waits. After repeated
