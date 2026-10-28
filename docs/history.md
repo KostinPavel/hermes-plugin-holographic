@@ -63,14 +63,15 @@ Changing tags, keywords, category or trust is not a new version: it edits the cu
 `entities` replace the names declared on the fact before: changed from "Leo's guitar teacher is Ben Cole." into
 "... is Omar Reid." with `entities: ["Leo", "Omar Reid"]`, the fact is no longer found by `probe {entity: "Ben Cole"}`
 (before, the old declaration stayed and attributed the new text to the old person). A name the new text itself
-gives stays linked whether or not it is given again. Without `entities`, names declared before stay: a fact about
-"my teacher" declared as Ben Cole keeps him across a rewording that names nobody. A list whose names are all
-unusable (blank, a path, a URL) replaces nothing. With the same text (`correct` of the date only, `update` with the
+gives stays linked whether or not it is given again. Without `entities`, a declared name the old text named and
+the new text does not goes with the old text (the same change without names is not found under Ben Cole either);
+a declared name no text says stays: a fact about "my teacher" declared as Ben Cole keeps him across a rewording.
+A list whose names are all unusable (blank, a path, a URL) replaces nothing and is read as no names. With the same text (`correct` of the date only, `update` with the
 text it already has, a change into a text another fact holds, `merge`) names given are added, as before.
 
-`revert` undoes a new text without new names: versions keep their text, not the names declared with it, so the
-restored text is linked from itself and a declared name stays unless the undone text named it and the restored one
-does not (reverting the change above brings back Ben Cole and drops Omar Reid). The limit: a name no text says
+`revert` is a new text without names: versions keep their text, not the names declared with it, so the restored
+text is linked from itself and a declared name stays unless the undone text named it and the restored one does not
+(reverting the change above brings back Ben Cole and drops Omar Reid). The limit: a name no text says
 cannot be told apart — a person declared on "my teacher" and replaced by another stays replaced after the revert,
 and is given again with `update {fact_id, entities}`.
 

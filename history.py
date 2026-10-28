@@ -615,7 +615,7 @@ class HistoryMixin:
             self._fix_predecessor(prev["version_id"])
             trust = prev["trust_score"] if prev["trust_score"] is not None else fact["trust_score"]
             self._rewrite_fact(fact_id, prev["content"], prev["category"], prev["tags"], old_category=fact["category"],
-                               trust=trust, left_text=fact["content"])  # names only the undone text gave go with it
+                               trust=trust)  # names only the undone text gave go with it (_relink_fact)
             return {"fact_id": fact_id, "status": "reverted", "current_version": int(prev["seq"])}
 
     def forget_fact(self, fact_id: int) -> dict:

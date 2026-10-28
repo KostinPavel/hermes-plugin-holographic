@@ -435,9 +435,12 @@ class MemoryStore(EntityMixin, HistoryMixin, ExperienceMixin):
                     self._write(f"UPDATE facts SET {assignments} WHERE fact_id = ?", [*changes.values(), fact_id])
             except sqlite3.IntegrityError:
                 raise self._duplicate(content) from None
-            if content is not None:  # re-extract entities and recompute the vector; names given with a new text replace
-                # the declared ones (_relink_fact), with the same text they are added as by entities alone
-                self._relink_fact(fact_id, content, entities, replace_declared=content != row["content"])
+            if content is not None:  # re-extract entities and recompute the vector; with a new text, names given replace
+                # the declared ones and a declared name only the old text gave goes (_relink_fact); with the same text
+                # names are added, as by entities alone
+                rewritten = content != row["content"]
+                self._relink_fact(fact_id, content, entities, replace_declared=rewritten,
+                                  left_text=row["content"] if rewritten else None)
                 self._compute_hrr_vector(fact_id, content)
                 self._drop_orphan_entities()
             elif entities:  # declare who the fact is about without rewording it
@@ -475,10 +478,11 @@ class MemoryStore(EntityMixin, HistoryMixin, ExperienceMixin):
         self._invalidate_bank(category)
 
     def _rewrite_fact(self, fact_id: int, content: str, category, tags, *, entities=(), old_category=None,
-                      reset_trust: bool = False, trust: float | None = None, left_text: str | None = None) -> None:
+                      reset_trust: bool = False, trust: float | None = None) -> None:
         """The current text of a fact changed (change / correct / revert): the row, its entity links (_relink_fact:
-        names given with the new text replace the declared ones, without names those stay), vector and banks follow.
-        reset_trust: a changed fact starts over (default trust, no counts). left_text: a revert's undone text."""
+        names given with the new text replace the declared ones; without names those stay, but for one only the old
+        text gave), vector and banks follow. reset_trust: a changed fact starts over (default trust, no counts)."""
+        old = self._one("SELECT content FROM facts WHERE fact_id = ?", (fact_id,))
         sets = ["content = ?", "category = ?", "tags = ?", "updated_at = CURRENT_TIMESTAMP"]
         params: list = [content, category or "general", tags or ""]
         if reset_trust:  # *trust*, when given, is where it starts over (its origin's, 0.15.0)
@@ -491,7 +495,8 @@ class MemoryStore(EntityMixin, HistoryMixin, ExperienceMixin):
             self._write(f"UPDATE facts SET {', '.join(sets)} WHERE fact_id = ?", [*params, fact_id])
         except sqlite3.IntegrityError:
             raise self._duplicate(content) from None
-        self._relink_fact(fact_id, content, entities, replace_declared=True, left_text=left_text)
+        self._relink_fact(fact_id, content, entities, replace_declared=True,
+                          left_text=old["content"] if old is not None else None)
         self._compute_hrr_vector(fact_id, content)
         self._drop_orphan_entities()
         self._invalidate_bank(old_category)
@@ -510,8 +515,9 @@ class MemoryStore(EntityMixin, HistoryMixin, ExperienceMixin):
         *replace_declared* and *entities* hold a usable name: a new text given with names says who it is about, and the
         earlier declarations go (they used to stay: "Leo's teacher is Ben Cole." changed into "... is Omar Reid."
         with entities [Leo, Omar Reid] was still found by probe "Ben Cole"). Names the new text itself gives are
-        linked either way. *left_text*: the text the fact stops saying (a revert): a declared name it named and
-        *content* does not goes with it (versions keep no declared names; see docs/history.md)."""
+        linked either way. *left_text*: the text the fact stops saying (change, correct, update, revert): without
+        such names, a declared name it named and *content* does not goes with it, and one no text names stays
+        (versions keep no declared names; see docs/history.md)."""
         rows = self._conn.execute(
             "SELECT e.entity_id, e.name FROM fact_entities fe JOIN entities e ON e.entity_id = fe.entity_id "
             "WHERE fe.fact_id = ? AND e.entity_type = 'declared'", (fact_id,)).fetchall()

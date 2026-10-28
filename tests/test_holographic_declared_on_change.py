@@ -2,8 +2,9 @@
 
 Requirement: when the user's agent changes or corrects a fact and says who the new text is about (`entities`), a person
 the fact named before and no longer names must stop being linked to it — otherwise probe/reason by that person keeps
-returning a fact about someone else. Without `entities`, names declared earlier stay (a fact about "my teacher"
-declared as a person keeps that person across a rewording). Undoing such a change brings the old names back as far as
+returning a fact about someone else. Without `entities`, the same holds for a declared name only the old text gave;
+a declared name no text says stays (a fact about "my teacher" declared as a person keeps that person across a
+rewording). Undoing such a change brings the old names back as far as
 the texts tell them. Names here are made up."""
 from __future__ import annotations
 
@@ -110,4 +111,20 @@ def test_reverting_a_rewording_keeps_a_name_no_text_gives(p):
     fid = _add(p, "My teacher plays in a jazz trio.", "Ben Cole")
     _call(p, action="change", fact_id=fid, content="My teacher left the jazz trio.")
     _call(p, action="revert", fact_id=fid)
+    assert _names(p, fid) == ["Ben Cole"]
+
+
+@pytest.mark.parametrize("action", ["change", "correct", "update"])
+def test_a_new_text_without_names_is_not_found_under_a_name_only_the_old_text_gave(p, action):
+    fid = _add(p, OLD, "Leo", "Ben Cole")
+    _add(p, "Ben Cole holds lessons at the Oak Street studio.", "Ben Cole")
+    _call(p, action=action, fact_id=fid, content=NEW)
+    assert NEW not in _probed(p, "Ben Cole")
+    assert NEW in _probed(p, "Leo")
+
+
+@pytest.mark.parametrize("action", ["change", "correct", "update"])
+def test_a_name_no_text_gives_survives_a_new_text_without_names(p, action):
+    fid = _add(p, "My teacher plays in a jazz trio on Fridays.", "Ben Cole")
+    _call(p, action=action, fact_id=fid, content="My teacher plays in a jazz trio on Saturdays.")
     assert _names(p, fid) == ["Ben Cole"]
