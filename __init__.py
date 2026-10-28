@@ -931,6 +931,15 @@ class HolographicMemoryProvider(MemoryProvider):
                  "- A stored fact that is no longer true: change it (it changed), end it (it no longer holds), correct "
                  "it (it was wrong); the history is kept. \"Forget it\" from the user: forget {fact_id}.",
                  "- Rate recalled facts (#id) with fact_feedback when they help or are wrong."]
+        # Opt-in journal (0.20.3): nothing asked the agent to report outcomes, so none were. Fixed per session (the
+        # setting and the context do not change mid-session), so the block stays byte-stable; read-only contexts
+        # record no attempts and get no line.
+        if self._experience and self._tool_writable:
+            lines.append("- The person corrects or rejects an answer that used recalled facts: fact_experience outcome "
+                         "{attempt_id: the Memory attempt id, event_id: a new one, outcome: corrected or dead_end, "
+                         "reason, correction?: one short line}; useful (reason other) only when they say it was "
+                         "right. Not every turn. It is your report, not their confirmation, and changes no fact: a "
+                         "wrong fact still needs change/correct, with their say-so.")
         if not hrr.has_numpy():
             lines.append("- numpy is not installed: keyword recall only (no structural 'related').")
         if self._scope == "user":
