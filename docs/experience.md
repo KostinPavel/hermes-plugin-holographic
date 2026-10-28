@@ -20,6 +20,20 @@ records a receipt, available through `fact_experience {action: recent}`. The id 
 that the model used that fact. A record contains exact fact/version references; a concurrent text change makes
 recording fail safely rather than attach the wrong version. Failed collection does not suppress search results;
 warnings and `recent.error_kind` expose it. Historical `as_of` search is currently not recorded.
+When another process holds SQLite's write lock, recording an attempt uses a 50 ms SQLite busy timeout per lock
+acquisition (or less if the connection already has a smaller timeout) and retries a busy failure once.
+Each transaction is rolled back before retrying and current versions are checked again, so a stale or forgotten
+fact cannot be attached as a current receipt. Actual elapsed time may be longer because of SQLite's retry intervals,
+scheduling, other locks or disk delays. If all tries fail, search still returns without `memory_attempt`;
+`recent.error_kind` and a warning report the failure. The attempt is not queued or recovered later, and a crash can
+also prevent it being recorded. The connection's original busy timeout is restored for other operations. This is not
+an overall search or disk-latency guarantee.
+Attempts taking 25 ms or more write a warning with elapsed shared lock, schema, transaction begin, SQL work, commit
+(or rollback), transaction and total time, try count and success or error status. Schema and transaction times sum
+all tries; begin/work/commit describe the last try. A dash marks a stage not reached. SQLite
+and operating-system scheduling can contribute to each phase; these timings don't prove a disk or locking cause.
+The diagnostic includes no query, fact, correction, or identifier text.
+The timing starts when journal recording begins, so a search already delayed before that point is outside this log.
 
 The new tool is available only while collection is enabled:
 

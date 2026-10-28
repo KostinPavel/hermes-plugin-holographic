@@ -1,6 +1,11 @@
 """Task outcomes describe relevance, never the truth of a stored claim."""
 import json
+import importlib.util
+from pathlib import Path
 import sqlite3
+import sys
+import threading
+import time
 
 import pytest
 
@@ -209,6 +214,245 @@ def test_busy_journal_does_not_suppress_search(provider):
         external.rollback()
         external.close()
         provider._store._conn.execute("PRAGMA busy_timeout=10000")
+
+
+def test_journal_retries_transient_sqlite_writer_without_duplicate_attempts(provider):
+    seed(provider)
+    initial = len(experience(provider, "recent")["attempts"])
+    acquired, release = threading.Event(), threading.Event()
+    attempts = []
+
+    def writer():
+        external = sqlite3.connect(provider._store.db_path, isolation_level=None)
+        try:
+            external.execute("BEGIN IMMEDIATE")
+            acquired.set()
+            release.wait(3)
+            external.execute("ROLLBACK")
+        finally:
+            external.close()
+
+    def trace(statement):
+        if statement.upper().startswith("BEGIN IMMEDIATE"):
+            attempts.append(statement)
+            if len(attempts) >= 2:
+                release.set()
+
+    thread = threading.Thread(target=writer)
+    thread.start()
+    try:
+        assert acquired.wait(5)
+        provider._store._conn.set_trace_callback(trace)
+        result = call(provider, "search", query="Alice observatory")
+        assert result.get("memory_attempt"), "temporary SQLite contention lost the receipt"
+        assert len(attempts) >= 2
+        assert len(experience(provider, "recent")["attempts"]) == initial + 1
+        assert experience(provider, "recent")["error_kind"] == ""
+    finally:
+        provider._store._conn.set_trace_callback(None)
+        release.set()
+        thread.join(5)
+    assert not thread.is_alive()
+
+
+def test_invalid_reference_is_not_retried_or_stored(provider):
+    fid, _ = seed(provider)
+    before = len(experience(provider, "recent")["attempts"])
+    fact = dict(provider._store.read("SELECT * FROM facts WHERE fact_id=?", (fid,))[0])
+    fact["content"] = "Outdated content for this fact"
+    begins = []
+    provider._store._conn.set_trace_callback(lambda sql: begins.append(sql) if sql.upper().startswith("BEGIN IMMEDIATE") else None)
+    try:
+        with pytest.raises(ValueError, match="Memory changed during retrieval"):
+            provider._store.record_attempt("search", [fact], [], provider._experience_session())
+    finally:
+        provider._store._conn.set_trace_callback(None)
+    assert len(begins) == 1
+    assert len(experience(provider, "recent")["attempts"]) == before
+
+
+def test_nonbusy_sqlite_failure_is_not_retried(provider):
+    seed(provider)
+    facts = [dict(r) for r in provider._store.read("SELECT * FROM facts LIMIT 1")]
+    begins = []
+    provider._store._conn.execute("PRAGMA query_only=ON")
+    provider._store._conn.set_trace_callback(lambda sql: begins.append(sql) if sql.upper().startswith("BEGIN IMMEDIATE") else None)
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            provider._store.record_attempt("search", facts, [], provider._experience_session())
+    finally:
+        provider._store._conn.set_trace_callback(None)
+        provider._store._conn.execute("PRAGMA query_only=OFF")
+    assert len(begins) == 1
+    assert not provider._store._conn.in_transaction
+
+
+def test_retry_after_blocked_commit_records_once(provider):
+    seed(provider)
+    before = len(experience(provider, "recent")["attempts"])
+    assert provider._store._conn.execute("PRAGMA journal_mode=DELETE").fetchone()[0] == "delete"
+    acquired, release = threading.Event(), threading.Event()
+    begins = []
+
+    def reader():
+        external = sqlite3.connect(provider._store.db_path, isolation_level=None)
+        try:
+            external.execute("BEGIN")
+            external.execute("SELECT count(*) FROM facts").fetchone()
+            acquired.set()
+            release.wait(3)
+            external.execute("ROLLBACK")
+        finally:
+            external.close()
+
+    def trace(statement):
+        if statement.upper().startswith("BEGIN IMMEDIATE"):
+            begins.append(statement)
+            if len(begins) >= 2:
+                release.set()
+
+    thread = threading.Thread(target=reader)
+    thread.start()
+    try:
+        assert acquired.wait(5)
+        provider._store._conn.set_trace_callback(trace)
+        result = call(provider, "search", query="Alice observatory")
+        assert result.get("memory_attempt"), "a temporary reader lock lost the receipt"
+        assert len(begins) >= 2
+        assert len(experience(provider, "recent")["attempts"]) == before + 1
+        assert not provider._store._conn.in_transaction
+    finally:
+        provider._store._conn.set_trace_callback(None)
+        release.set()
+        thread.join(5)
+    assert not thread.is_alive()
+
+
+@pytest.mark.parametrize("operation", ["change", "forget"])
+def test_retry_refuses_a_fact_changed_or_forgotten_between_attempts(provider, operation):
+    fid, _ = seed(provider)
+    module = sys.modules[HolographicMemoryProvider.__module__]
+    module_file = module.__file__
+    spec = importlib.util.spec_from_file_location("retry_other_provider", module_file,
+        submodule_search_locations=[str(Path(module_file).parent)])
+    other_module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = other_module
+    spec.loader.exec_module(other_module)
+    other = other_module.HolographicMemoryProvider({"db_path": str(provider._store.db_path), "experience": "on"})
+    other.initialize(session_id="other-session")
+    acquired, release, changed = threading.Event(), threading.Event(), threading.Event()
+    events, result_other, callback_wait = [], [], []
+
+    def concurrent_change():
+        try:
+            other._store._conn.execute("BEGIN IMMEDIATE")
+            acquired.set()
+            release.wait(5)
+            other._store._conn.execute("ROLLBACK")
+            args = {"fact_id": fid}
+            if operation == "change":
+                args["content"] = "Alice Smith now works on the museum project"
+            result_other.append(call(other, operation, **args))
+        finally:
+            changed.set()
+
+    def trace(statement):
+        if statement.upper().startswith("BEGIN IMMEDIATE"):
+            events.append(statement)
+            if len(events) == 2:
+                release.set()
+                callback_wait.append(changed.wait(5))
+
+    thread = threading.Thread(target=concurrent_change)
+    thread.start()
+    try:
+        assert acquired.wait(5)
+        provider._store._conn.set_trace_callback(trace)
+        result = call(provider, "search", query="Alice observatory")
+        assert len(events) >= 2 and callback_wait == [True]
+        assert result_other and "error" not in result_other[0], result_other
+        assert result["results"] and "memory_attempt" not in result
+        assert experience(provider, "recent")["error_kind"].startswith("ValueError")
+    finally:
+        provider._store._conn.set_trace_callback(None)
+        release.set()
+        thread.join(8)
+        other.shutdown()
+        sys.modules.pop(spec.name, None)
+    assert not thread.is_alive()
+
+
+def test_external_writer_cannot_stall_search_for_journal(provider, caplog):
+    seed(provider)
+    acquired, release = threading.Event(), threading.Event()
+
+    def writer():
+        external = sqlite3.connect(provider._store.db_path, isolation_level=None)
+        try:
+            external.execute("BEGIN IMMEDIATE")
+            acquired.set()
+            release.wait(2)
+            external.execute("ROLLBACK")
+        finally:
+            external.close()
+
+    thread = threading.Thread(target=writer)
+    thread.start()
+    try:
+        assert acquired.wait(5)
+        start = time.monotonic()
+        result = call(provider, "search", query="Alice observatory")
+        elapsed = time.monotonic() - start
+        assert elapsed < 0.5, f"optional journal held search for {elapsed:.2f} seconds"
+        assert result["results"] and "memory_attempt" not in result
+        assert experience(provider, "recent")["error_kind"].startswith("OperationalError")
+        diagnostic = [r.getMessage() for r in caplog.records if "experience slow" in r.getMessage()]
+        assert diagnostic and all(field in diagnostic[-1] for field in ("lock_ms=", "schema_ms=", "begin_ms=", "work_ms=", "commit_ms=", "total_ms="))
+        assert "Alice" not in diagnostic[-1]
+        assert provider._store._conn.execute("PRAGMA busy_timeout").fetchone()[0] == 10000
+    finally:
+        release.set()
+        thread.join(5)
+    assert not thread.is_alive()
+    assert call(provider, "search", query="Alice observatory")["memory_attempt"]
+    assert experience(provider, "recent")["error_kind"] == ""
+
+
+def test_delete_mode_reader_cannot_hold_journal_commit(provider, caplog):
+    seed(provider)
+    assert provider._store._conn.execute("PRAGMA journal_mode=DELETE").fetchone()[0] == "delete"
+    acquired, release = threading.Event(), threading.Event()
+
+    def reader():
+        external = sqlite3.connect(provider._store.db_path, isolation_level=None)
+        try:
+            external.execute("BEGIN")
+            external.execute("SELECT count(*) FROM facts").fetchone()
+            acquired.set()
+            release.wait(2)
+            external.execute("ROLLBACK")
+        finally:
+            external.close()
+
+    thread = threading.Thread(target=reader)
+    thread.start()
+    try:
+        assert acquired.wait(5)
+        start = time.monotonic()
+        result = call(provider, "search", query="Alice observatory")
+        elapsed = time.monotonic() - start
+        assert elapsed < 0.5, f"journal commit held search for {elapsed:.2f} seconds"
+        assert result["results"] and "memory_attempt" not in result
+        assert experience(provider, "recent")["error_kind"].startswith("OperationalError")
+        diagnostic = [r.getMessage() for r in caplog.records if "experience slow" in r.getMessage()]
+        assert diagnostic and "commit_ms=-" not in diagnostic[-1]
+        assert not provider._store._conn.in_transaction
+        assert provider._store._conn.execute("PRAGMA busy_timeout").fetchone()[0] == 10000
+    finally:
+        release.set()
+        thread.join(5)
+    assert not thread.is_alive()
+    assert call(provider, "search", query="Alice observatory")["memory_attempt"]
 
 
 def test_merge_then_forget_keep_erases_outcomes_of_copy(provider):

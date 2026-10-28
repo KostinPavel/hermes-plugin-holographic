@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.20.1 — 2026-10-27
+
+### Fixed
+- Bound individual SQLite busy waits while recording optional task outcomes, retry brief contention and preserve search results if the journal remains unavailable. Slow warnings show stage timings without memory text. SQLite timeout does not guarantee overall search latency; an attempt that cannot be saved is not queued.
+
 ## 0.20.0 — 2026-10-27
 
 ### Added
