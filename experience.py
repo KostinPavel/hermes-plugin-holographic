@@ -85,9 +85,33 @@ class ExperienceMixin:
             raise ValueError("Unsupported experience schema")
 
     def _prune_experiences(self):
+        outcomes = self._one("SELECT count(*) AS n FROM memory_outcomes")["n"]
         self._conn.execute("DELETE FROM memory_attempts WHERE created_at <= ?", (time.time() - TTL,))
         self._conn.execute("DELETE FROM memory_attempts WHERE attempt_id IN (SELECT attempt_id FROM "
                            "memory_attempts ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET ?)", (MAX_ATTEMPTS,))
+        if self._one("SELECT count(*) AS n FROM memory_outcomes")["n"] < outcomes:
+            self._set_meta("scrub_pending", "1")  # an outcome's free text went: the file is rewritten as after a forget
+
+    def prune_experiences(self):
+        """Retention when a writer opens the store, collection on or off: outcome text must not outlive the limits
+        because nothing records any more. Never creates the journal; returns the number of receipts removed."""
+        with self._lock:
+            if not self.experience_ready():
+                return 0
+            due = self._one("SELECT count(*) AS n, coalesce(sum(created_at <= ?), 0) AS expired FROM memory_attempts",
+                            (time.time() - TTL,))
+            if not due["expired"] and due["n"] <= MAX_ATTEMPTS:
+                return 0  # the normal open: a read, no write transaction
+            prior_timeout = self._conn.execute("PRAGMA busy_timeout").fetchone()[0]
+            self._conn.execute(f"PRAGMA busy_timeout={min(prior_timeout, _ATTEMPT_BUSY_MS)}")
+            try:
+                with self._tx():
+                    self._prune_experiences()
+                    left = self._one("SELECT count(*) AS n FROM memory_attempts")["n"]
+            finally:
+                self._conn.execute(f"PRAGMA busy_timeout={prior_timeout}")
+            self.scrub()  # blocked by another process: the mark stays and the next writer open retries (0.20.2)
+            return due["n"] - left
 
     def record_attempt(self, kind, emitted, stages, session_key, trace=False):
         # This connection is shared by providers in the process, so hold its lock
@@ -158,10 +182,12 @@ class ExperienceMixin:
             self._prune_experiences()
             refs = {}
 
-            def ref(fact):
+            def ref(fact, strict=True):
                 fid = int(fact["fact_id"])
                 version = self._current_version(fid)
                 if version is None or version["content"] != fact.get("content"):
+                    if not strict:
+                        return None
                     raise ValueError("Memory changed during retrieval; attempt was not recorded")
                 entry = {"fact_id": fid, "version_id": int(version["version_id"])}
                 refs[(fid, entry["version_id"])] = entry
@@ -170,9 +196,14 @@ class ExperienceMixin:
             issued = [ref(f) for f in emitted[:MAX_REFS]]
             observations = []
             if trace:
+                # A candidate another writer changed or forgot meanwhile (a rerank call can take seconds) is left out
+                # and counted: the emission stays exact and the trace never names a version it did not see.
                 for name, facts in stages[:16]:
-                    observations.append({"stage": name, "facts": [ref(f) for f in facts[:MAX_REFS]],
-                                         "truncated": len(facts) > MAX_REFS})
+                    seen = [ref(f, strict=False) for f in facts[:MAX_REFS]]
+                    observation = {"stage": name, "facts": [r for r in seen if r], "truncated": len(facts) > MAX_REFS}
+                    if None in seen:
+                        observation["changed"] = seen.count(None)
+                    observations.append(observation)
             aid = uuid.uuid4().hex
             self._conn.execute("INSERT INTO memory_attempts VALUES (?,?,?,?,?,?,?)",
                                (aid, time.time(), kind, session_key, json.dumps(observations), json.dumps(issued),

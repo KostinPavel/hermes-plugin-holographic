@@ -843,6 +843,13 @@ class HolographicMemoryProvider(MemoryProvider):
                                 db_path)
             except Exception as exc:  # noqa: BLE001 - the next writer open tries again; said, since the person expects them gone
                 _warn_once("could not delete stored vectors", exc)
+        if self._tool_writable:  # journal retention also with experience off: old outcome text does not stay (0.20.2)
+            try:
+                pruned = store.prune_experiences()
+                if pruned:
+                    logger.info("holographic: removed %d expired task-outcome receipts from %s", pruned, db_path)
+            except Exception as exc:  # noqa: BLE001 - optional journal: the next writer open or receipt write tries again
+                _warn_once("could not prune the task-outcome journal", exc)
         self._stores[key] = (store, retriever)
         while len(self._stores) > _MAX_OPEN_STORES:
             old_key = next(k for k in self._stores if k not in (key, self._scope_key))
@@ -979,9 +986,10 @@ class HolographicMemoryProvider(MemoryProvider):
             for fact in fresh:
                 self._remember(key, fact, turn)
             self._last_recall = len(fresh)
-            attempt = self._record_experience("prefetch", fresh)
-            if not fresh:
+            if not fresh:  # nothing emitted: no receipt, no journal transaction on a quiet turn (0.20.2)
+                self._experience_stages = []
                 return ""
+            attempt = self._record_experience("prefetch", fresh)
             self._counted(fresh)
             sources = self._store.current_sources([f["fact_id"] for f in fresh]) if self._recall_source else {}
             # A conclusion nobody confirmed reads as one (0.15.0): the model should not state it as what it was told.
