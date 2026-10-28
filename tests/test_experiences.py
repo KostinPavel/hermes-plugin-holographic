@@ -548,6 +548,34 @@ def test_retention_applies_when_a_writer_opens_the_store_with_collection_off(tmp
         off.shutdown()
 
 
+def test_expired_correction_text_leaves_the_files_while_the_writer_stays_open(tmp_path):
+    """Retention deletes the row; the text itself must not stay on disk in the main file or the WAL until some later
+    checkpoint that a long-running writer with collection off may never make (Codex review of #48)."""
+    from hermes_plugin_holographic import experience as journal
+    db = tmp_path / "facts.db"
+    on = HolographicMemoryProvider({"db_path": str(db), "experience": "on"})
+    on.initialize(session_id="earlier")
+    try:
+        call(on, "add", content="Alice Smith works on the observatory project")
+        old = call(on, "search", query="Alice observatory")["memory_attempt"]
+        assert experience(on, "outcome", attempt_id=old, event_id="old-result", outcome="corrected",
+                          reason="wrong_entity", correction="Use the cinnabar annex record instead.")["recorded"]
+        on._store._conn.execute("UPDATE memory_attempts SET created_at = ? WHERE attempt_id = ?",
+                                (time.time() - journal.TTL - 60, old))
+    finally:
+        on.shutdown()  # the last connection closes: the correction is checkpointed into the main file
+    assert b"cinnabar annex" in db.read_bytes()
+    off = HolographicMemoryProvider({"db_path": str(db)})
+    off.initialize(session_id="later")
+    try:
+        assert not off._store.read("SELECT 1 FROM memory_outcomes")
+        wal = tmp_path / "facts.db-wal"
+        on_disk = db.read_bytes() + (wal.read_bytes() if wal.exists() else b"")
+        assert b"cinnabar annex" not in on_disk
+    finally:
+        off.shutdown()
+
+
 def test_retention_cap_applies_on_open_and_absent_journal_is_not_created(tmp_path):
     from hermes_plugin_holographic import experience as journal
     db = str(tmp_path / "facts.db")

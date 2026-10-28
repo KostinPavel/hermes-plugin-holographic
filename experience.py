@@ -85,9 +85,12 @@ class ExperienceMixin:
             raise ValueError("Unsupported experience schema")
 
     def _prune_experiences(self):
+        outcomes = self._one("SELECT count(*) AS n FROM memory_outcomes")["n"]
         self._conn.execute("DELETE FROM memory_attempts WHERE created_at <= ?", (time.time() - TTL,))
         self._conn.execute("DELETE FROM memory_attempts WHERE attempt_id IN (SELECT attempt_id FROM "
                            "memory_attempts ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET ?)", (MAX_ATTEMPTS,))
+        if self._one("SELECT count(*) AS n FROM memory_outcomes")["n"] < outcomes:
+            self._set_meta("scrub_pending", "1")  # an outcome's free text went: the file is rewritten as after a forget
 
     def prune_experiences(self):
         """Retention when a writer opens the store, collection on or off: outcome text must not outlive the limits
@@ -107,6 +110,7 @@ class ExperienceMixin:
                     left = self._one("SELECT count(*) AS n FROM memory_attempts")["n"]
             finally:
                 self._conn.execute(f"PRAGMA busy_timeout={prior_timeout}")
+            self.scrub()  # blocked by another process: the mark stays and the next writer open retries (0.20.2)
             return due["n"] - left
 
     def record_attempt(self, kind, emitted, stages, session_key, trace=False):

@@ -13,7 +13,8 @@ experience_trace: on  # optional: bounded candidate/stage ids; off still records
 
 Both default to off. Restart the gateway / start a new session after configuration changes. With experience off,
 the extra tool is absent and no new journal tables or receipts are created. Existing receipts remain subject to
-forget triggers and to the retention limits, even after collection is disabled. No new models, endpoints or
+forget triggers and to the retention limits, even after collection is disabled. An outcome removed by retention is
+scrubbed from the file like a forgotten fact (VACUUM and WAL checkpoint; retried by the next writer open if blocked). No new models, endpoints or
 dependencies are required.
 
 Search returns `memory_attempt`; nonempty prefetch appends an opaque attempt id. A prefetch that emits no facts
