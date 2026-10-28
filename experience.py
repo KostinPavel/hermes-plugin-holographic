@@ -16,7 +16,7 @@ MAX_REVISIONS = 10
 MAX_REFS = 100
 # The journal is optional: don't hold the answer behind another process's writer.
 _ATTEMPT_BUSY_MS = 50
-_ATTEMPT_MAX_TRIES = 3
+_ATTEMPT_MAX_TRIES = 2
 _SLOW_ATTEMPT_MS = 25
 logger = logging.getLogger(__name__)
 _ID = re.compile(r"[A-Za-z0-9_-]{1,80}\Z")

@@ -21,7 +21,7 @@ that the model used that fact. A record contains exact fact/version references; 
 recording fail safely rather than attach the wrong version. Failed collection does not suppress search results;
 warnings and `recent.error_kind` expose it. Historical `as_of` search is currently not recorded.
 When another process holds SQLite's write lock, recording an attempt uses a 50 ms SQLite busy timeout per lock
-acquisition (or less if the connection already has a smaller timeout) and retries a busy failure at most twice.
+acquisition (or less if the connection already has a smaller timeout) and retries a busy failure once.
 Each transaction is rolled back before retrying and current versions are checked again, so a stale or forgotten
 fact cannot be attached as a current receipt. Actual elapsed time may be longer because of SQLite's retry intervals,
 scheduling, other locks or disk delays. If all tries fail, search still returns without `memory_attempt`;
