@@ -572,6 +572,106 @@ def run_household(modes, emb, endpoint, split="all", names_fit="on",
     return rows
 
 
+def run_budget(budgets, split="all", repeats=3) -> list[dict]:
+    """prefetch_max_tokens (0.21.0) over tools/budget_set.py: one store per budget, the same facts in the same order
+    (so the same ids), the changed facts stored first with their old text and then changed. Per question: hit (every
+    label in the block) and hit_any, extra (facts that are not labels), confused (the namesake's fact), stale (the old
+    text of a changed label), cut (a line the 300-character line cap ended with "…"), approximate tokens of the
+    injected block, facts the budget left out, latency (the best of *repeats* runs, each in a fresh session). No
+    rerank, no embeddings: nothing leaves the machine."""
+    from hermes_plugin_holographic import approx_tokens
+    bs = load_contrast("budget_set")
+    bs.self_check()
+    qids = [k for k, q in bs.QUERIES.items() if split == "all" or q["split"] == split]
+    rows = []
+    for budget in budgets:
+        db = Path(tempfile.mkdtemp(prefix="prov_budget_")) / f"budget_{budget}.db"
+        p = make_provider(db, "off", "off", {"prefetch_max_tokens": budget})
+        try:
+            back: dict[int, str] = {}
+            for key, (text, ents) in bs.FACTS.items():
+                first = bs.CHANGED_FROM.get(key, text)
+                r = json.loads(p.handle_tool_call(
+                    "fact_store", {"action": "add", "content": first, "entities": ents, "origin": "said"}))
+                fid = int(r["fact_id"])
+                if key in bs.CHANGED_FROM:
+                    changed = json.loads(p.handle_tool_call(
+                        "fact_store", {"action": "change", "fact_id": fid, "content": text, "origin": "said"}))
+                    assert "error" not in changed, (key, changed)
+                back[fid] = key
+            for qid in qids:
+                q = bs.QUERIES[qid]
+                targets = set(q["targets"])
+                times = []
+                for rep in range(repeats):
+                    p.on_session_switch(f"budget_{budget}_{qid}_{rep}", reset=True)
+                    dropped_before = _budget_dropped(p)
+                    t0 = time.perf_counter()
+                    block = p.prefetch(q["q"])
+                    times.append((time.perf_counter() - t0) * 1000)
+                    dropped = _budget_dropped(p) - dropped_before
+                keys = [back[f] for f in parse_ids(block) if f in back]
+                stale = [t for t in targets if t in bs.CHANGED_FROM and bs.CHANGED_FROM[t] in block]
+                rows.append({"set": "budget", "budget": budget, "split": q["split"], "slice": q["slice"],
+                             "qid": qid, "keys": keys, "targets": sorted(targets),
+                             "hit": bool(targets) and targets <= set(keys),
+                             "hit_any": bool(targets & set(keys)) if targets else None,
+                             "extra": len([k for k in keys if k not in targets]),
+                             "confused": sorted(set(keys) & set(q.get("confused", []))),
+                             "stale": stale, "cut": sum(1 for line in block.splitlines() if line.endswith("…")),
+                             "tokens": approx_tokens(block), "dropped": dropped,
+                             "ms": round(min(times), 2), "ms_runs": [round(t, 2) for t in times]})
+        finally:
+            p.shutdown()
+    return rows
+
+
+def _budget_dropped(p) -> int:
+    return json.loads(p.handle_tool_call("fact_store", {"action": "stats"})).get(
+        "prefetch_budget", {}).get("dropped_total", 0)
+
+
+def summarize_budget(rows: list[dict]) -> list[dict]:
+    """Per budget × split: labelled questions with every label back (hit) / any label (any), questions where the
+    budget cost a label the unlimited run had (lost), noise (a `none` question that recalled anything), extra facts
+    per question, namesake and stale hits, cut lines, approximate tokens avg / p95 / max over non-empty blocks,
+    facts left out, latency p50 / p95. Returns the table rows (also printed)."""
+    def pct(values, q):
+        values = sorted(values)
+        return values[min(len(values) - 1, int(q * len(values)))] if values else 0
+
+    base = {r["qid"]: set(r["keys"]) & set(r["targets"]) for r in rows if r["budget"] == 0}
+    table = []
+    print(f"\n{'budget':>6} {'split':<5} {'lab':>3} {'hit':>3} {'any':>3} {'lost':>4} {'noise':>5} {'extra':>5} "
+          f"{'conf':>4} {'stale':>5} {'cut':>3} {'tok_avg':>7} {'tok_p95':>7} {'tok_max':>7} {'dropped':>7} "
+          f"{'ms_p50':>6} {'ms_p95':>6}")
+    for budget in sorted({r["budget"] for r in rows}):
+        for split in ("dev", "test", "all"):
+            sel = [r for r in rows if r["budget"] == budget and (split == "all" or r["split"] == split)]
+            if not sel:
+                continue
+            lab = [r for r in sel if r["targets"]]
+            none = [r for r in sel if not r["targets"]]
+            toks = [r["tokens"] for r in sel if r["keys"]]
+            lost = sum(1 for r in lab if r["qid"] in base and base[r["qid"]] - set(r["keys"]))
+            ms = [r["ms"] for r in sel]
+            row = {"budget": budget, "split": split, "labelled": len(lab), "hit": sum(r["hit"] for r in lab),
+                   "hit_any": sum(bool(r["hit_any"]) for r in lab), "lost_vs_unlimited": lost,
+                   "noise": sum(1 for r in none if r["keys"]), "none": len(none),
+                   "extra_avg": round(sum(r["extra"] for r in sel) / len(sel), 2),
+                   "confused": sum(1 for r in sel if r["confused"]), "stale": sum(1 for r in sel if r["stale"]),
+                   "cut": sum(r["cut"] for r in sel),
+                   "tokens_avg": round(sum(toks) / len(toks), 1) if toks else 0, "tokens_p95": pct(toks, 0.95),
+                   "tokens_max": max(toks, default=0), "dropped": sum(r["dropped"] for r in sel),
+                   "ms_p50": round(pct(ms, 0.5), 2), "ms_p95": round(pct(ms, 0.95), 2)}
+            table.append(row)
+            print(f"{budget:>6} {split:<5} {row['labelled']:>3} {row['hit']:>3} {row['hit_any']:>3} {lost:>4} "
+                  f"{row['noise']:>2}/{row['none']:<2} {row['extra_avg']:>5} {row['confused']:>4} "
+                  f"{row['stale']:>5} {row['cut']:>3} {row['tokens_avg']:>7} {row['tokens_p95']:>7} "
+                  f"{row['tokens_max']:>7} {row['dropped']:>7} {row['ms_p50']:>6} {row['ms_p95']:>6}")
+    return table
+
+
 def _cls(misses: list[str], prefix: str) -> int:
     return sum(1 for m in misses if m.startswith(prefix))
 
@@ -705,9 +805,14 @@ def main(argv):
     saved_margin = _holographic_embeddings.RECALL_MARGIN
     ap = argparse.ArgumentParser(description="Provenance probe: the sources of facts in prefetch")
     ap.add_argument("--set", default="multi",
-                    help="multi | contrast_ru | contrast_en | contrast_zh | household")
+                    help="multi | contrast_ru | contrast_en | contrast_zh | household | budget")
     ap.add_argument("--split", default="all", choices=["all", "dev", "test"],
-                    help="for --set household: which split to run (default: all)")
+                    help="for --set household / budget: which split to run (default: all)")
+    ap.add_argument("--budgets", default="0,150,100,60",
+                    help="for --set budget: prefetch_max_tokens values, 0 = unlimited (the baseline; default "
+                         "0,150,100,60)")
+    ap.add_argument("--repeats", type=int, default=3,
+                    help="for --set budget: runs per question; latency is the best of them (default 3)")
     ap.add_argument("--names-fit", default="on", choices=["on", "off"],
                     help="for --set household: names_fit on/off (the sweep axis, item 9)")
     ap.add_argument("--langs", default="en,ru,zh,de,ja,it,nl,th",
@@ -741,6 +846,24 @@ def main(argv):
         if not args.endpoint:
             print("warning: no endpoint set — using a mock order (no real scores)")
 
+        if args.set == "budget":  # no rerank, no embeddings: the stand makes no network call
+            budgets = [int(b) for b in args.budgets.split(",") if b.strip()]
+            if 0 not in budgets:
+                budgets.insert(0, 0)  # lost_vs_unlimited is counted against the unlimited run
+            rows = run_budget(budgets, split=args.split, repeats=args.repeats)
+            sha = _git_sha()
+            for r in rows:
+                r["git_sha"] = sha
+            path = out_dir / f"provenance_budget_{args.split}{f'_{args.label}' if args.label else ''}.jsonl"
+            with open(path, "w", encoding="utf-8") as fh:
+                for r in rows:
+                    fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+            print(f"\n=== budget: {len(rows)} rows -> {path}")
+            table = summarize_budget(rows)
+            with open(path.with_name(path.stem + "_summary.json"), "w", encoding="utf-8") as fh:
+                json.dump({"git_sha": sha, "repeats": args.repeats, "table": table}, fh, indent=1)
+                fh.write("\n")
+            return rows
         for emb in embs:
             if args.set == "multi":
                 rows = run_multilingual([lg.strip() for lg in args.langs.split(",") if lg.strip()],

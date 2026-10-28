@@ -97,6 +97,7 @@ In `config.yaml` under `plugins.hermes-memory-store`:
 | `hrr_weight` | `0.3` | Weight of the HRR term in search ranking |
 | `prefetch_min_coverage` | `0.3` | Share of a message's informative words (rarer words weigh more) a fact must match to be recalled before the turn; a fact sharing one word of a longer message is recalled only when no other fact holds that word or it may be a name (capitalized inside the sentence, or in a script without capitals) |
 | `prefetch_repeat_turns` | `6` | A fact recalled before a turn is not injected again for this many turns of the session |
+| `prefetch_max_tokens` | `0` | Approximate tokens the block recalled before a turn may take, header and every line included (0.21.0). A fact that does not fit is left out whole, never cut; the rest keep their order; `stats` counts what was left out. `0` = off: up to five facts as before. See [docs/context-budget.md](docs/context-budget.md) |
 | `recall_source` | `off` | `short`: each fact recalled before a turn also says where it was written (`recorded 2026-10-12 · Anton · this chat`; no ids). Off by default: it costs tokens and tells the room which chat a fact came from. `list`, `history` and `export` always show the source in full |
 | `cron_writes` | `true` | A cron job's explicit `fact_store` / `fact_feedback` calls may write (nightly memory jobs such as hermes-dreaming's extraction and keywords exist to make them). Automatic writes (auto-extraction, mirroring, recall counts) stay off in cron, subagents and flush contexts; with `embeddings` on, a cron job that may write also makes missing fact vectors; `false` makes cron read-only too |
 | `recall_indicator` | `true` | Report recalled facts to the core's recall indicator ("🧠 Holographic — recalled 2 memories"). On Telegram and other messaging platforms that line arrives as a separate message before the reply; `false` turns it off, recall itself is unchanged. Like every key here it is read when the gateway starts: a change takes effect after a restart |
@@ -129,7 +130,8 @@ Optional task outcomes and recorded explanations (separate from trust, off by de
 - **Before each turn** the provider recalls up to five facts: search candidates that pass a relevance gate (the fact
   must cover enough of the message's informative words; "ok, thanks" recalls nothing) plus the top facts of entities
   the message names. A fact already injected in this session is not repeated for `prefetch_repeat_turns` turns.
-  Facts are framed as data (`#id [trust] text`), one line each.
+  Facts are framed as data (`#id [trust] text`), one line each. `prefetch_max_tokens` caps the block in approximate
+  tokens by leaving whole facts out ([docs/context-budget.md](docs/context-budget.md)).
 - **add** takes `entities` (who the fact is about; needed for one-word names such as a first name, so later facts
   mentioning it in any form link to it), `keywords` (see [Synonyms](#synonyms-and-other-roots-keywords)) and
   `valid_from` (the date it started to hold, when the message says). A name in `entities` that cannot be one (a
