@@ -1164,11 +1164,12 @@ class HolographicMemoryProvider(MemoryProvider):
         union = meaning_facts + entity_facts + lexical
         self._observe("rerank_union", union)
         send_idx, docs = self._sendable_docs(union)  # secret screen (PR #10, point 1)
-        # Stage trace (statistics): ids only — scores() scores the first top_k documents, so `sent` names what the
-        # stage would be given. Logged before the call: the input is traced even when the stage raises; the answer
-        # line says whether a call happened (answered / skipped_single / skipped_secret / skipped_busy / failed).
+        # Stage trace (statistics): ids only — scores() scores the first fitting() documents (top_k, fewer on a slow
+        # endpoint), so `sent` names what the stage would be given. Logged before the call: the input is traced even
+        # when the stage raises; the answer line says whether a call happened (answered / skipped_single /
+        # skipped_secret / skipped_busy / failed).
         if logger.isEnabledFor(logging.DEBUG):
-            sent = [union[i]["fact_id"] for i in send_idx[:min(int(rescorer.settings.top_k), len(docs))]]
+            sent = [union[i]["fact_id"] for i in send_idx[:rescorer.fitting(query, docs)]]
             logger.debug("holographic: rescore prefetch: pool %d, candidates %d: %s", len(union), len(sent),
                          _trace_ids(sent))
         try:
@@ -1191,7 +1192,7 @@ class HolographicMemoryProvider(MemoryProvider):
                     # (point 4(4) of the 10:34 review): the blend is built for EVERY pool member, see blend_union.
                     blend_union(union, ranked, w)
                 else:
-                    # Documents beyond top_k were never sent (scores() sends the first top_k only): they keep
+                    # Documents beyond fitting() were never sent (top_k, fewer on a slow endpoint): they keep
                     # their blend order behind the ranked ones instead of being dropped.
                     tail = [i for i in range(len(union)) if i not in set(order)]
                     union = [union[i] for i in order + tail]
@@ -1929,11 +1930,10 @@ class HolographicMemoryProvider(MemoryProvider):
             # included) — they never go to the endpoint (PR #10, point 1).
             try:
                 send_idx, docs = self._sendable_docs(results)
-                # Stage trace (statistics): as in _unified_stream — scores() scores the first top_k documents and
+                # Stage trace (statistics): as in _unified_stream — scores() scores the first fitting() documents and
                 # gives the same indexes order() did, plus the score the trace needs (ids only, no fact text).
                 if logger.isEnabledFor(logging.DEBUG):
-                    sent = [results[i]["fact_id"]
-                            for i in send_idx[:min(int(self._rescorer.settings.top_k), len(docs))]]
+                    sent = [results[i]["fact_id"] for i in send_idx[:self._rescorer.fitting(a["query"], docs)]]
                     logger.debug("holographic: rescore search: pool %d, candidates %d: %s", len(results), len(sent),
                                  _trace_ids(sent))
                 ranked = self._rescorer.scores(a["query"], docs) if docs else None

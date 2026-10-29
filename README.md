@@ -967,6 +967,16 @@ bge-reranker-v2-m3) a token covers at least one character, so the pair stays und
 With ``rerank_weight: 0`` the cross-encoder judges text only and ignores trust: a fact whose trust
 was lowered (by feedback or by a dreaming plugin) can move back to the top of what is admitted.
 
+A call asks no more than the endpoint answers in half of ``rerank_timeout``. A reranker on a CPU scores the pairs at a
+steady speed, so its time grows with every fact it is sent: jina-reranker-v2 Q4_K_M on 2 threads of a 4-core VPS
+answered 5 short facts in 0.4 s, 15 in 1.2 s and 40 — the default ``rerank_top_k`` — in 3.3 s, over the default
+timeout, so every large pool failed and paused the endpoint. Each answer now tells the plugin the endpoint's speed
+(seconds per character of the pairs; a timeout tells it as a lower bound), and a call sends as many of the first
+candidates as the slowest of the last five speeds fits in half the timeout, two at least; the rest keep their order
+behind the scored ones, as the tail beyond ``rerank_top_k`` does. A fast endpoint is sent the whole pool. Before the
+first answer the speed is unknown and ``rerank_top_k`` goes out: on a slow endpoint the first large pool can still
+time out once, and the next call sends at most half of it.
+
 Measured on a real llama-server with bge-m3-reranker-v2 (Bge-M3-568M-Q4_K_M), three languages (en/ru/zh),
 60 questions and 15 that must recall nothing (``tools/benchmark_rerank.py --endpoint=…``). The first table is
 the PR author's CPU box; the same run on a GTX 1050 Ti (2026-10-22) gives p50 32–35 ms / p95 47–51 ms for the
