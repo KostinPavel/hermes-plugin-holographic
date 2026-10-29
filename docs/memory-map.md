@@ -109,7 +109,7 @@ scope, and no merge question names it).
 
 All reads from the store happen in **one read transaction**, opened before the first read and always ended (a
 rollback: nothing was written) when the export ends, also on an error. The provider's read code joins that
-transaction and never commits it; the export checks at the end that the transaction is still the one it opened and
+transaction and never commits it; the export checks at the end that the transaction is still open and
 raises otherwise. So a `forget`, a `change` or a merge that another process makes while the export runs is either all
 in the map or not at all — never the fact's text next to its tombstone.
 
