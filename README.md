@@ -92,7 +92,7 @@ In `config.yaml` under `plugins.hermes-memory-store`:
 | `mirror_memory_writes` | `false` | Also store every built-in memory `add` (MEMORY.md / USER.md) as a fact |
 | `default_trust` | `0.5` | Trust score of a new fact |
 | `min_trust_threshold` | `0.3` | Facts below this trust are not recalled |
-| `temporal_decay_half_life` | `0` | Days; `0` turns recency decay off |
+| `temporal_decay_half_life` | `0` | Days; `0` turns recency decay off. Age counts from when the fact's current version was recorded: feedback, keywords and tags do not make a fact younger |
 | `hrr_dim` | `1024` | HRR vector dimensions |
 | `hrr_weight` | `0.3` | Weight of the HRR term in search ranking |
 | `prefetch_min_coverage` | `0.3` | Share of a message's informative words (rarer words weigh more) a fact must match to be recalled before the turn; a fact sharing one word of a longer message is recalled only when no other fact holds that word or it may be a name (capitalized inside the sentence, or in a script without capitals) |
@@ -293,7 +293,8 @@ months on, a rule the user set and a guess the agent made looked the same.
   `fact_versions.recorded_on`, the same moment as a date in Hermes's timezone (UTC when none is set).
 - **Starting trust.** What the person said or confirmed starts 0.1 above `default_trust`, the agent's conclusion 0.1
   below it (within 0 and 1), a fact without an origin at `default_trust` as before; a `change` starts over at its
-  new origin's trust. Measured on 40 pairs of conflicting facts about the
+  new origin's trust, and so does a new text through `correct` or `update` (its origin is the version's unless the
+  call names one), without the old text's helpful marks and recall count; a new date alone keeps them. Measured on 40 pairs of conflicting facts about the
   same person (one said, one inferred, stored in alternating order): without origins the one said came first in 17;
   with a step of 0.05, 0.1 or 0.15, in 40 of 40, in `search` and before a turn alike. An inference with no rival
   was still recalled every time (10 of 10). 0.1 keeps the order after a helpful vote or two on the inference.
@@ -303,7 +304,7 @@ months on, a rule the user set and a guess the agent made looked the same.
   or per day where there is no session. Trust rises by 0.05 for each person who confirms a fact the first time:
   one group-chat member saying "yes, true" session after session raises it once (without a known id, once per
   session). An inference that has been confirmed counts as `confirmed`; a `change` drops the confirmations, which
-  were of the old claim. A nightly job that finds a person's message backing a fact can confirm it the same way.
+  were of the old claim, and so does a new text through `correct` or `update`. A nightly job that finds a person's message backing a fact can confirm it the same way.
 - **Recall says what is a guess.** Before a turn, an inference nobody confirmed ends with `(inferred)`, so the model
   does not repeat it as something it was told. `review` lists inferences nobody confirmed in 60 days.
 

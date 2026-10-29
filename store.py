@@ -397,8 +397,9 @@ class MemoryStore(EntityMixin, HistoryMixin, ExperienceMixin):
         empty content and DuplicateContentError when another fact already has the new content. touch=False keeps
         updated_at (temporal decay and "recently changed" read it): for search aids that do not change the fact.
 
-        A new text is a correction (as history.correct_fact): the old text stays as a `corrected` version. Tags and
-        category change the current version in place."""
+        A new text is a correction (as history.correct_fact): the old text stays as a `corrected` version, and the new
+        one starts at its origin's trust with no helpful marks, recalls or confirmations. Tags and category change the
+        current version in place."""
         if content is not None:
             content = content.strip()
             if not content:
@@ -410,23 +411,34 @@ class MemoryStore(EntityMixin, HistoryMixin, ExperienceMixin):
             history = self.history_ready()
             if history:
                 self._reconcile_history()
-            if content is not None and history and content != row["content"]:
+            # A new text is a new claim (as correct_fact): it starts at its origin's trust, without the helpful marks,
+            # recalls and confirmations the old text earned; trust_delta, when given, moves that start
+            new_claim = content is not None and content != row["content"]
+            base = row["trust_score"]
+            if new_claim and history:
                 other = self._one("SELECT fact_id FROM facts WHERE content = ? AND fact_id != ?", (content, fact_id))
                 if other is None:  # the last text of a copy merged into another fact: that fact says it (0.19.0)
                     other = self._merged_head(content, fact_id)
                 if other is not None:
                     raise DuplicateContentError(int(other["fact_id"]))
                 cur = self._current_version(fact_id)
+                source = self._with_origin(source, cur)
                 self._replace_current(fact_id, "corrected", content, category or row["category"],
                                       row["tags"] if tags is None else tags, valid_from=cur["valid_from"],
-                                      source=self._with_origin(source, cur), trust=row["trust_score"])
+                                      source=source, trust=row["trust_score"])
             elif history and (tags is not None or category is not None):
                 self._write("UPDATE fact_versions SET tags = COALESCE(?, tags), category = COALESCE(?, category) "
                             "WHERE fact_id = ? AND status = 'current'", (tags, category, fact_id))
+            if new_claim:
+                start = self.start_trust((source or {}).get("origin")) if history else None
+                base = self.default_trust if start is None else start
             changes = {col: val for col, val in {
                 "content": content, "tags": tags, "category": category,
-                "trust_score": _clamp_trust(row["trust_score"] + trust_delta) if trust_delta is not None else None,
+                "trust_score": _clamp_trust(base + (trust_delta or 0.0)) if trust_delta is not None or new_claim else None,
+                "helpful_count": 0 if new_claim else None, "retrieval_count": 0 if new_claim else None,
             }.items() if val is not None}
+            if new_claim:
+                self._drop_confirmations(fact_id)
             assignments = ", ".join((["updated_at = CURRENT_TIMESTAMP"] if touch else []) + [f"{col} = ?" for col in changes])
             if not assignments and not entities:
                 return True
@@ -645,7 +657,10 @@ class MemoryStore(EntityMixin, HistoryMixin, ExperienceMixin):
 
     def record_feedback(self, fact_id: int, helpful: bool) -> dict:
         """Adjust trust asymmetrically: helpful -> +0.05 and helpful_count += 1; unhelpful -> -0.10.
-        Returns {fact_id, old_trust, new_trust, helpful_count}. Raises KeyError if fact_id is unknown."""
+        Returns {fact_id, old_trust, new_trust, helpful_count}. Raises KeyError if fact_id is unknown.
+
+        ``updated_at`` stays: a vote on a fact is not a change of it (until 0.22.2 it was stamped, and an old fact
+        marked unhelpful came out "younger" for temporal decay and "recently changed")."""
         with self._tx():
             row = self._one("SELECT fact_id, trust_score, helpful_count FROM facts WHERE fact_id = ?", (fact_id,))
             if row is None:
@@ -653,8 +668,8 @@ class MemoryStore(EntityMixin, HistoryMixin, ExperienceMixin):
             old_trust: float = row["trust_score"]
             new_trust = _clamp_trust(old_trust + (_HELPFUL_DELTA if helpful else _UNHELPFUL_DELTA))
             increment = 1 if helpful else 0
-            self._write("UPDATE facts SET trust_score = ?, helpful_count = helpful_count + ?, "
-                        "updated_at = CURRENT_TIMESTAMP WHERE fact_id = ?", (new_trust, increment, fact_id))
+            self._write("UPDATE facts SET trust_score = ?, helpful_count = helpful_count + ? WHERE fact_id = ?",
+                        (new_trust, increment, fact_id))
             return {"fact_id": fact_id, "old_trust": old_trust, "new_trust": new_trust, "helpful_count": row["helpful_count"] + increment}
 
     def entity_rules(self) -> int:
