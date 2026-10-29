@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.23.0 — 2026-10-30
+
+### Fixed
+- **Feedback no longer makes a fact younger.** `fact_feedback helpful` / `unhelpful` stamped `updated_at`, and
+  temporal decay counted a fact's age from it: with a half-life of 1 day a fact stored 10 days ago scored 0.0004,
+  and after one `unhelpful` 0.33, above facts stored days later (F1 research, 2026-10-29). Feedback now leaves
+  `updated_at` alone (a vote is not a change of the fact, as recall counts and keywords already were not), and decay
+  counts from when the fact's current version was recorded (`fact_versions.recorded_at`): a new text or date starts
+  it again, a revert brings back the time of the version it restores, feedback, keywords, tags, category, entities
+  and `trust_delta` do not move it. So facts an earlier release already made "young" by feedback decay by their real
+  age again. A store without history (opened only by readers since before 0.8.0) counts from `updated_at`, as
+  before; a search `as_of` counts each version from when it was recorded rather than from when it was closed. Decay
+  is off by default (`temporal_decay_half_life: 0`); only installs that turned it on rank differently.
+- **A corrected text no longer inherits what the wrong one earned.** `correct` and `update` with a new `content`
+  kept the old text's trust, `helpful_count`, recall count and confirmations: a claim a person had confirmed, once
+  rewritten by the agent, stayed "confirmed" and kept its helpful marks. A new text now starts as a `change` does:
+  at its origin's trust (the version's origin unless the call names one: `said`/`confirmed` 0.6, `inferred` 0.4,
+  none `default_trust`), with no helpful marks, recalls or confirmations; a `trust_delta` given with it moves that
+  start. A correction of the date only keeps everything. The old text's trust stays in its closed version, and
+  `revert` brings it back, as after a change (its helpful marks and confirmations do not come back, as after a
+  change). Copies merged into the fact said the old claim: their helpful marks, added to the keep's at the merge,
+  go with the rest, and a person who confirmed a copy confirms the corrected text as a new claim (already so, by the
+  merge's version link). A store without history (no versions to close) starts the new text at the origin the call names too; before the Codex review it fell back to `default_trust`. Tests: `tests/test_holographic_trust_signals.py`.
+
+### Changed
+- `updated_at` now means "the fact itself last changed", not "last touched". Readers that break ties or rank by it see feedback no more: `probe`, `reason` and entity recall order facts of equal trust by it, and hermes-dreaming reads it for its recency and consolidation signals, so a fact voted on lately no longer counts as recent there either.
+
 ## 0.22.2 — 2026-10-29
 
 ### Fixed
