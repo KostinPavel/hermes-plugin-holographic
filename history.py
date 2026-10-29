@@ -525,8 +525,7 @@ class HistoryMixin:
             # its confirmations: they confirmed the old claim (review 2026-10-15). It starts at its origin's trust.
             self._rewrite_fact(fact_id, content, new_category, new_tags, entities=entities, old_category=fact["category"],
                                reset_trust=True, trust=self.start_trust((source or {}).get("origin")))
-            if self._confirmations_ready():
-                self._write("DELETE FROM fact_confirmations WHERE fact_id = ?", (fact_id,))
+            self._drop_confirmations(fact_id)
             return {"fact_id": fact_id, "status": "changed", "version": seq,
                     "previous_until": end if exact else f"before {end}"}
 
@@ -548,8 +547,7 @@ class HistoryMixin:
         start_trust = self.start_trust((source or {}).get("origin"))
         self._insert_fact_row(fact_id, row, trust=self.default_trust if start_trust is None else start_trust,
                               entities=entities)
-        if self._confirmations_ready():  # they confirmed what it said before it ended
-            self._write("DELETE FROM fact_confirmations WHERE fact_id = ?", (fact_id,))
+        self._drop_confirmations(fact_id)  # they confirmed what it said before it ended
         return {"fact_id": fact_id, "status": "resumed", "version": int(row["seq"])}
 
     def end_fact(self, fact_id: int, *, valid_to=None) -> dict:
@@ -606,12 +604,17 @@ class HistoryMixin:
                 if entities:  # the text and date stay, the names were linked all the same (review 0.17.0, Fable)
                     out["entities_linked"] = [n for n in entities if isinstance(n, str) and n.strip()]
                 return out
+            source = self._with_origin(source, cur)
             seq = self._replace_current(fact_id, "corrected", new_text, fact["category"], fact["tags"],
-                                        valid_from=new_start, source=self._with_origin(source, cur),
-                                        trust=fact["trust_score"])
+                                        valid_from=new_start, source=source, trust=fact["trust_score"])
             if new_text != fact["content"]:
+                # A new text is a new claim: what the wrong one earned (helpful marks, recalls, confirmations) is not
+                # its; it starts at its origin's trust, as a change does (F1 research, 2026-10-29). The wrong text's
+                # trust stays in its closed version: a revert brings it back. A new date alone keeps everything.
                 self._rewrite_fact(fact_id, new_text, fact["category"], fact["tags"], entities=entities,
-                                   old_category=fact["category"])
+                                   old_category=fact["category"], reset_trust=True,
+                                   trust=self.start_trust((source or {}).get("origin")))
+                self._drop_confirmations(fact_id)
             return {"fact_id": fact_id, "status": "corrected", "version": seq}
 
     def revert_fact(self, fact_id: int) -> dict:
@@ -1213,6 +1216,12 @@ class HistoryMixin:
             return source
         return {**(source or {}), "origin": version["src_origin"]}
 
+    def _drop_confirmations(self, fact_id: int) -> None:
+        """The confirmations of a fact whose claim changed (change, correct and update of the text, a resume): they
+        were of the old claim."""
+        if self._confirmations_ready():
+            self._write("DELETE FROM fact_confirmations WHERE fact_id = ?", (fact_id,))
+
     def drop_orphan_confirmations(self) -> None:
         """Confirmations of facts an older version's forget erased (it deletes the versions, not these rows)."""
         if self._confirmations_ready():
@@ -1266,6 +1275,21 @@ class HistoryMixin:
         info = self.origins([fact_id]).get(fact_id, {})
         return {"fact_id": fact_id, "confirmed": not again, "confirmations": info.get("confirmations", 0),
                 "trust_score": trust, "origin": info.get("origin")}
+
+    def recorded_times(self, fact_ids) -> dict[int, str]:
+        """{fact_id: when its current version was recorded (UTC)}: the age of what the fact says now, which temporal
+        decay counts from. Feedback, recall counts, keywords and tags do not move it; a new text or date does (a new
+        version), and a revert brings back the time of the version it restores. {} without history."""
+        ids = [int(i) for i in fact_ids]
+        if not ids or not self.history_ready():
+            return {}
+        out = {}
+        for i in range(0, len(ids), 500):
+            chunk = ids[i:i + 500]
+            out.update((r[0], r[1]) for r in self.read(
+                f"SELECT fact_id, recorded_at FROM fact_versions WHERE status = 'current' "
+                f"AND fact_id IN ({','.join('?' * len(chunk))})", chunk))
+        return out
 
     def current_sources(self, fact_ids) -> dict[int, dict | None]:
         """{fact_id: source of its current version} (None: unknown, stored before 0.8.0)."""

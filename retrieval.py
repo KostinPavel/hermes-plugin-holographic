@@ -405,6 +405,11 @@ class FactRetriever:
         # Query vector is loop-invariant; encode lazily on the first candidate that carries an HRR vector
         # so stores whose hrr_vector was never backfilled don't pay for it.
         query_vec = None  # bind(encode_text(query), ROLE_CONTENT): the shape a fact's content is stored in
+        # Decay counts from when the version was recorded, not from updated_at: feedback stamped that until 0.22.2,
+        # so an old fact marked unhelpful came out "younger" (F1 research, 2026-10-29). A version of as_of carries
+        # its own recorded_at as created_at; a store without history falls back to the last change.
+        recorded = self.store.recorded_times([f["fact_id"] for f in candidates if "version_id" not in f]) \
+            if self.half_life > 0 else {}
         for fact in candidates:
             jaccard = self._jaccard_similarity(query_tokens, content_stems(_fact_text(fact)))
             hrr_sim = 0.5  # neutral
@@ -419,7 +424,9 @@ class FactRetriever:
                 relevance = (1.0 - meaning.weight) * relevance + meaning.weight * cos
             fact["score"] = relevance * fact["trust_score"]
             if self.half_life > 0:
-                fact["score"] *= self._temporal_decay(fact.get("updated_at") or fact.get("created_at"))
+                since = fact.get("created_at") if "version_id" in fact else (
+                    recorded.get(fact["fact_id"]) or fact.get("updated_at") or fact.get("created_at"))
+                fact["score"] *= self._temporal_decay(since)
         results = sorted(candidates, key=lambda x: x["score"], reverse=True)[:limit]
         for fact in results:
             fact.pop("hrr_vector", None)  # callers expect JSON-serializable dicts

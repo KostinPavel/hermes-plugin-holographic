@@ -1,10 +1,38 @@
 # Changelog
 
-## Unreleased
+## 0.23.1 — 2026-10-30
 
 ### Fixed
 - An outcome removed by journal retention on a long-open store now leaves the file at once. Retention on a receipt write deleted the expired outcome and marked the file for a rewrite, but nothing on that connection served the mark: the next `prune_experiences()` saw nothing due and returned, so the correction text stayed in the main file or the WAL until the store was opened again (Codex review of 0.22.2, reproduced in WAL mode). The receipt write now runs the forget scrub (VACUUM and WAL checkpoint) right after its own transaction when the mark is set, with busy timeout 0: another process reading the database makes it come back at once with the mark kept, and search answers while that process still reads. A blocked rewrite is retried by a receipt write at most once a minute (each VACUUM while a reader stays would add the whole database to the WAL again) and by every writer open, which now serves a pending mark also when nothing is due. The price is a whole-file rewrite when an outcome expires: about 10 ms for 40 facts, 0.25-0.6 s for 3000 facts (15 MB) on a Windows laptop. Tests: `test_retention_scrubs_removed_outcome_on_the_open_connection`, `test_blocked_retention_scrub_neither_holds_search_nor_stays_pending`.
 - The context-budget wording promised more than it does: "a fact is never cut" (README, `docs/context-budget.md`, the 0.21.0 entry, the `prefetch_max_tokens` setting description) now says that the budget never cuts a line, and that the older 300-character cap on each prefetch line still applies with the budget on or off. Behaviour is unchanged.
+- The file rewrite after a forget or an expired outcome no longer waits on another process at any step and no longer clears a mark it did not serve (Codex review of this fix). The closing checkpoint ran after busy timeout 10 s was restored, so a reader opened between the two checkpoints could hold search for 10 s once the rewrite ran on a receipt write; every statement now runs with timeout 0 and the timeout comes back last. The mark was a constant cleared unconditionally, so another process that deleted text and set it while this rewrite ran lost it, with its text left on disk; each mark is now a random token, and a rewrite clears only the one it read. Tests: `test_every_statement_of_a_scrub_runs_without_waiting_on_another_process`, `test_a_scrub_clears_only_the_mark_it_served`.
+
+## 0.23.0 — 2026-10-30
+
+### Fixed
+- **Feedback no longer makes a fact younger.** `fact_feedback helpful` / `unhelpful` stamped `updated_at`, and
+  temporal decay counted a fact's age from it: with a half-life of 1 day a fact stored 10 days ago scored 0.0004,
+  and after one `unhelpful` 0.33, above facts stored days later (F1 research, 2026-10-29). Feedback now leaves
+  `updated_at` alone (a vote is not a change of the fact, as recall counts and keywords already were not), and decay
+  counts from when the fact's current version was recorded (`fact_versions.recorded_at`): a new text or date starts
+  it again, a revert brings back the time of the version it restores, feedback, keywords, tags, category, entities
+  and `trust_delta` do not move it. So facts an earlier release already made "young" by feedback decay by their real
+  age again. A store without history (opened only by readers since before 0.8.0) counts from `updated_at`, as
+  before; a search `as_of` counts each version from when it was recorded rather than from when it was closed. Decay
+  is off by default (`temporal_decay_half_life: 0`); only installs that turned it on rank differently.
+- **A corrected text no longer inherits what the wrong one earned.** `correct` and `update` with a new `content`
+  kept the old text's trust, `helpful_count`, recall count and confirmations: a claim a person had confirmed, once
+  rewritten by the agent, stayed "confirmed" and kept its helpful marks. A new text now starts as a `change` does:
+  at its origin's trust (the version's origin unless the call names one: `said`/`confirmed` 0.6, `inferred` 0.4,
+  none `default_trust`), with no helpful marks, recalls or confirmations; a `trust_delta` given with it moves that
+  start. A correction of the date only keeps everything. The old text's trust stays in its closed version, and
+  `revert` brings it back, as after a change (its helpful marks and confirmations do not come back, as after a
+  change). Copies merged into the fact said the old claim: their helpful marks, added to the keep's at the merge,
+  go with the rest, and a person who confirmed a copy confirms the corrected text as a new claim (already so, by the
+  merge's version link). A store without history (no versions to close) starts the new text at the origin the call names too; before the Codex review it fell back to `default_trust`. Tests: `tests/test_holographic_trust_signals.py`.
+
+### Changed
+- `updated_at` now means "the fact itself last changed", not "last touched". Readers that break ties or rank by it see feedback no more: `probe`, `reason` and entity recall order facts of equal trust by it, and hermes-dreaming reads it for its recency and consolidation signals, so a fact voted on lately no longer counts as recent there either.
 
 ## 0.22.2 — 2026-10-29
 
