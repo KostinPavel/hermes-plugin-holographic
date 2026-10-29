@@ -10,7 +10,7 @@ migrated or created, no model and no network are used. What the provider itself 
   an instruction to the assistant, hidden markup) is not shown, current or past: the fact is listed under HIDDEN
   with its number and date.
 
-    python -m <package>.memory_map --store PATH [--hermes-home DIR] [--tz ZONE] [--json]
+    python -m <package>.memory_map --store PATH [--hermes-home DIR] [--tz ZONE] [--config YAML] [--json]
     python <plugin dir>/memory_map.py --store PATH ...     (no Hermes core needed)
 
 ``export_map(store_path, hermes_home=None, tz=None, now=None)`` returns the same dict for a caller in Python."""
@@ -32,6 +32,7 @@ if __name__ == "__main__" and not __package__:  # run as a file: load the plugin
 
 import argparse
 import json
+import math
 import re
 import sqlite3
 import sys
@@ -39,11 +40,12 @@ import threading
 from datetime import date, datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 
-from .entity_names import fold
+from .entity_names import entity_key, fold
 from .history import error_kind, source_of
 from .retrieval import FactRetriever
 from .screen import _recall_problem, _secret_in
 from .store import MemoryStore
+from .text import NEGATORS, analyze, name_forms, name_keys
 
 SCHEMA_VERSION = 1
 # Words for trust (design, decided 29.10.2026), on the number rounded to hundredths (0.30000000000000004 is stored)
@@ -172,11 +174,171 @@ def _load_json(path: Path):
         return "unreadable", None
 
 
+# -- who is a person (docs/memory-map.md, "Entity types") -------------------------------------------------------------
+# The store records no types: a name is a name. A person is told only by what the store itself holds — the name is
+# someone who spoke in a chat (a recorded author), or a stored fact puts a word for a relative or a role right beside
+# it ("дочери Варе", "my daughter Varya", "Varya is my daughter"). A topic only by its form: a person's name has no
+# digit, no dot or slash inside a word, no lower-case start before a capital (iPhone) and is not one word in capitals
+# (USDT). Neither, or both: null. Capitals prove nothing (a month, a brand and a pet are capitalized too).
+_PERSON_WORDS_TEXT = """
+    дочь дочери дочерью дочка дочки дочке дочку дочкой сын сына сыну сыном сыне сынок сынка сынку
+    жена жены жене жену женой муж мужа мужу мужем муже мама мамы маме маму мамой мать матери матерью
+    папа папы папе папу папой отец отца отцу отцом брат брата брату братом брате сестра сестры сестре сестру сестрой
+    бабушка бабушки бабушке бабушку бабушкой дедушка дедушки дедушке дедушку дедушкой дед деда деду дедом
+    внук внука внуку внуком внучка внучки внучке внучку внучкой тётя тёти тёте тётю тётей тетя тети тете тетю тетей
+    дядя дяди дяде дядю дядей племянник племянника племяннику племянница племянницы племяннице
+    друг друга другу другом подруга подруги подруге подругу подругой коллега коллеги коллеге коллегу коллегой
+    няня няни няне няню няней учитель учителя учителю учителем учительница учительницы учительнице учительницу
+    врач врача врачу врачом
+    daughter son wife husband mother mom mum father dad brother sister grandmother grandma grandfather grandpa
+    granddaughter grandson aunt uncle niece nephew cousin friend girlfriend boyfriend colleague nanny teacher doctor
+    mr mrs ms miss dr"""
+# Between a name and the word after it only these ("Varya is my daughter", «Варя — наша дочь»): not "and" / «и», so
+# «Сосновка и мама» says nothing of Sosnovka.
+_LINK_WORDS_TEXT = "is was my our his her their моя мой моё мое мои наша наш наше наши его её ее их это"
+_RE_INNER_MARK = re.compile(r"\w[._:/]\w")
+_person_words: frozenset | None = None
+_link_words: frozenset | None = None
+
+
+def _lexicon() -> tuple[frozenset, frozenset]:
+    """The two word lists, folded the way analyze folds a fact's words."""
+    global _person_words, _link_words
+    if _person_words is None:
+        _person_words = frozenset(w.text for w in analyze(_PERSON_WORDS_TEXT).words)
+        _link_words = frozenset(w.text for w in analyze(_LINK_WORDS_TEXT).words)
+    return _person_words, _link_words
+
+
+def _name_spans(words, name: str) -> list[tuple[int, int]]:
+    """(start, end) of every mention of *name* among a fact's *words*, in any case form (text.name_keys: «Варе» and
+    «Вари» mention «Варя»; a Latin name matches as written, or with 's)."""
+    keys = name_keys(name)
+    if not keys:
+        return []
+    spans = []
+    for i in range(len(words) - len(keys) + 1):
+        if all(words[i + j].text in forms if exact else not forms.isdisjoint(name_forms(words[i + j].text))
+               for j, (forms, exact) in enumerate(keys)):
+            spans.append((i, i + len(keys)))
+    return spans
+
+
+def _beside_person_word(words, start: int, end: int) -> bool:
+    person, link = _lexicon()
+    if start > 0 and words[start - 1].text in person:
+        return True
+    j = end
+    while j < len(words) and j - end < 2 and words[j].text in link:
+        j += 1
+    return end < j < len(words) and words[j].text in person
+
+
+def _topic_form(names) -> str | None:
+    """Why a name cannot be a person's by its form, or None."""
+    for name in names:
+        if any(c.isdigit() for c in name):
+            return "digit"
+        if _RE_INNER_MARK.search(name):
+            return "identifier"
+        for word in name.split():
+            letters = [c for c in word if c.isalpha() and c.lower() != c.upper()]
+            if letters and letters[0].islower() and any(c.isupper() for c in letters[1:]):
+                return "mixed_case"
+        cased = [c for c in name if c.isalpha() and c.lower() != c.upper()]
+        if len(name.split()) == 1 and len(cased) >= 2 and all(c.isupper() for c in cased):
+            return "acronym"
+    return None
+
+
+def _entity_type(names, speakers: set, texts) -> tuple[str | None, str | None, int | None]:
+    """(person | topic | None, the rule, the fact that showed it). *names*: the name and its aliases; *speakers*: the
+    entity keys of the authors the store recorded; *texts*: (fact id, text) of the visible facts linked to it."""
+    by, fact = None, None
+    if any(entity_key(n) in speakers for n in names):
+        by = "speaker"
+    else:
+        for fid, text in texts:
+            words = analyze(text).words
+            if any(_beside_person_word(words, a, b) for n in names for a, b in _name_spans(words, n)):
+                by, fact = "relative_or_role", fid
+                break
+    topic = _topic_form(names)
+    if by and topic:
+        return None, "both", None  # a person's sign and a topic's: not decided
+    if by:
+        return "person", by, fact
+    return ("topic", topic, None) if topic else (None, None, None)
+
+
+# -- what search puts first (docs/memory-map.md, "Contradictions") ----------------------------------------------------
+_RANKING_DEFAULTS = {"min_trust_threshold": 0.3, "temporal_decay_half_life": 0}
+_TRUE = {"1", "true", "yes", "on"}
+
+
+def _ranking(config) -> dict:
+    """The settings search ranks by: the trust floor, the decay half-life, and whether the reranker (which ignores
+    trust) or search by meaning is on. *config*: the plugin's section as a dict, a config.yaml path, or None (the
+    plugin's defaults). ``source``: defaults | config | absent (no such file: the provider runs on the defaults too) |
+    unreadable (nothing about the order is said then)."""
+    source, section = "defaults", {}
+    if isinstance(config, dict):
+        source, section = "config", config
+    elif config is not None:
+        path = Path(config).expanduser()
+        if not path.is_file():
+            source = "absent"
+        else:
+            try:
+                import yaml  # not stdlib: present wherever Hermes runs; without it the settings are unknown
+                data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+                plugins = data.get("plugins") if isinstance(data, dict) else None
+                section = (plugins or {}).get("hermes-memory-store") if isinstance(plugins, dict) else None
+                source, section = "config", section if isinstance(section, dict) else {}
+            except Exception:  # noqa: BLE001 - no yaml, or a file it cannot parse: the order is not said
+                return {"source": "unreadable", "min_trust": None, "half_life": None, "rerank": None, "meaning": None}
+    try:
+        min_trust = float(section.get("min_trust_threshold", _RANKING_DEFAULTS["min_trust_threshold"]))
+        half_life = int(section.get("temporal_decay_half_life", _RANKING_DEFAULTS["temporal_decay_half_life"]))
+    except (TypeError, ValueError, OverflowError):  # the provider turns memory off for these: nothing to rank
+        return {"source": "unreadable", "min_trust": None, "half_life": None, "rerank": None, "meaning": None}
+    flag = lambda key: section.get(key) is True or str(section.get(key, "")).strip().lower() in _TRUE  # noqa: E731
+    return {"source": source, "min_trust": min_trust, "half_life": half_life, "rerank": flag("rerank"),
+            "meaning": flag("embeddings")}
+
+
+def _decay(stamp, now: datetime, half_life: int) -> float:
+    """retrieval.FactRetriever._temporal_decay at the snapshot's moment."""
+    if not half_life or not stamp:
+        return 1.0
+    try:
+        ts = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except ValueError:
+        return 1.0
+    age = (now - (ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc))).total_seconds() / 86400
+    return 1.0 if age < 0 else math.pow(0.5, age / half_life)
+
+
+def _difference(text_a: str, text_b: str, entity_words: set) -> dict:
+    """What tells two claims apart, taken from their own words: the words of each the other lacks (by their keys,
+    so «вторникам» and «вторник» are one word; function words and the shared names left out) and whether one is a
+    negation of the other (contradict's own reading)."""
+    def words(text):
+        return [w for w in analyze(text).words if not w.stop and w.text not in NEGATORS and w.text not in entity_words]
+
+    wa, wb = words(text_a), words(text_b)
+    only = lambda xs, ys: list(dict.fromkeys(  # noqa: E731
+        w.text for w in xs if all(w.keys.isdisjoint(y.keys) for y in ys)))[:8]
+    neg_a = FactRetriever._claim(text_a, entity_words)[1]
+    neg_b = FactRetriever._claim(text_b, entity_words)[1]
+    return {"a": only(wa, wb), "b": only(wb, wa), "negation": neg_a != neg_b}
+
+
 # -- the snapshot ---------------------------------------------------------------------------------------------------
 
 class _Snapshot:
-    def __init__(self, store: _ReadOnlyStore, made: datetime, zone_name: str, hermes_home):
-        self.s, self.made, self.zone_name, self.home = store, made, zone_name, hermes_home
+    def __init__(self, store: _ReadOnlyStore, made: datetime, zone_name: str, hermes_home, ranking: dict):
+        self.s, self.made, self.zone_name, self.home, self.ranking = store, made, zone_name, hermes_home, ranking
         self.today = made.date().isoformat()
         self.week_from = (made.date() - timedelta(days=WEEK_DAYS)).isoformat()
         self.history = "fact_versions" in store.tables and store.history_ready()
@@ -249,11 +411,13 @@ class _Snapshot:
                 facts[m["into_fact_id"]]["mergedFrom"].append({"id": from_id, "text": text, "d": entry["d"],
                                                                "prop": None})
 
-        ents, links = self._entities(facts)
+        speakers = {entity_key(name) for vs in versions.values() for v in vs
+                    if (name := _shown(v.get("src_user_name"))) and entity_key(name)}
+        ents, links = self._entities(facts, speakers)
         for fid, fact in facts.items():
             fact["ents"] = links.get(fid, [])
         self._weak(facts)
-        conflicts = self._conflicts(facts, links)
+        conflicts = self._conflicts(facts, links, current, ents)
         dreaming, pending, nights = self._dreaming(facts, gone, versions, merged)
         pending = [{"kind": "conflict", "id": c["id"], "a": c["a"], "b": c["b"], "status": "open"}
                    for c in conflicts] + pending
@@ -277,6 +441,7 @@ class _Snapshot:
                        "entity_rules": s._meta("entity_rules"), "experience": s._meta("experience_schema")},
             "counts": counts, "week_from": self.week_from,
             "excluded": [{"what": "hidden_by_screen", "count": len(hidden)}] if hidden else [],
+            "ranking": self.ranking,
             "experience": {"included": False}, "dreaming": dreaming,
         }
         return {"schema_version": SCHEMA_VERSION, "SNAP": snap, "ENT": ents, "FACTS": sorted(visible, key=lambda f: f["id"]),
@@ -325,7 +490,7 @@ class _Snapshot:
         return out
 
     # -- entities --
-    def _entities(self, facts) -> tuple[list[dict], dict[int, list[int]]]:
+    def _entities(self, facts, speakers) -> tuple[list[dict], dict[int, list[int]]]:
         s = self.s
         try:
             rows = s.list_entities(limit=_BIG)
@@ -346,9 +511,12 @@ class _Snapshot:
             # a name only facts the screen hides gave, or a name the screen would hide itself, is not shown
             if not by_entity.get(eid) or _screen(r["name"]):
                 continue
-            out.append({"id": eid, "name": r["name"], "type": None, "declared": bool(r.get("declared")),
-                        "aliases": [a for a in r.get("aliases", []) if _shown(a) is not None],
-                        "text_aliases": [a for a in r.get("text_aliases", []) if _shown(a) is not None],
+            aliases = [a for a in r.get("aliases", []) if _shown(a) is not None]
+            text_aliases = [a for a in r.get("text_aliases", []) if _shown(a) is not None]
+            kind, rule, shown_by = _entity_type([r["name"], *aliases, *text_aliases], speakers,
+                                                [(fid, facts[fid]["text"]) for fid in by_entity[eid]])
+            out.append({"id": eid, "name": r["name"], "type": kind, "type_by": rule, "type_fact": shown_by,
+                        "declared": bool(r.get("declared")), "aliases": aliases, "text_aliases": text_aliases,
                         "standing": r.get("status") or "established", "stale": eid in stale,
                         "since": _day(s, since.get(eid)), "facts": len(by_entity[eid])})
             for fid in by_entity[eid]:
@@ -376,16 +544,54 @@ class _Snapshot:
             if fact["status"] == "current" and fact["origin"] == "unknown" and fact["via"] != "legacy":
                 fact["weak"].append("no_source")
 
-    def _conflicts(self, facts, links) -> list[dict]:
+    def _conflicts(self, facts, links, current, ents) -> list[dict]:
         retriever = FactRetriever(self.s, hrr_weight=0.0)
+        names = {e["id"]: e["name"] for e in ents}
         pairs = []
         for c in retriever.contradict(limit=_BIG):
             a, b = sorted((c["fact_a"]["fact_id"], c["fact_b"]["fact_id"]))
             if a in facts and b in facts:
-                pairs.append({"a": a, "b": b, "score": c["contradiction_score"],
-                              "shared": sorted(set(links.get(a, [])) & set(links.get(b, [])))})
+                shared = sorted(set(links.get(a, [])) & set(links.get(b, [])))
+                # the names of either fact are not what differs (contradict leaves them out of the claims too)
+                entity_words = {w for e in set(links.get(a, [])) | set(links.get(b, [])) if e in names
+                                for w in analyze(names[e]).bag}
+                pairs.append({"a": a, "b": b, "score": c["contradiction_score"], "shared": shared,
+                              "since": max(facts[a]["rec"] or "", facts[b]["rec"] or "") or None,
+                              "differ": _difference(facts[a]["text"], facts[b]["text"], entity_words),
+                              "relies": self._relies(current[a], current[b])})
         pairs.sort(key=lambda p: (-p["score"], p["a"], p["b"]))
         return [{"id": f"C{i}", **p} for i, p in enumerate(pairs, 1)]
+
+    def _relies(self, row_a, row_b) -> dict:
+        """Which of two current facts search puts first, by the part of its score no question changes: a fact below
+        the trust floor is never found; otherwise trust x decay (FactRetriever._rerank) decides between two facts
+        the question fits equally. ``on`` is null when that says nothing: a tie, both below the floor, the reranker
+        on (it orders by text alone), or settings that could not be read."""
+        r = self.ranking
+        out = {"on": None, "why": None, "sides": {}}
+        if r["source"] == "unreadable":
+            out["why"] = "settings_unknown"
+            return out
+        weights = {}
+        for row in (row_a, row_b):
+            trust = float(row["trust_score"])
+            decay = _decay(row["updated_at"] or row["created_at"], self.made, r["half_life"])
+            found = trust >= r["min_trust"]
+            weights[row["fact_id"]] = (found, trust * decay)
+            out["sides"][str(row["fact_id"])] = {"trust": _round(trust), "found": found,
+                                                 "decay": round(decay, 3) if r["half_life"] else None}
+        (ia, (fa, wa)), (ib, (fb, wb)) = weights.items()
+        if r["rerank"]:
+            out["why"] = "rerank"
+        elif not fa and not fb:
+            out["why"] = "neither_found"
+        elif fa != fb:
+            out["on"], out["why"] = (ia if fa else ib), "floor"
+        elif math.isclose(wa, wb, rel_tol=1e-9, abs_tol=1e-12):
+            out["why"] = "tie"
+        else:
+            out["on"], out["why"] = (ia if wa > wb else ib), "weight"
+        return out
 
     # -- dreaming --
     def _dreaming(self, facts, gone, versions, merged):
@@ -557,17 +763,18 @@ class _Snapshot:
         return sorted(out, key=key, reverse=True)
 
 
-def export_map(store_path, *, hermes_home=None, tz=None, now: datetime | None = None) -> dict:
+def export_map(store_path, *, hermes_home=None, tz=None, now: datetime | None = None, config=None) -> dict:
     """The memory map of the store at *store_path* as a dict (schema_version, SNAP, ENT, FACTS, CONFLICTS, PENDING,
     TOMBS, MERGES, HIDDEN, FEED, ATTEMPTS). *hermes_home*: where the dreaming files are (none read without it).
     *tz*: the zone of the snapshot's dates (IANA name or "+07:00"; UTC by default). *now*: the snapshot's moment.
-    Read-only; raises FileNotFoundError when there is no store file."""
+    *config*: the plugin's settings search ranks by (its config.yaml path, or the plugins.hermes-memory-store section
+    as a dict); None = the plugin's defaults. Read-only; raises FileNotFoundError when there is no store file."""
     zone, zone_name = _zone(tz)
     made = (now or datetime.now(timezone.utc))
     made = (made if made.tzinfo else made.replace(tzinfo=timezone.utc)).astimezone(zone)
     store = _ReadOnlyStore(store_path, tz=zone)
     try:
-        return _Snapshot(store, made, zone_name, hermes_home).build()
+        return _Snapshot(store, made, zone_name, hermes_home, _ranking(config)).build()
     finally:
         store.close()
 
@@ -578,11 +785,13 @@ def main(argv=None) -> int:
     parser.add_argument("--hermes-home", help="read the dreaming files under this directory (only for its store)")
     parser.add_argument("--tz", help="zone of the dates: an IANA name or +HH:MM (default UTC)")
     parser.add_argument("--now", help="the snapshot's moment, ISO 8601 (default: now)")
+    parser.add_argument("--config", help="Hermes config.yaml: the search settings that order contradictions "
+                                         "(default: the plugin's defaults)")
     parser.add_argument("--json", action="store_true", help="print JSON (the only output format so far)")
     args = parser.parse_args(argv)
     try:
         now = datetime.fromisoformat(args.now) if args.now else None
-        data = export_map(args.store, hermes_home=args.hermes_home, tz=args.tz, now=now)
+        data = export_map(args.store, hermes_home=args.hermes_home, tz=args.tz, now=now, config=args.config)
     except FileNotFoundError as exc:
         print(f"memory_map: {exc}", file=sys.stderr)
         return 2

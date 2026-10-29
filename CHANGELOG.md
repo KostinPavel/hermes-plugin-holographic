@@ -8,6 +8,11 @@
   its number and date only; corrected versions and texts the screen keeps out of answers carry no text; dreaming files
   are optional and read only when they are about this store. CLI `--store PATH --json`, function `export_map()`.
   Nothing in the provider changes and nothing calls it yet.
+- Memory map: entity `type` (`person` / `topic` / null) from what the store holds — a recorded chat author's name, or a
+  word for a relative or a role beside the name in a stored fact, in any case form; a topic only by a form no person's
+  name has (a digit, an identifier, "iPhone", "USDT"); never by a capital letter. Each contradiction says which fact
+  search puts first now (`relies`: the trust floor, then trust x decay from the config given with `--config`; null for
+  a tie, the reranker on or settings that cannot be read), the words that tell the two apart (`differ`) and `since`.
 
 ## 0.22.2 — 2026-10-29
 

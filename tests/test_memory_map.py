@@ -464,3 +464,113 @@ def test_a_store_an_older_release_made(tmp_path, history):
         assert cat["via"] == "tool" and cat["weak"] == ["no_source"]
     else:
         assert all(f["via"] == "legacy" and f["versions"] == [] and f["weak"] == [] for f in snap["FACTS"])
+
+
+# -- who is a person ------------------------------------------------------------------------------------------------
+# Requirement: the map lists people apart from topics, and never calls a name a person because it is capitalized — a
+# month, a brand and a pet are capitalized too. A person only by what the store holds (the name of someone who spoke
+# in a chat, or a word for a relative or a role right beside the name in a stored fact, in any case form), a topic
+# only by a form no person's name has; anything else is "not determined" (null), not a guess.
+
+def _people_store(home: Path) -> Path:
+    home.mkdir(parents=True, exist_ok=True)
+    p = _provider(home, "t1", chat_type="dm", chat_id="201", user_id="201", user_name="Алёна")
+    try:
+        _add(p, "Варя — наша дочь, ей восемь.", "said", ["Варя"])               # the name opens the sentence
+        _add(p, "Подарок для подруги Ксюши купили заранее.", "said", ["Ксюша"])  # a case form beside a case form
+        _add(p, "Varya is my daughter, she is eight.", "said", ["Varya"])
+        _add(p, "Riverside is my daughter's school.", "said", ["Riverside"])     # a possessive names no one
+        _add(p, "Алёна попросила купить сыр.", "said", ["Алёна"])               # the author of the chat
+        _add(p, "Сентябрь начался с дождей.", "said", ["Сентябрь"])             # a month opening a sentence
+        _add(p, "Дождливый Октябрь — время для сада.", "said", ["Октябрь"])     # a month inside one
+        _add(p, "Наш кот Барсик ест только сухой корм.", "said", ["Барсик"])    # a pet's name
+        _add(p, "Компания Apple выпустила новый телефон.", "said", ["Apple"])   # a brand, capitalized only
+        _add(p, "Купили новый iPhone 15 в рассрочку.", "said", ["iPhone 15"])
+        _add(p, "Курс USDT на обменнике вырос.", "said", ["USDT"])
+        _add(p, "Сосновка и мама ждут нас всё лето.", "said", ["Сосновка"])     # "and", not "is"
+    finally:
+        p.shutdown()
+    return home / "memory_store.db"
+
+
+def test_people_are_told_from_topics_only_by_what_the_store_holds(tmp_path):
+    snap = export_map(_people_store(tmp_path / "home"), now=NOW)
+    kinds = {e["name"]: (e["type"], e["type_by"]) for e in snap["ENT"]}
+    assert kinds["Варя"] == ("person", "relative_or_role")
+    assert kinds["Ксюша"] == ("person", "relative_or_role"), "«подруги Ксюши» is a case form of «Ксюша»"
+    assert kinds["Varya"] == ("person", "relative_or_role")
+    assert kinds["Алёна"] == ("person", "speaker")
+    for name in ("Сентябрь", "Октябрь", "Барсик", "Apple", "Сосновка", "Riverside"):
+        assert kinds[name][0] is None, (name, kinds[name])
+    assert kinds["iPhone 15"][0] == "topic" and kinds["USDT"] == ("topic", "acronym")
+    varya = next(e for e in snap["ENT"] if e["name"] == "Варя")
+    assert next(f for f in snap["FACTS"] if f["id"] == varya["type_fact"])["text"].startswith("Варя — наша дочь")
+
+
+# -- what the agent leans on in a contradiction -----------------------------------------------------------------------
+# Requirement: for each contradiction the map says which of the two facts search puts first now — by the same score
+# search uses (trust, and the decay when the config turns it on; a fact below the trust floor is not found at all) —
+# and says nothing (null, with the reason) when that score does not decide: equal, or the reranker reorders by text.
+
+def _conflict_store(home: Path) -> tuple[Path, int, int]:
+    home.mkdir(parents=True, exist_ok=True)
+    p = _provider(home, "k1", chat_type="dm", chat_id="301", user_id="301", user_name="Дмитрий")
+    try:
+        tue = _add(p, "Варя ходит на плавание по вторникам.", "said", ["Варя"])
+        wed = _add(p, "Варя ходит на плавание по средам.", "said", ["Варя"])
+    finally:
+        p.shutdown()
+    return home / "memory_store.db", tue, wed
+
+
+def _set(db: Path, fact_id: int, trust: float, days_ago: int) -> None:
+    con = sqlite3.connect(db)
+    con.execute("UPDATE facts SET trust_score = ?, created_at = ?, updated_at = ? WHERE fact_id = ?",
+                (trust, _ts(NOW - timedelta(days=days_ago)), _ts(NOW - timedelta(days=days_ago)), fact_id))
+    con.commit()
+    con.close()
+
+
+def _pair(snap, a, b):
+    found = [c for c in snap["CONFLICTS"] if {c["a"], c["b"]} == {a, b}]
+    assert len(found) == 1, snap["CONFLICTS"]
+    return found[0]
+
+
+def test_a_contradiction_says_which_fact_search_puts_first(tmp_path):
+    db, tue, wed = _conflict_store(tmp_path / "home")
+    _set(db, tue, 0.7, 40)   # trusted more, written earlier
+    _set(db, wed, 0.4, 1)
+    c = _pair(export_map(db, now=NOW), tue, wed)
+    assert (c["relies"]["on"], c["relies"]["why"]) == (tue, "weight")
+    assert c["differ"] == {"a": ["вторникам"], "b": ["средам"], "negation": False}
+    assert c["since"] == NOW.date().isoformat()   # both versions were recorded today
+    # with decay on, freshness counts: 0.7 x 0.5^(40/10) < 0.4 x 0.5^(1/10)
+    c = _pair(export_map(db, now=NOW, config={"temporal_decay_half_life": 10}), tue, wed)
+    assert (c["relies"]["on"], c["relies"]["why"]) == (wed, "weight")
+    # below the trust floor a fact is not found at all, however fresh
+    _set(db, wed, 0.29, 0)
+    _set(db, tue, 0.3, 30)
+    c = _pair(export_map(db, now=NOW, config={"temporal_decay_half_life": 10}), tue, wed)
+    assert (c["relies"]["on"], c["relies"]["why"]) == (tue, "floor")
+    assert c["relies"]["sides"][str(wed)]["found"] is False
+
+
+def test_a_contradiction_says_nothing_when_the_score_does_not_decide(tmp_path):
+    db, tue, wed = _conflict_store(tmp_path / "home")
+    _set(db, tue, 0.6, 5)
+    _set(db, wed, 0.6, 5)
+    c = _pair(export_map(db, now=NOW), tue, wed)
+    assert (c["relies"]["on"], c["relies"]["why"]) == (None, "tie")
+    _set(db, wed, 0.4, 5)
+    c = _pair(export_map(db, now=NOW, config={"rerank": True}), tue, wed)
+    assert (c["relies"]["on"], c["relies"]["why"]) == (None, "rerank")
+    unreadable = tmp_path / "config.yaml"
+    unreadable.write_text("plugins: [unclosed\n", encoding="utf-8")
+    c = _pair(export_map(db, now=NOW, config=unreadable), tue, wed)
+    assert (c["relies"]["on"], c["relies"]["why"]) == (None, "settings_unknown")
+    good = tmp_path / "good.yaml"
+    good.write_text("plugins:\n  hermes-memory-store:\n    min_trust_threshold: 0.5\n", encoding="utf-8")
+    snap = export_map(db, now=NOW, config=good)
+    assert (_pair(snap, tue, wed)["relies"]["on"], _pair(snap, tue, wed)["relies"]["why"]) == (tue, "floor")
+    assert snap["SNAP"]["ranking"]["min_trust"] == 0.5 and snap["SNAP"]["ranking"]["source"] == "config"
