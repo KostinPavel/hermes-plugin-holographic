@@ -52,6 +52,8 @@ class FakeRerank:
         self.fail = None  # an exception to raise, or bytes to answer with
         self.reverse = False  # answer with the documents reversed (worst ranker)
         self.delay = 0.0  # seconds to sleep in the "network" call
+        self.release = threading.Event()  # set: the sleep ends at once (the test has seen what it needed)
+        self.slept = threading.Event()  # set once a call has slept out its delay or been released
         self.scores = None  # optional relevance_scores to answer with (else n, n-1, ...)
 
     @property
@@ -63,7 +65,8 @@ class FakeRerank:
         self.requests.append({"url": request.full_url, "headers": dict(request.header_items()), "body": body,
                               "timeout": timeout})
         if self.delay:
-            time.sleep(self.delay)
+            self.release.wait(self.delay)
+            self.slept.set()
         if isinstance(self.fail, BaseException):
             raise self.fail
         if isinstance(self.fail, bytes):
@@ -117,6 +120,23 @@ def _fill(p):
 
 def _block(p, query):
     return p.prefetch(query)
+
+
+def _timed_scores(p, monkeypatch) -> list[float]:
+    """Seconds each Rescorer.scores() call of *p* takes from here on: the caller's wait for the endpoint. The rest of
+    recall (lexical search, HRR, the screens) is CPU time a slow runner stretches, and a bound on the whole prefetch
+    measured that too: on the macOS runner a prefetch whose wait is 0.5 s took 1.05 s against a 1.0 s bound."""
+    scores, spans = p._rescorer.scores, []
+
+    def timed(*args, **kwargs):
+        start = time.perf_counter()
+        try:
+            return scores(*args, **kwargs)
+        finally:
+            spans.append(time.perf_counter() - start)
+
+    monkeypatch.setattr(p._rescorer, "scores", timed)
+    return spans
 
 
 # -- off by default -------------------------------------------------------------------------------------------
@@ -384,21 +404,30 @@ def test_secret_in_query_no_call(tmp_path, endpoint):
 def test_timeout_keeps_order(tmp_path, endpoint, monkeypatch):
     """Maintainer 24:10: the old version did not catch the timeout — rerank_timeout 0.2 clamps to 0.5, while
     delay was exactly 0.5, and in its three runs the status was answered. Now delay is far above
-    the clamp, and the test catches the timeout itself: pause + failures == 1, not just a live block."""
+    the clamp, and the test catches the timeout itself: pause + failures == 1, not just a live block.
+
+    "Not the delay" is read off the endpoint (recall is back while it still holds its answer), and the wait is timed
+    on the rerank call alone: 1.0 s on the whole prefetch failed on the macOS runner at 1.05 s."""
     p = _provider(tmp_path, **{**RANK, "rerank_timeout": "0.2"})
     _fill(p)
-    endpoint.delay = 2.0  # well above the 0.5 clamp (0.2 -> 0.5)
-    start = time.perf_counter()
-    block = _block(p, "when does the backup run?")
-    elapsed = time.perf_counter() - start
+    endpoint.delay = 5.0  # far above the 0.5 clamp (0.2 -> 0.5); released as soon as recall is back
+    waits = _timed_scores(p, monkeypatch)
+    try:
+        block = _block(p, "when does the backup run?")
+        answered = endpoint.slept.is_set()
+    finally:
+        endpoint.release.set()  # the worker need not sleep out the rest
     assert block  # recall did not hang
-    assert elapsed < 1.0  # the caller waited rerank_timeout (clamped to 0.5), not the delay
+    # the caller waited rerank_timeout (clamped to 0.5), not the delay
+    assert not answered, "recall waited for the endpoint's answer"
+    assert endpoint.requests[0]["timeout"] == 0.5, "rerank_timeout 0.2 clamps to 0.5"
+    assert len(waits) == 1 and 0.45 <= waits[0] < 1.0, f"the rerank call took {waits} s, not rerank_timeout (0.5)"
     r = p._rescorer
     assert r.failures == 1, "the timeout must count as a failure"
     assert r.status().startswith("paused"), "the endpoint must pause"
     assert r.last_status.startswith("failed")
     if r._worker is not None:
-        r._worker.join(3)  # the worker sleeps out its own delay — the test leaves no thread behind
+        r._worker.join(3)  # the released worker ends — the test leaves no thread behind
     p.shutdown()
 
 
@@ -425,7 +454,7 @@ class _TrickleHandler(http.server.BaseHTTPRequestHandler):
         pass
 
 
-def test_slow_body_returns_at_rerank_timeout_not_at_the_body(tmp_path):
+def test_slow_body_returns_at_rerank_timeout_not_at_the_body(tmp_path, monkeypatch):
     """Slow body server (maintainer 19:39, item 1): 61 bytes at 100 ms each = 6.1 s with rerank_timeout 0.5 — longer
     than the join(3) below, so a worker that lost its own deadline is still alive there (review of #33; with 21 bytes
     the body ended at 2.1 s and the assert passed without the deadline).
@@ -449,10 +478,10 @@ def test_slow_body_returns_at_rerank_timeout_not_at_the_body(tmp_path):
                                    "rerank_url": f"http://127.0.0.1:{server.server_address[1]}/v1/rerank",
                                    "rerank_timeout": "0.5"})
         _fill(p)
-        start = time.perf_counter()
+        waits = _timed_scores(p, monkeypatch)
         _block(p, "when does the backup run?")
-        elapsed = time.perf_counter() - start
-        assert elapsed < 1.5, f"caller waited for the server body: {elapsed:.2f} s instead of ~rerank_timeout (0.5)"
+        assert len(waits) == 1 and waits[0] < 1.5, (
+            f"caller waited for the server body: {waits} s instead of ~rerank_timeout (0.5)")
         r = p._rescorer
         assert r.failures == 1, "a break at the worker's deadline must count as a failure"
         assert r.status().startswith("paused"), "the endpoint pauses"
@@ -485,7 +514,7 @@ class _DripHeadersHandler(http.server.BaseHTTPRequestHandler):
         pass
 
 
-def test_dripped_headers_end_at_rerank_timeout_and_the_worker_dies(tmp_path):
+def test_dripped_headers_end_at_rerank_timeout_and_the_worker_dies(tmp_path, monkeypatch):
     """The header phase is the window issue #26 measured: http.client has no overall deadline there and every byte
     resets the socket timer, so a server dripping its status line holds the worker ~8 s. The caller's shutdown at
     its deadline ends the read (RemoteDisconnected / BadStatusLine; ConnectionAbortedError on Windows), so the
@@ -504,10 +533,10 @@ def test_dripped_headers_end_at_rerank_timeout_and_the_worker_dies(tmp_path):
                                    "rerank_url": f"http://127.0.0.1:{server.server_address[1]}/v1/rerank",
                                    "rerank_timeout": "0.5"})
         _fill(p)
-        start = time.perf_counter()
+        waits = _timed_scores(p, monkeypatch)
         _block(p, "when does the backup run?")
-        elapsed = time.perf_counter() - start
-        assert elapsed < 1.5, f"caller waited for the server: {elapsed:.2f} s instead of ~rerank_timeout (0.5)"
+        assert len(waits) == 1 and waits[0] < 1.5, (
+            f"caller waited for the server: {waits} s instead of ~rerank_timeout (0.5)")
         r = p._rescorer
         assert r.failures == 1, "a break at the caller's deadline must count as a failure"
         assert r.status().startswith("paused"), "the endpoint pauses"
@@ -548,11 +577,10 @@ def test_tls_dripped_headers_keep_the_rerank_fallback_and_end_the_worker(tmp_pat
                                    "rerank_url": f"https://127.0.0.1:{server.server_address[1]}/v1/rerank",
                                    "rerank_timeout": "0.5"})
         _fill(p)
-        started = time.perf_counter()
+        waits = _timed_scores(p, monkeypatch)
         block = _block(p, "when does the backup run?")
-        elapsed = time.perf_counter() - started
         assert "backup" in block.lower(), "timeout must retain the ordinary recall fallback"
-        assert elapsed < 1.5, f"caller waited for the TLS server: {elapsed:.2f} s"
+        assert len(waits) == 1 and waits[0] < 1.5, f"caller waited for the TLS server: {waits} s"
         r = p._rescorer
         assert r.calls == 1 and r.failures == 1
         assert r.last_status == "failed: no answer (timeout)"
