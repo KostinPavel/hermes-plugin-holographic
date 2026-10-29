@@ -245,7 +245,7 @@ question changes (`FactRetriever.search` → `_rerank`: relevance × trust × de
   it orders by text alone, so trust says nothing), `settings_unknown` (the config could not be read).
 
 `sides` holds per fact `{trust, found, decay}`. The settings are the plugin's defaults unless `config` is given (a
-config.yaml path, read with PyYAML when it is importable, or the section as a dict): `SNAP.ranking` says which.
+config.yaml path, read with Hermes' own loader `hermes_yaml`, or PyYAML outside Hermes, or the section as a dict): `SNAP.ranking` says which.
 Search by meaning (`meaning: true`) blends relevance before trust multiplies it, so the rule holds there too.
 
 `differ` is what tells the two apart, from their own words only (nothing is generated): `a` / `b` the words of each the

@@ -957,3 +957,16 @@ def test_an_impossible_date_in_a_night_file_is_a_state_not_an_error(family):
     assert "Ignore all previous" not in _dump(snap)
     assert [e for e in snap["FEED"] if e["k"] == "night"] == []
     assert {"file": "report", "id": "generated_at", "why": "generated_at"} in snap["SNAP"]["dreaming"]["invalid"]
+
+
+def test_the_agents_settings_are_read_without_pyyaml(tmp_path, monkeypatch):
+    """Hermes reads config.yaml with its own loader (hermes_yaml, ruamel) and does not install PyYAML: an agent's
+    settings must still order a contradiction where only Hermes is installed (CI, a fresh install)."""
+    db, tue, wed = _conflict_store(tmp_path / "home")
+    _set(db, tue, 0.6, 5)
+    _set(db, wed, 0.4, 5)
+    good = tmp_path / "good.yaml"
+    good.write_text("plugins:\n  hermes-memory-store:\n    min_trust_threshold: 0.5\n", encoding="utf-8")
+    monkeypatch.setitem(sys.modules, "yaml", None)  # PyYAML not installed
+    snap = export_map(db, now=NOW, config=good)
+    assert (_pair(snap, tue, wed)["relies"]["on"], _pair(snap, tue, wed)["relies"]["why"]) == (tue, "floor")

@@ -370,6 +370,16 @@ _RANKING_DEFAULTS = {"min_trust_threshold": 0.3, "temporal_decay_half_life": 0}
 _TRUE = {"1", "true", "yes", "on"}
 
 
+def _load_yaml(text: str):
+    """config.yaml as Hermes reads it: its own loader (hermes_yaml, ruamel; Hermes does not install PyYAML), else
+    PyYAML outside Hermes. Neither present raises ImportError: the settings are then unknown."""
+    try:
+        from hermes_yaml import safe_load
+    except ImportError:
+        from yaml import safe_load
+    return safe_load(text)
+
+
 def _ranking(config) -> dict:
     """The settings search ranks by: the trust floor, the decay half-life, and whether the reranker (which ignores
     trust) or search by meaning is on. *config*: the plugin's section as a dict, a config.yaml path, or None (the
@@ -384,8 +394,7 @@ def _ranking(config) -> dict:
             source = "absent"
         else:
             try:
-                import yaml  # not stdlib: present wherever Hermes runs; without it the settings are unknown
-                data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+                data = _load_yaml(path.read_text(encoding="utf-8")) or {}
                 plugins = data.get("plugins") if isinstance(data, dict) else None
                 section = (plugins or {}).get("hermes-memory-store") if isinstance(plugins, dict) else None
                 source, section = "config", section if isinstance(section, dict) else {}
