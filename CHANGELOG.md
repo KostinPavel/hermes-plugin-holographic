@@ -3,16 +3,25 @@
 ## Unreleased
 
 ### Added
-- `memory_map.py`: a read-only JSON snapshot of one store for a person to read (the data layer of the memory map;
-  docs/memory-map.md). Opened `mode=ro` with the provider's own read code; one store per export; a forgotten fact is
-  its number and date only; corrected versions and texts the screen keeps out of answers carry no text; dreaming files
-  are optional and read only when they are about this store. CLI `--store PATH --json`, function `export_map()`.
-  Nothing in the provider changes and nothing calls it yet.
+- **Memory map (experimental)**: `memory_map.py`, a read-only JSON snapshot of one store for a person to read (the
+  data layer of the memory map; [docs/memory-map.md](docs/memory-map.md), with its risks and limits). Experimental:
+  the JSON (`schema_version` 1) and its rules may change without a deprecation period. Opened `mode=ro` with the
+  provider's own read code, all reads in one read transaction (a `forget` during an export is all in it or not at
+  all); one store per export; a forgotten fact is its number and date only; corrected versions and texts the screen
+  keeps out of answers carry no text. The nightly review's files are optional and checked piece by piece: the report
+  and the approval queue only for the profile store (`<home>/memory_store.db`), a merge question only when it names
+  this store, a report item that names another store never; a record of another shape is left out and listed in
+  `SNAP.dreaming.invalid` instead of failing the export (Codex review, 30.10.2026). CLI `--store PATH --json`,
+  function `export_map()`. Nothing in the provider changes and nothing calls it yet. Its output is personal data:
+  keep any page made from it behind a password.
 - Memory map: entity `type` (`person` / `topic` / null) from what the store holds — a recorded chat author's name, or a
   word for a relative or a role beside the name in a stored fact, in any case form; a topic only by a form no person's
   name has (a digit, an identifier, "iPhone", "USDT"); never by a capital letter. Each contradiction says which fact
   search puts first now (`relies`: the trust floor, then trust x decay from the config given with `--config`; null for
   a tie, the reranker on or settings that cannot be read), the words that tell the two apart (`differ`) and `since`.
+  The decay is search's own code (`FactRetriever.decays`, split out of `_rerank`): the age counts from when the
+  fact's current text was recorded, as search does from 0.23.0, so a fact with new tags or a vote is old on the map
+  too.
 
 ## 0.23.0 — 2026-10-30
 

@@ -327,6 +327,19 @@ here, and after a `forget` the dream removes its own copies of the fact (cache, 
 tombstone's id. Use hermes-dreaming 2.4.0 or later with this release: cron jobs may write facts only from 0.8.0 on
 (`cron_writes`).
 
+### Memory map (experimental)
+
+`memory_map.py` exports one store as a read-only JSON snapshot a person can read: the facts with who said them and
+how much they are trusted, people and topics, contradictions and which side search leans on, the week's changes,
+forgotten facts as a number and a date, and what the nightly review asks about this store. The
+[hermes-dashboard](https://github.com/itpartypattaya/hermes-dashboard) "Memory map" tab draws it. Nothing calls it
+unless you do (`python <plugin dir>/memory_map.py --store PATH --json`); the provider is unchanged by it.
+
+**Experimental**: the format and the rules may change. Its output is personal data — keep any page made from it
+behind a password. What it shows and hides, and its limits (a closed word list for "person", "search leans on" only
+for a question that fits both facts equally, the night's files outside the database snapshot, a picture that ages
+until the next rebuild): [docs/memory-map.md](docs/memory-map.md).
+
 ## Languages
 
 ![How a word is matched across languages: words, language, function words, keys, match; examples in eighteen languages
