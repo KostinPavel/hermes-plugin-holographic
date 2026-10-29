@@ -340,6 +340,17 @@ behind a password. What it shows and hides, and its limits (a closed word list f
 for a question that fits both facts equally, the night's files outside the database snapshot, a picture that ages
 until the next rebuild): [docs/memory-map.md](docs/memory-map.md).
 
+How to see it:
+
+- **In hermes-dashboard** (a page behind basic-auth, rebuilt by its cron): turn on its `views.memory_map` and point
+  `memory_map.plugin_dir` / `memory_map.store` at this plugin and the store — step by step in the dashboard's README,
+  "Memory map (experimental)".
+- **Your own page or tool**: run the exporter and draw the JSON; every key is described in
+  [docs/memory-map.md](docs/memory-map.md#the-json-schema_version-1). Draw only what it gives — the privacy rules are
+  applied by the exporter, so a renderer must not open the database itself — and escape every text (they are what
+  people told the agent).
+- A ready-made standalone HTML file and a `fact_store` action that builds it are not in this release.
+
 ## Languages
 
 ![How a word is matched across languages: words, language, function words, keys, match; examples in eighteen languages

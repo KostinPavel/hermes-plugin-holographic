@@ -22,7 +22,7 @@ Nothing calls the export unless you do: there is no setting to turn on.
 
 ```
 python <plugin dir>/memory_map.py --store PATH [--hermes-home DIR] [--tz ZONE] [--now ISO] [--config YAML] [--json]
-python -m <package>.memory_map --store PATH ...       # the same, from the installed package
+python -m <package>.memory_map --store PATH ...       # the same; needs Hermes core importable (the package's __init__ loads it)
 ```
 
 - `--store`: the store file — `memory_store.db` of the profile, or a scope's `.db`. One per run.
