@@ -1,10 +1,12 @@
-"""Memory map: a read-only snapshot of ONE store as JSON, for a person to read (docs/memory-map.md).
+"""Memory map (experimental): a read-only snapshot of ONE store as JSON, for a person to read (docs/memory-map.md:
+what it shows, what it does not, its risks and limits; the format may change while it is experimental).
 
 The data layer of the map: a dashboard tab or a standalone page renders it; every privacy rule is applied here, so
 the renderers cannot differ on them. The store is opened read-only (``mode=ro``, ``query_only``): nothing is written,
 migrated or created, no model and no network are used. What the provider itself would not show is not shown:
 
-- one store per export (one scope); the night's questions (dreaming) only when they are about this very store;
+- one store per export (one scope), read in one read transaction; of the night's files (dreaming) the report and the
+  approval queue only for the profile store, a merge question only when it names this very store;
 - a forgotten fact is its number and the date, nothing else (its text, keywords and names are gone from the store);
 - a corrected version has no text (it never held); a text the provider's screen keeps out of answers (a credential,
   an instruction to the assistant, hidden markup) is not shown, current or past: the fact is listed under HIDDEN
@@ -65,7 +67,13 @@ _REVIEW_REASONS = (("low trust", "low_trust"), ("never recalled", "never_recalle
 class _ReadOnlyStore(MemoryStore):
     """The provider's store over a read-only connection of its own: the provider's read code (history, origins,
     entities, review, contradict) runs unchanged, and any write it might attempt fails instead of happening. Not in
-    the shared connection registry, never migrated."""
+    the shared connection registry, never migrated.
+
+    One read transaction from the first read to close(): every query of the export, the provider's included (its
+    _tx() joins an open transaction and never commits it), sees the store at one moment, so a forget or a change
+    another process makes meanwhile is either all in the map or not at all (Codex review, 30.10.2026). In WAL mode
+    writers go on meanwhile; in rollback-journal mode (DELETE, what the core keeps on a SQLite it deems
+    WAL-reset-vulnerable) a writer's COMMIT waits until close(), up to its busy timeout (10 s in the provider)."""
 
     def __init__(self, db_path, tz: tzinfo | None = None) -> None:  # not MemoryStore's: that one opens for writing
         path = Path(db_path).expanduser()
@@ -79,9 +87,10 @@ class _ReadOnlyStore(MemoryStore):
             conn.row_factory = sqlite3.Row
             conn.create_function("hfold", 1, fold, deterministic=True)
             conn.execute("PRAGMA query_only = ON")
+            conn.execute("BEGIN")  # deferred: the snapshot is taken at the first read, the list of tables below
             tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         except BaseException:
-            conn.close()
+            conn.close()  # closing ends the transaction too
             raise
         self.tables = tables
         self._entry = {"conn": conn, "lock": threading.RLock(), "refs": 1, "ready": True, "migrated": False,
@@ -92,9 +101,19 @@ class _ReadOnlyStore(MemoryStore):
         return super()._meta(key) if "meta" in self.tables else None  # before 0.4.0 there was no meta table
 
     def close(self) -> None:
+        """End the read transaction (nothing was written: a rollback) and close; always closes, even when the
+        rollback fails."""
         if self._entry is not None:
             self._entry = None
-            self._conn.close()
+            try:
+                if self._conn.in_transaction:
+                    self._conn.execute("ROLLBACK")
+            finally:
+                self._conn.close()
+
+    def in_snapshot(self) -> bool:
+        """Is the export's read transaction still open (nothing in between committed or ended it)?"""
+        return self._entry is not None and self._conn.in_transaction
 
 
 # -- helpers --------------------------------------------------------------------------------------------------------
@@ -305,18 +324,6 @@ def _ranking(config) -> dict:
     flag = lambda key: section.get(key) is True or str(section.get(key, "")).strip().lower() in _TRUE  # noqa: E731
     return {"source": source, "min_trust": min_trust, "half_life": half_life, "rerank": flag("rerank"),
             "meaning": flag("embeddings")}
-
-
-def _decay(stamp, now: datetime, half_life: int) -> float:
-    """retrieval.FactRetriever._temporal_decay at the snapshot's moment."""
-    if not half_life or not stamp:
-        return 1.0
-    try:
-        ts = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
-    except ValueError:
-        return 1.0
-    age = (now - (ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc))).total_seconds() / 86400
-    return 1.0 if age < 0 else math.pow(0.5, age / half_life)
 
 
 def _difference(text_a: str, text_b: str, entity_words: set) -> dict:
@@ -573,9 +580,12 @@ class _Snapshot:
             out["why"] = "settings_unknown"
             return out
         weights = {}
-        for row in (row_a, row_b):
+        # search's own decay (FactRetriever.decays: from when the current text was recorded, 0.23.0), at the
+        # snapshot's moment
+        decays = FactRetriever(self.s, temporal_decay_half_life=r["half_life"], hrr_weight=0.0).decays(
+            [row_a, row_b], now=self.made)
+        for row, decay in zip((row_a, row_b), decays):
             trust = float(row["trust_score"])
-            decay = _decay(row["updated_at"] or row["created_at"], self.made, r["half_life"])
             found = trust >= r["min_trust"]
             weights[row["fact_id"]] = (found, trust * decay)
             out["sides"][str(row["fact_id"])] = {"trust": _round(trust), "found": found,
@@ -595,14 +605,22 @@ class _Snapshot:
 
     # -- dreaming --
     def _dreaming(self, facts, gone, versions, merged):
-        """(SNAP.dreaming, pending items, night events). Only when the caller names the Hermes home, and only when
-        the night's files are about this store: the profile store at <home>/memory_store.db, or the store the
-        proposals name. A file that is missing, unreadable or of another shape is a state, never an error."""
+        """(SNAP.dreaming, pending items, night events). Only when the caller names the Hermes home. Whose each piece
+        is, is checked piece by piece, never inferred from another (Codex review, 30.10.2026): the report (MEMORY.md
+        entries, its conflicts, the night's stats) and the approval queue are the profile store's — <home>/memory_store.db
+        — and never reach a map of another store; a merge question reaches a map only when it names this very store
+        (one without a store is the profile's); a report item that names another store is that store's, its fact
+        number too. A file that is missing, unreadable or of another shape is a state, never an error; a record of
+        another shape is left out and listed in ``invalid`` with the field that is wrong."""
         if self.home is None:
-            return {"read": False, "reason": "not_requested", "files": {}}, [], []
+            return {"read": False, "reason": "not_requested", "files": {}, "invalid": []}, [], []
         home = Path(self.home).expanduser()
-        files, data = {}, {}
+        profile = _same_file(self.s.db_path, home / "memory_store.db")
+        files, data, invalid = {}, {}, []
         for key, parts in _DREAM_FILES.items():
+            if key != "proposals" and not profile:
+                files[key] = "profile_only"  # not even opened: nothing in it is this store's
+                continue
             path = home.joinpath(*parts)
             if key == "queue":
                 files[key] = "absent" if not path.exists() else "ok" if path.is_dir() else "unreadable"
@@ -613,18 +631,16 @@ class _Snapshot:
         proposals = (data.get("proposals") or {}).get("proposals")
         if files["proposals"] == "ok" and not isinstance(proposals, dict):
             files["proposals"], proposals = "unexpected", None
-        proposals = {k: v for k, v in (proposals or {}).items() if _PROPOSAL_ID.fullmatch(str(k)) and isinstance(v, dict)}
-        named = [v.get("store") for v in proposals.values() if v.get("store")]
-        ours = _same_file(self.s.db_path, home / "memory_store.db") or any(_same_file(self.s.db_path, n) for n in named)
-        if not ours:
-            return {"read": False, "reason": "other_store", "files": files}, [], []
+        records = self._own_proposals(proposals or {}, profile, invalid)
+        if not profile and not records:
+            return {"read": False, "reason": "other_store", "files": files, "invalid": invalid}, [], []
         current_version = {fid: v["version_id"] for fid, vs in versions.items() for v in vs if v["status"] == "current"}
-        pending = self._proposals(proposals, facts, gone, current_version, merged)
-        report = data.get("report") or {}
+        pending = self._proposals(records, facts, gone, current_version, merged)
         nights = []
-        day = _iso_day(report.get("generated_at"), self.made.tzinfo) if report.get("generated_at") else None
-        if files["report"] == "ok":
-            pending += self._report_items(report, facts, day)
+        if profile and files["report"] == "ok":
+            report = data["report"]
+            day = _iso_day(report.get("generated_at"), self.made.tzinfo) if report.get("generated_at") else None
+            pending += self._report_items(report, facts, day, invalid)
             if day:
                 stats = report.get("stats") if isinstance(report.get("stats"), dict) else {}
                 alerts = report.get("alerts") if isinstance(report.get("alerts"), list) else []
@@ -633,21 +649,51 @@ class _Snapshot:
                                                 if isinstance(a, dict) and _CODE.fullmatch(str(a.get("kind")))),
                                "stats": {k: v for k, v in sorted(stats.items())
                                          if isinstance(v, (int, float)) and not isinstance(v, bool)}})
-        if files["queue"] == "ok":
+        if profile and files["queue"] == "ok":
             queue = self._queue(home.joinpath(*_DREAM_FILES["queue"]))
             if queue:
                 pending.append(queue)
-        return {"read": True, "reason": None, "files": files}, pending, nights
+        return {"read": True, "reason": None, "files": files, "invalid": invalid}, pending, nights
 
-    def _proposals(self, proposals, facts, gone, current_version, merged) -> list[dict]:
+    def _own_proposals(self, proposals: dict, profile: bool, invalid: list) -> list[tuple[str, dict, dict, dict]]:
+        """(id, record, keep, copy) of the merge questions about this store, by number; the ones of another shape go
+        to *invalid* (an id the map cannot read is not repeated: null)."""
+        def bad(pid, why):
+            invalid.append({"file": "proposals", "id": pid, "why": why})
+
+        ids = [k for k in proposals if isinstance(k, str) and _PROPOSAL_ID.fullmatch(k)]
+        for _ in range(len(proposals) - len(ids)):
+            bad(None, "id")
         out = []
-        for pid in sorted(proposals, key=lambda k: int(k[2:])):
+        for pid in sorted(ids, key=lambda k: int(k[2:])):
             rec = proposals[pid]
-            if rec.get("store") and not _same_file(self.s.db_path, rec["store"]):
-                continue  # about another store
-            keep, copy = rec.get("keep") or {}, rec.get("copy") or {}
-            ids = (keep.get("fact_id"), copy.get("fact_id"))
-            if not all(isinstance(i, int) and not isinstance(i, bool) for i in ids) or set(ids) & gone:
+            if not isinstance(rec, dict):
+                bad(pid, "record")
+                continue
+            store = rec.get("store")
+            if store is not None and not isinstance(store, str):
+                bad(pid, "store")
+                continue
+            if store:
+                if not _same_file(self.s.db_path, store):
+                    continue  # about another store
+            elif not profile:
+                continue  # no store named: the dream's profile store, whatever its numbers match here
+            keep, copy = rec.get("keep"), rec.get("copy")
+            if not isinstance(keep, dict) or not isinstance(copy, dict):
+                bad(pid, "keep" if not isinstance(keep, dict) else "copy")
+                continue
+            if not all(isinstance(i, int) and not isinstance(i, bool) for i in (keep.get("fact_id"), copy.get("fact_id"))):
+                bad(pid, "fact_id")
+                continue
+            out.append((pid, rec, keep, copy))
+        return out
+
+    def _proposals(self, records, facts, gone, current_version, merged) -> list[dict]:
+        out = []
+        for pid, rec, keep, copy in records:
+            ids = (keep["fact_id"], copy["fact_id"])
+            if set(ids) & gone:
                 continue  # a question about a forgotten fact is gone with it
             if rec.get("status") == "done":
                 for m in merged:
@@ -674,26 +720,57 @@ class _Snapshot:
         """Does *text* say what a forgotten fact said (the provider's tombstone check)?"""
         return bool(self.history and self.s._meta("tombstone_key") and self.s.forgotten_match(text))
 
-    def _report_items(self, report, facts, day) -> list[dict]:
+    def _report_items(self, report, facts, day, invalid) -> list[dict]:
+        """The report's questions for the profile store (the caller checked whose the report is); records of another
+        shape go to *invalid*, by section and index."""
+        def bad(where, why):
+            invalid.append({"file": "report", "id": where, "why": why})
+
+        def section(name):
+            items = report.get(name)
+            if items is not None and not isinstance(items, list):
+                bad(name, "list")
+                return []
+            return items or []
+
         out = []
         n = 0
-        for item in report.get("conflicts") if isinstance(report.get("conflicts"), list) else []:
-            if not isinstance(item, dict) or item.get("fact_id") not in facts:
+        for i, item in enumerate(section("conflicts")):
+            where = f"conflicts[{i}]"
+            if not isinstance(item, dict):
+                bad(where, "record")
+                continue
+            store = item.get("store")
+            if store is not None and not isinstance(store, str):
+                bad(where, "store")
+                continue
+            if store and not _same_file(self.s.db_path, store):
+                continue  # a chat's own fact: its number is that store's, not this one's
+            fid, hits = item.get("fact_id"), item.get("conflicts")
+            if not isinstance(fid, int) or isinstance(fid, bool):
+                bad(where, "fact_id")
+                continue
+            if fid not in facts:
                 continue  # a fact forgotten (or hidden) since the night: nothing of it, its numbers included
-            for hit in item.get("conflicts") if isinstance(item.get("conflicts"), list) else []:
-                if not isinstance(hit, dict):
+            if not isinstance(hits, list):
+                bad(where, "conflicts")
+                continue
+            for j, hit in enumerate(hits):
+                entry = hit.get("entry") if isinstance(hit, dict) else None
+                if not isinstance(entry, str):
+                    bad(f"{where}.conflicts[{j}]", "record" if not isinstance(hit, dict) else "entry")
                     continue
-                entry = hit.get("entry") if isinstance(hit.get("entry"), str) else None
-                if hit.get("replace_unsafe") or entry is None or _screen(entry) or self._forgotten_text(entry):
+                if hit.get("replace_unsafe") or _screen(entry) or self._forgotten_text(entry):
                     continue
                 n += 1
-                out.append({"kind": "memory_conflict", "id": f"M-{n}", "fact": item["fact_id"], "entry": entry,
+                out.append({"kind": "memory_conflict", "id": f"M-{n}", "fact": fid, "entry": entry,
                             **{k: [str(x) for x in hit.get(k)] for k in ("fact_numbers", "memory_numbers",
                                                                           "fact_negations", "memory_negations")
                                if isinstance(hit.get(k), list)},
                             "asked": day, "status": "open"})
-        for item in report.get("md_decays") if isinstance(report.get("md_decays"), list) else []:
+        for i, item in enumerate(section("md_decays")):
             if not isinstance(item, dict) or not isinstance(item.get("entry"), str):
+                bad(f"md_decays[{i}]", "record" if not isinstance(item, dict) else "entry")
                 continue
             if _screen(item["entry"]) or self._forgotten_text(item["entry"]):
                 continue
@@ -774,7 +851,10 @@ def export_map(store_path, *, hermes_home=None, tz=None, now: datetime | None = 
     made = (made if made.tzinfo else made.replace(tzinfo=timezone.utc)).astimezone(zone)
     store = _ReadOnlyStore(store_path, tz=zone)
     try:
-        return _Snapshot(store, made, zone_name, hermes_home, _ranking(config)).build()
+        snapshot = _Snapshot(store, made, zone_name, hermes_home, _ranking(config)).build()
+        if not store.in_snapshot():  # something ended the read transaction midway: the reads are not one moment
+            raise RuntimeError("memory_map: the read transaction ended before the export did")
+        return snapshot
     finally:
         store.close()
 

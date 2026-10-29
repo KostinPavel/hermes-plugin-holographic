@@ -405,12 +405,8 @@ class FactRetriever:
         # Query vector is loop-invariant; encode lazily on the first candidate that carries an HRR vector
         # so stores whose hrr_vector was never backfilled don't pay for it.
         query_vec = None  # bind(encode_text(query), ROLE_CONTENT): the shape a fact's content is stored in
-        # Decay counts from when the version was recorded, not from updated_at: feedback stamped that until 0.22.2,
-        # so an old fact marked unhelpful came out "younger" (F1 research, 2026-10-29). A version of as_of carries
-        # its own recorded_at as created_at; a store without history falls back to the last change.
-        recorded = self.store.recorded_times([f["fact_id"] for f in candidates if "version_id" not in f]) \
-            if self.half_life > 0 else {}
-        for fact in candidates:
+        decays = self.decays(candidates) if self.half_life > 0 else None
+        for i, fact in enumerate(candidates):
             jaccard = self._jaccard_similarity(query_tokens, content_stems(_fact_text(fact)))
             hrr_sim = 0.5  # neutral
             fact_vec = self._phases(fact["hrr_vector"]) if self.hrr_weight > 0 and fact.get("hrr_vector") else None
@@ -423,10 +419,8 @@ class FactRetriever:
                 cos = meaning.cos(fact["fact_id"]) if meaning.fits(fact["fact_id"], fact["content"]) else meaning.neutral
                 relevance = (1.0 - meaning.weight) * relevance + meaning.weight * cos
             fact["score"] = relevance * fact["trust_score"]
-            if self.half_life > 0:
-                since = fact.get("created_at") if "version_id" in fact else (
-                    recorded.get(fact["fact_id"]) or fact.get("updated_at") or fact.get("created_at"))
-                fact["score"] *= self._temporal_decay(since)
+            if decays is not None:
+                fact["score"] *= decays[i]
         results = sorted(candidates, key=lambda x: x["score"], reverse=True)[:limit]
         for fact in results:
             fact.pop("hrr_vector", None)  # callers expect JSON-serializable dicts
@@ -1020,13 +1014,28 @@ class FactRetriever:
         """Jaccard similarity coefficient: |A ∩ B| / |A ∪ B|."""
         return len(set_a & set_b) / len(set_a | set_b) if set_a and set_b else 0.0
 
-    def _temporal_decay(self, timestamp_str: str | None) -> float:
-        """0.5^(age_days / half_life); 1.0 if disabled, missing, unparseable, or in the future."""
+    def decays(self, facts: list[dict], now: datetime | None = None) -> list[float]:
+        """The temporal decay search multiplies each fact's score by (1.0 each with decay off), at *now* (the present
+        by default; the memory map passes its snapshot's moment). *facts*: rows of `facts` (fact_id, created_at,
+        updated_at) or of a search as_of (with version_id).
+
+        Decay counts from when the version was recorded, not from updated_at: feedback stamped that until 0.22.2,
+        so an old fact marked unhelpful came out "younger" (F1 research, 2026-10-29). A version of as_of carries
+        its own recorded_at as created_at; a store without history falls back to the last change."""
+        if self.half_life <= 0:
+            return [1.0] * len(facts)
+        recorded = self.store.recorded_times([f["fact_id"] for f in facts if "version_id" not in f])
+        return [self._temporal_decay(f.get("created_at") if "version_id" in f else (
+            recorded.get(f["fact_id"]) or f.get("updated_at") or f.get("created_at")), now) for f in facts]
+
+    def _temporal_decay(self, timestamp_str: str | None, now: datetime | None = None) -> float:
+        """0.5^(age_days / half_life) at *now* (the present by default); 1.0 if disabled, missing, unparseable, or in
+        the future."""
         if not self.half_life or not timestamp_str:
             return 1.0
         try:
             ts = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00")) if isinstance(timestamp_str, str) else timestamp_str
-            age_days = (datetime.now(timezone.utc) - (ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc))).total_seconds() / 86400
+            age_days = ((now or datetime.now(timezone.utc)) -(ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc))).total_seconds() / 86400
             return 1.0 if age_days < 0 else math.pow(0.5, age_days / self.half_life)
         except (ValueError, TypeError):
             return 1.0

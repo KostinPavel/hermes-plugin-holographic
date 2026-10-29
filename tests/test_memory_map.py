@@ -8,7 +8,11 @@ Requirements, in the person's words, each a test below:
   answer (a password, an instruction to the assistant) shows no text either, current or old;
 - looking does not touch: the store file is byte for byte the same after an export;
 - the night's questions (dreaming) are added when their files are there; missing or broken files leave that part
-  empty with a reason, never an error, and a question about a forgotten fact or another store is not shown;
+  empty with a reason, never an error, and a question about a forgotten fact or another store is not shown; the
+  night's report and approval queue are the profile store's and never reach a chat's map; one record of another
+  shape is left out with its reason, the rest stays;
+- the map is the store at one moment: a forget during the export is all in it or not at all;
+- "which fact search puts first" counts a fact's age as search does (from its current text, not its last touch);
 - the output is JSON a dashboard can render as is: a schema version, the moment of the snapshot, the same order
   every time, from a function and from the command line alike.
 
@@ -21,6 +25,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -315,13 +320,13 @@ def test_dreaming_items_are_added_when_the_files_are_there(family):
                       "at": (NOW - timedelta(days=1)).isoformat(timespec="seconds"),
                       "alerts": ["messages_unavailable"], "stats": {"conflicts": 2, "facts": 14, "md_decays": 2}}]
     assert snap["SNAP"]["dreaming"] == {"read": True, "reason": None, "files": {
-        "proposals": "ok", "report": "ok", "queue": "ok"}}
+        "proposals": "ok", "report": "ok", "queue": "ok"}, "invalid": []}
 
 
 def test_dreaming_files_absent_or_broken_leave_an_empty_part_with_a_reason(family, tmp_path):
     db = family["db"]
     not_asked = export_map(db, now=NOW)
-    assert not_asked["SNAP"]["dreaming"] == {"read": False, "reason": "not_requested", "files": {}}
+    assert not_asked["SNAP"]["dreaming"] == {"read": False, "reason": "not_requested", "files": {}, "invalid": []}
     assert {p["kind"] for p in not_asked["PENDING"]} <= {"conflict"}
 
     absent = export_map(db, hermes_home=db.parent, now=NOW)
@@ -524,9 +529,13 @@ def _conflict_store(home: Path) -> tuple[Path, int, int]:
 
 
 def _set(db: Path, fact_id: int, trust: float, days_ago: int) -> None:
+    """A fact stored *days_ago* with *trust*, as the file holds it: the row and its current version carry that time."""
+    when = NOW - timedelta(days=days_ago)
     con = sqlite3.connect(db)
     con.execute("UPDATE facts SET trust_score = ?, created_at = ?, updated_at = ? WHERE fact_id = ?",
-                (trust, _ts(NOW - timedelta(days=days_ago)), _ts(NOW - timedelta(days=days_ago)), fact_id))
+                (trust, _ts(when), _ts(when), fact_id))
+    con.execute("UPDATE fact_versions SET recorded_at = ?, recorded_on = ? WHERE fact_id = ? AND status = 'current'",
+                (_ts(when), when.date().isoformat(), fact_id))
     con.commit()
     con.close()
 
@@ -544,7 +553,7 @@ def test_a_contradiction_says_which_fact_search_puts_first(tmp_path):
     c = _pair(export_map(db, now=NOW), tue, wed)
     assert (c["relies"]["on"], c["relies"]["why"]) == (tue, "weight")
     assert c["differ"] == {"a": ["вторникам"], "b": ["средам"], "negation": False}
-    assert c["since"] == NOW.date().isoformat()   # both versions were recorded today
+    assert c["since"] == (NOW - timedelta(days=1)).date().isoformat()   # the later of the two versions
     # with decay on, freshness counts: 0.7 x 0.5^(40/10) < 0.4 x 0.5^(1/10)
     c = _pair(export_map(db, now=NOW, config={"temporal_decay_half_life": 10}), tue, wed)
     assert (c["relies"]["on"], c["relies"]["why"]) == (wed, "weight")
@@ -574,3 +583,178 @@ def test_a_contradiction_says_nothing_when_the_score_does_not_decide(tmp_path):
     snap = export_map(db, now=NOW, config=good)
     assert (_pair(snap, tue, wed)["relies"]["on"], _pair(snap, tue, wed)["relies"]["why"]) == (tue, "floor")
     assert snap["SNAP"]["ranking"]["min_trust"] == 0.5 and snap["SNAP"]["ranking"]["source"] == "config"
+
+
+# -- the night's files belong to one store (Codex review, 30.10.2026, P1) ----------------------------------------------
+# Requirement: the map of a chat's own store never shows what the night wrote about the profile: the report (MEMORY.md
+# entries, its conflicts) and the approval queue are the profile store's, whatever else the files say; of the merge
+# questions only the ones that name this very store. A question that names this store does not make the rest of the
+# files its own, and a fact number in a file about another store is not this store's fact of that number.
+
+PRIVATE = ("Семья планирует зимнюю поездку в Лиссабон.", "Личная запись MEMORY: Алёна ждёт ребёнка.")
+
+
+def _night_about_the_profile(home: Path, chat: Path) -> None:
+    (home / "cache").mkdir(parents=True, exist_ok=True)
+    (home / "pending" / "memory").mkdir(parents=True, exist_ok=True)
+    day = (NOW - timedelta(days=1)).isoformat(timespec="seconds")
+    side = lambda fid: {"fact_id": fid, "version_id": 999, "content": "(copy)", "origin": "said"}  # noqa: E731
+    proposals = {"next_proposal": 4, "proposals": {
+        # declined long ago, but it names the chat's store
+        "D-1": {"status": "declined", "store": str(chat), "created": day, "keep": side(1), "copy": side(2)},
+        # an open question that names the chat's store: the only thing of the night that is the chat's
+        "D-2": {"status": "open", "store": str(chat), "created": day, "last_published": day, "keep": side(1),
+                "copy": {**side(2), "covered": True, "extra_words": []}},
+        # no store named: the dream's own (profile) store, not this one, though facts 1 and 2 exist here too
+        "D-3": {"status": "open", "created": day, "last_published": day, "keep": side(2),
+                "copy": {**side(1), "covered": True, "extra_words": []}},
+    }}
+    (home / "cache" / "dream-proposals.json").write_text(json.dumps(proposals, ensure_ascii=False), encoding="utf-8")
+    report = {"generated_at": day, "stats": {"facts": 2},
+              "conflicts": [{"fact_id": 1, "content": "(a profile fact numbered 1)",
+                             "conflicts": [{"entry": PRIVATE[1], "fact_numbers": ["7"]}]}],
+              "md_decays": [{"index": 0, "entry": PRIVATE[0], "last_mention_days": 90}]}
+    (home / "cache" / "dream.json").write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
+    (home / "pending" / "memory" / "r1.json").write_text(json.dumps(
+        {"id": "r1", "created_at": NOW.timestamp(), "payload": {"action": "add", "content": "x"}}), encoding="utf-8")
+
+
+def test_a_chats_map_takes_nothing_of_the_profiles_night(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    chat = _chat_store(home)
+    _night_about_the_profile(home, chat)
+    snap = export_map(chat, hermes_home=home, now=NOW)
+    text = _dump(snap)
+    for piece in PRIVATE:
+        assert piece not in text, piece
+    pending = [p for p in snap["PENDING"] if p["kind"] != "conflict"]
+    assert [(p["kind"], p["id"]) for p in pending] == [("merge", "D-2")]
+    assert [e for e in snap["FEED"] if e["k"] == "night"] == []   # the night's report is the profile's
+    files = snap["SNAP"]["dreaming"]["files"]
+    assert (files["report"], files["queue"]) == ("profile_only", "profile_only")
+
+
+def test_a_profile_map_skips_night_items_about_a_chats_store(family):
+    """The other way round: a report item about a chat's own fact (the dream names that store) carries the chat's
+    fact number; the profile's fact of the same number is another fact."""
+    home = family["db"].parent
+    chat = _chat_store(home)
+    _write_dreaming(home, family)
+    report = json.loads((home / "cache" / "dream.json").read_text(encoding="utf-8"))
+    report["conflicts"].append({"fact_id": family["cheese"], "store": str(chat), "content": "(a chat fact)",
+                                "conflicts": [{"entry": PRIVATE[1]}]})
+    (home / "cache" / "dream.json").write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
+    snap = export_map(family["db"], hermes_home=home, now=NOW)
+    assert PRIVATE[1] not in _dump(snap)
+    memory = [p for p in snap["PENDING"] if p["kind"] == "memory_conflict"]
+    assert [(p["fact"], p["entry"]) for p in memory] == [(family["cheese"], "Алёна не ест молочное.")]
+
+
+# -- one snapshot (Codex review, 30.10.2026, P2) -------------------------------------------------------------------
+# Requirement: the map is the store at one moment. A forget (or a change) that lands while the export reads is either
+# all in it or not at all: never the fact's text and its tombstone side by side.
+
+def test_a_forget_during_the_export_is_all_in_or_all_out(tmp_path, monkeypatch):
+    from hermes_plugin_holographic import memory_map
+    from hermes_plugin_holographic.store import MemoryStore
+
+    db = tmp_path / "memory_store.db"
+    writer = MemoryStore(db, hrr_dim=64)
+    gone = writer.add_fact("Синие стулья клуба стоят в сарае.")
+    writer.add_fact("Клуб собирается по пятницам.")
+    original = memory_map._Snapshot.rows
+    started, errors = [], []
+
+    def forget():
+        try:
+            writer.forget_fact(gone)  # the provider's own forget, in a thread of its own as in Hermes
+        except Exception as exc:  # noqa: BLE001 - reported by the assert below, not swallowed
+            errors.append(exc)
+
+    def rows(snapshot, sql, params=()):
+        out = original(snapshot, sql, params)
+        if not started and "FROM facts ORDER BY fact_id" in sql:
+            # Only the moment is chosen: right after the facts were read, before anything else. The writer then
+            # gets as far as the database lets it while the export goes on.
+            started.append(threading.Thread(target=forget))
+            started[0].start()
+            started[0].join(timeout=5)
+        return out
+
+    monkeypatch.setattr(memory_map._Snapshot, "rows", rows)
+    try:
+        snap = export_map(db, now=NOW)
+        started[0].join(timeout=60)
+    finally:
+        monkeypatch.undo()
+        writer.close()
+    assert started and not started[0].is_alive() and errors == []
+    current = {f["id"] for f in snap["FACTS"]} | {h["id"] for h in snap["HIDDEN"]}
+    tombs = {t["id"] for t in snap["TOMBS"]}
+    assert not current & tombs, "one snapshot holds a live fact and its tombstone"
+    after = export_map(db, now=NOW)   # the forget did happen: the next map has only the tombstone
+    assert gone in {t["id"] for t in after["TOMBS"]} and gone not in {f["id"] for f in after["FACTS"]}
+
+
+# -- a night file of another shape (Codex review, 30.10.2026, P2) -------------------------------------------------
+# Requirement: one record of the night's files in a shape the map does not know (a list where a record was expected,
+# a store that is not a path) is left out and named in the JSON with the reason; the rest of the map, the night's
+# good records included, is there. Neither an error nor an empty map that looks fine.
+
+def test_a_night_record_of_another_shape_is_left_out_with_a_reason(family):
+    home = family["db"].parent
+    _write_dreaming(home, family)
+    path = home / "cache" / "dream-proposals.json"
+    proposals = json.loads(path.read_text(encoding="utf-8"))
+    store, day = str(family["db"]), (NOW - timedelta(days=1)).isoformat(timespec="seconds")
+    proposals["proposals"].update({
+        "D-5": {"status": "open", "store": store, "created": day, "keep": ["broken"], "copy": {"fact_id": 1}},
+        "D-6": {"status": "open", "store": 5, "created": day, "keep": {"fact_id": 1}, "copy": {"fact_id": 2}},
+        "D-7": "not a record",
+        "D-8": {"status": "open", "store": store, "keep": {"fact_id": "1"}, "copy": {"fact_id": 2}},
+    })
+    path.write_text(json.dumps(proposals, ensure_ascii=False), encoding="utf-8")
+    report_path = home / "cache" / "dream.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["conflicts"].append({"fact_id": family["cheese"], "conflicts": "not a list"})
+    report["md_decays"].append(["not", "a", "record"])
+    report_path.write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
+
+    snap = export_map(family["db"], hermes_home=home, now=NOW)
+    assert _fact(snap, family["school"])["text"].startswith("Варя учится")   # the facts are all there
+    pending = snap["PENDING"]
+    assert [p["id"] for p in pending if p["kind"] == "merge"] == ["D-3"]
+    assert [p["entry"] for p in pending if p["kind"] == "memory_conflict"] == ["Алёна не ест молочное."]
+    assert [p["id"] for p in pending if p["kind"] == "relevant"] == ["R-3"]
+    assert snap["SNAP"]["dreaming"]["read"] is True
+    assert snap["SNAP"]["dreaming"]["invalid"] == [
+        {"file": "proposals", "id": "D-5", "why": "keep"}, {"file": "proposals", "id": "D-6", "why": "store"},
+        {"file": "proposals", "id": "D-7", "why": "record"}, {"file": "proposals", "id": "D-8", "why": "fact_id"},
+        {"file": "report", "id": "conflicts[2]", "why": "conflicts"},
+        {"file": "report", "id": "md_decays[2]", "why": "record"}]
+
+
+# -- age as search counts it (merge of fix/trust-signals, 0.23.0) --------------------------------------------------
+# Requirement: "which fact search puts first" on the map counts a fact's age the way search does: from when its
+# current text was recorded. New keywords, tags or a vote on an old fact do not make it young on the map either.
+
+def test_the_map_and_search_agree_a_retagged_old_fact_is_old(tmp_path):
+    home = tmp_path / "home"
+    db, tue, wed = _conflict_store(home)
+    _set(db, tue, 0.6, 40)
+    _set(db, wed, 0.5, 5)
+    config = {"db_path": str(db), "hrr_dim": 64, "temporal_decay_half_life": 10}
+    p = HolographicMemoryProvider(config=config)
+    p.initialize(session_id="k2", hermes_home=str(home), platform="telegram", chat_type="dm", chat_id="301",
+                 user_id="301", user_name="Дмитрий")
+    try:
+        _call(p, action="update", fact_id=tue, tags="расписание, бассейн")   # metadata of today on a 40-day claim
+        _call(p, "fact_feedback", action="helpful", fact_id=tue)
+        found = [f["fact_id"] for f in _call(p, action="search", query="Варя плавание")["results"]]
+    finally:
+        p.shutdown()
+    first = next(i for i in found if i in (tue, wed))
+    assert first == wed    # search: 0.65 x 0.5^4 < 0.5 x 0.5^0.5
+    c = _pair(export_map(db, now=NOW, config={"temporal_decay_half_life": 10}), tue, wed)
+    assert (c["relies"]["on"], c["relies"]["why"]) == (first, "weight")
