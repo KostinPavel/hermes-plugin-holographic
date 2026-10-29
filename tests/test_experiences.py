@@ -417,8 +417,9 @@ def _hold(db_path, *statements):
     return thread, acquired, release, let_go
 
 
-def _search_tracing_locks(provider):
-    """Search, and list each BEGIN / COMMIT the store's connection ran with the busy timeout in force for it."""
+def _search_tracing_locks(provider, traced=("BEGIN", "COMMIT")):
+    """Search, and list each BEGIN / COMMIT (or other `traced` statement) the store's connection ran with the busy
+    timeout in force for it."""
     conn = provider._store._conn
     busy = [conn.execute("PRAGMA busy_timeout").fetchone()[0]]
     locks = []
@@ -428,7 +429,7 @@ def _search_tracing_locks(provider):
         assigned = _BUSY_SET.match(statement)
         if assigned:
             busy[0] = int(assigned.group(1))
-        elif statement.upper().startswith(("BEGIN", "COMMIT")):
+        elif statement.upper().startswith(traced):
             locks.append((statement.upper(), busy[0]))
 
     conn.set_trace_callback(trace)
@@ -606,6 +607,83 @@ def test_expired_correction_text_leaves_the_files_while_the_writer_stays_open(tm
         assert b"cinnabar annex" not in on_disk
     finally:
         off.shutdown()
+
+
+def _on_disk(db):
+    wal = Path(str(db) + "-wal")
+    return Path(db).read_bytes() + (wal.read_bytes() if wal.exists() else b"")
+
+
+def test_retention_scrubs_removed_outcome_on_the_open_connection(tmp_path):
+    """A long-open store: the receipt write whose retention removes an expired outcome also takes its correction text
+    out of the main file and the WAL, without a reopen; a later retention call with nothing due leaves no mark behind
+    (Codex review 2026-10-29: the mark was set, and nothing on this connection served it until the next open)."""
+    from hermes_plugin_holographic import experience as journal
+    db = tmp_path / "review.db"
+    store = MemoryStore(db, hrr_dim=64)
+    try:
+        assert store._conn.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+        fid = store.add_fact("The observatory opens at noon.")
+        fact = dict(store.read("SELECT * FROM facts WHERE fact_id=?", (fid,))[0])
+        aid = store.record_attempt("search", [fact], [], "session")
+        marker = "cinnabar annex private correction marker"
+        store.record_outcome(aid, "event1", "corrected", "other", correction=marker, session_key="session")
+        store._conn.execute("UPDATE memory_attempts SET created_at=? WHERE attempt_id=?",
+                            (time.time() - journal.TTL - 60, aid))
+        store._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        assert marker.encode() in _on_disk(db)
+        store.record_attempt("search", [fact], [], "session")  # the normal receipt write runs retention
+        assert store.read("SELECT * FROM memory_outcomes") == []
+        assert marker.encode() not in _on_disk(db), f"scrub_pending={store._meta('scrub_pending')}"
+        assert store.prune_experiences() == 0
+        assert marker.encode() not in _on_disk(db)
+        assert store._meta("scrub_pending") is None
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("served_by", ["receipt", "open"])
+def test_blocked_retention_scrub_neither_holds_search_nor_stays_pending(provider, monkeypatch, served_by):
+    """The scrub after a receipt write runs under busy timeout 0, like forget's: another process reading the database
+    makes it come back at once with the mark kept, and search answers while that process still reads. A second search
+    in the retry window does not rewrite the file again (a VACUUM per search while a reader stays would grow the WAL by
+    the whole database each time). Once the reader is gone, a later receipt write or a writer open serves the mark
+    although nothing new has expired."""
+    from hermes_plugin_holographic import experience as journal
+    store = provider._store
+    assert store._conn.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+    _, old = seed(provider)
+    marker = "Use the cinnabar annex record instead."
+    assert experience(provider, "outcome", attempt_id=old, event_id="old-result", outcome="corrected",
+                      reason="wrong_entity", correction=marker)["recorded"]
+    store._conn.execute("UPDATE memory_attempts SET created_at = ? WHERE attempt_id = ?",
+                        (time.time() - journal.TTL - 60, old))
+    store._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    scrub_statements = ("VACUUM", "PRAGMA WAL_CHECKPOINT")
+    thread, acquired, release, let_go = _hold(store.db_path, "BEGIN", "SELECT count(*) FROM facts")
+    try:
+        assert acquired.wait(5)
+        result, statements, elapsed = _search_tracing_locks(provider, scrub_statements)
+        assert not let_go.is_set(), f"the scrub held search {elapsed:.2f} s, until the reader let go"
+        assert result["results"] and result.get("memory_attempt")  # the receipt itself is recorded
+        assert not store.read("SELECT 1 FROM memory_outcomes")
+        assert any(s == "VACUUM" for s, _ in statements), f"no scrub was tried after retention: {statements}"
+        assert all(busy == 0 for _, busy in statements), f"scrub waited on the other process: {statements}"
+        assert store._meta("scrub_pending") == "1"  # blocked: the mark stays for a retry
+        assert store._conn.execute("PRAGMA busy_timeout").fetchone()[0] == 10000
+        again, statements, _ = _search_tracing_locks(provider, scrub_statements)
+        assert again.get("memory_attempt") and not statements, f"rewrote the file again at once: {statements}"
+    finally:
+        release.set()
+        thread.join(5)
+    assert not thread.is_alive()
+    if served_by == "receipt":
+        monkeypatch.setattr(journal, "_SCRUB_RETRY_S", 0)  # the retry window has passed
+        assert call(provider, "search", query="Alice observatory")["memory_attempt"]
+    else:
+        assert store.prune_experiences() == 0  # a writer open: nothing is due, the mark is
+    assert store._meta("scrub_pending") is None
+    assert marker.encode() not in _on_disk(store.db_path)
 
 
 def test_retention_cap_applies_on_open_and_absent_journal_is_not_created(tmp_path):

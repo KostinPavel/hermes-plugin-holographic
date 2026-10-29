@@ -18,6 +18,9 @@ MAX_REFS = 100
 _ATTEMPT_BUSY_MS = 50
 _ATTEMPT_MAX_TRIES = 2
 _SLOW_ATTEMPT_MS = 25
+# A file rewrite another process blocked is retried by a receipt write at most this often: while a reader elsewhere
+# stays, each VACUUM would add the whole database to the WAL again.
+_SCRUB_RETRY_S = 60
 logger = logging.getLogger(__name__)
 _ID = re.compile(r"[A-Za-z0-9_-]{1,80}\Z")
 OUTCOMES = frozenset(("useful", "dead_end", "corrected", "unknown"))
@@ -101,6 +104,8 @@ class ExperienceMixin:
             due = self._one("SELECT count(*) AS n, coalesce(sum(created_at <= ?), 0) AS expired FROM memory_attempts",
                             (time.time() - TTL,))
             if not due["expired"] and due["n"] <= MAX_ATTEMPTS:
+                if self._meta("scrub_pending") is not None:
+                    self.scrub()  # an outcome a receipt write removed and could not scrub then
                 return 0  # the normal open: a read, no write transaction
             prior_timeout = self._conn.execute("PRAGMA busy_timeout").fetchone()[0]
             self._conn.execute(f"PRAGMA busy_timeout={min(prior_timeout, _ATTEMPT_BUSY_MS)}")
@@ -121,6 +126,7 @@ class ExperienceMixin:
         timings = {}
         status = "error"
         tries = 0
+        result = None
         with self._lock:
             lock_ms = (time.perf_counter() - started) * 1000
             prior_timeout = self._conn.execute("PRAGMA busy_timeout").fetchone()[0]
@@ -140,7 +146,7 @@ class ExperienceMixin:
                         finally:
                             transaction_ms += (time.perf_counter() - phase) * 1000
                         status = "ok"
-                        return result
+                        break
                     except sqlite3.OperationalError as exc:
                         code = getattr(exc, "sqlite_errorcode", None)
                         busy = (code is not None and (code & 0xff) == sqlite3.SQLITE_BUSY) or (
@@ -156,6 +162,30 @@ class ExperienceMixin:
                                    lock_ms, schema_ms, *(f"{timings[k]:.1f}" if k in timings else "-"
                                                          for k in ("begin", "work", "commit")),
                                    transaction_ms, total_ms, tries, status)
+        self._scrub_after_receipt()
+        return result
+
+    def _scrub_after_receipt(self):
+        """After the receipt's transaction, not inside it: rewrite the file when retention removed an outcome (or a
+        forget left the rewrite pending), on this open connection — without it the correction text stayed in the
+        main file or the WAL until the next open. Only when the mark is set, so a normal receipt pays one meta read.
+        Busy timeout 0 as at forget (scrub): another process reading the database makes it come back at once with
+        the mark kept, and a receipt write retries it at most every _SCRUB_RETRY_S; a writer open retries too."""
+        try:
+            with self._lock:
+                if self._meta("scrub_pending") is None:
+                    self._entry["receipt_scrub_failed"] = None  # served elsewhere (an open, a forget): no wait
+                    return
+                failed = self._entry.get("receipt_scrub_failed")
+                if failed is not None and time.monotonic() - failed < _SCRUB_RETRY_S:
+                    return
+                started = time.perf_counter()
+                done = self.scrub()
+                self._entry["receipt_scrub_failed"] = None if done else time.monotonic()
+                logger.info("holographic: file rewrite after journal retention %s in %.1f ms",
+                            "done" if done else "deferred", (time.perf_counter() - started) * 1000)
+        except sqlite3.Error as exc:  # the receipt is committed; the mark stays for the next try
+            logger.warning("holographic: file rewrite after journal retention deferred (%s)", exc)
 
     @contextlib.contextmanager
     def _timed_experience_tx(self, timings):

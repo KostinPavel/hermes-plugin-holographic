@@ -15,9 +15,12 @@ plugins:
 - **The whole block counts**: the `## Holographic Memory …` header, every fact line with its `#id [trust]`,
   `(by meaning)`, `(inferred)` and `recall_source` suffix, and the `Memory attempt:` line when the experience journal
   is on. The fact-count limit still applies; the budget is an extra limit on top of it.
-- **A fact is never cut.** A fact whose line does not fit is left out whole: a cut can drop the "not", the condition
-  or the date and turn it into a different claim. The next, shorter fact may still fit, so the facts that go in are
-  not always a prefix of the ranking, but they keep its order.
+- **The budget never cuts a line.** A fact whose line does not fit is left out whole: a cut can drop the "not", the
+  condition or the date and turn it into a different claim. The next, shorter fact may still fit, so the facts that
+  go in are not always a prefix of the ranking, but they keep its order. This is a guarantee about the budget, not
+  about every line: the older 300-character cap on a prefetch line (it predates the budget and applies with the
+  budget on or off) still shortens a longer fact to 299 characters and "…" — see the stand below. `fact_store search`
+  returns such a fact in full.
 - **A left-out fact is not "recalled"**: it gets no recall count, no journal receipt, and it is not held back by
   `prefetch_repeat_turns`, so the next turn can bring it.
 - **Nothing fits** → no block at all, as on a turn with nothing to recall.

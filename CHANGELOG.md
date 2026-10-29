@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- An outcome removed by journal retention on a long-open store now leaves the file at once. Retention on a receipt write deleted the expired outcome and marked the file for a rewrite, but nothing on that connection served the mark: the next `prune_experiences()` saw nothing due and returned, so the correction text stayed in the main file or the WAL until the store was opened again (Codex review of 0.22.2, reproduced in WAL mode). The receipt write now runs the forget scrub (VACUUM and WAL checkpoint) right after its own transaction when the mark is set, with busy timeout 0: another process reading the database makes it come back at once with the mark kept, and search answers while that process still reads. A blocked rewrite is retried by a receipt write at most once a minute (each VACUUM while a reader stays would add the whole database to the WAL again) and by every writer open, which now serves a pending mark also when nothing is due. The price is a whole-file rewrite when an outcome expires: about 10 ms for 40 facts, 0.25-0.6 s for 3000 facts (15 MB) on a Windows laptop. Tests: `test_retention_scrubs_removed_outcome_on_the_open_connection`, `test_blocked_retention_scrub_neither_holds_search_nor_stays_pending`.
+- The context-budget wording promised more than it does: "a fact is never cut" (README, `docs/context-budget.md`, the 0.21.0 entry, the `prefetch_max_tokens` setting description) now says that the budget never cuts a line, and that the older 300-character cap on each prefetch line still applies with the budget on or off. Behaviour is unchanged.
+
 ## 0.22.2 — 2026-10-29
 
 ### Fixed
@@ -47,7 +53,7 @@
 ## 0.21.0 — 2026-10-28
 
 ### Added
-- `prefetch_max_tokens` (default `0` = off): a budget, in approximate tokens, for the whole block recalled before a turn — header, every fact line with its markers and source, and the experience journal's attempt line. A fact that does not fit is left out whole, never cut (a cut can lose a "not", a condition or a date); the facts that go in keep their ranking order, and a later, shorter fact may still fit. A left-out fact gets no recall count, no journal receipt and no repeat suppression, so the next turn can bring it. `fact_store stats` shows `prefetch_budget` (kept / left out / tokens of the last recall, total left out) while it is on; the debug log gives counts and fact ids, never text. A value that is not a whole number, or is negative, is a config problem. Unset or `0`: recall, stats and schemas are exactly as in 0.20.3.
+- `prefetch_max_tokens` (default `0` = off): a budget, in approximate tokens, for the whole block recalled before a turn — header, every fact line with its markers and source, and the experience journal's attempt line. A fact that does not fit is left out whole; the budget never cuts a line (a cut can lose a "not", a condition or a date), though the older 300-character line cap still applies; the facts that go in keep their ranking order, and a later, shorter fact may still fit. A left-out fact gets no recall count, no journal receipt and no repeat suppression, so the next turn can bring it. `fact_store stats` shows `prefetch_budget` (kept / left out / tokens of the last recall, total left out) while it is on; the debug log gives counts and fact ids, never text. A value that is not a whole number, or is negative, is a config problem. Unset or `0`: recall, stats and schemas are exactly as in 0.20.3.
 - The token count is an estimate without a tokenizer (ASCII ~4 characters per token, CJK/kana/Hangul/emoji ~1, other non-ASCII ~2), rounded up per line; no new dependency. See docs/context-budget.md.
 
 ### Tooling
