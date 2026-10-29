@@ -105,7 +105,7 @@ CREATE TABLE IF NOT EXISTS fact_merges (
 );
 CREATE INDEX IF NOT EXISTS idx_merges_into ON fact_merges(into_fact_id);
 
--- Unreleased: the names declared on a fact while a version was current, written when change / correct / update
+-- 0.22.0: the names declared on a fact while a version was current, written when change / correct / update
 -- closes that version, so revert links them again — a new text given with names replaces them, and a name no text
 -- says could not be told otherwise. Every record has a row with an empty name (the record exists, even when no name
 -- is left in it); closed_by is the version that closed it (a record another closing made is stale). A revert to the

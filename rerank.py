@@ -1,6 +1,6 @@
 """Second-stage rescoring: optional, offline-safe, off by default. A Cohere-compatible `/v1/rerank` endpoint (the
-de-facto standard; OpenAI has no rerank API at all) reorders the final candidate pool after the blend. No state of any
-kind — one synchronous HTTP call at recall time.
+de-facto standard; OpenAI has no rerank API at all) reorders the final candidate pool after the blend. One synchronous
+HTTP call at recall time; the only state kept is the endpoint's pause and its last measured speeds, in memory.
 
 Tested against llama-server (`--reranking --embedding --pooling rank`). Any server that answers the Cohere shape
 (``{"results": [{"index", "relevance_score"}]}``) without a key should work; the client sends no key, so a cloud API
@@ -14,12 +14,14 @@ Guardrails (from RFC #9):
   backoff 60 s doubling to 900 s (_PAUSE_FIRST / _PAUSE_MAX);
 - ``rerank_timeout`` defaults to 3.0 (issue #5: a slow local endpoint is the normal case; this is recall's only
   protection, there is no catch-up);
+- a call sends no more than the endpoint has shown it scores in half the timeout (RERANK_TIME_SHARE);
 - the reranker judges the pair's text only — no hrr_vector / trust / decay in the request.
 
 Design after itpartypattaya/hermes-plugin-holographic#9 by KostinPavel."""
 
 from __future__ import annotations
 
+import collections
 import json
 import logging
 import math
@@ -47,6 +49,15 @@ RERANK_PAIR_CHARS = 1000
 RERANK_MAX_QUERY_CHARS = 500
 DEFAULT_TOP_K = 40  # depth of the pool the cross-encoder sees; the first stage's limit is widened to match
 DEFAULT_TIMEOUT = 3.0  # seconds; 3.0, not 2.0: a slow local endpoint is the normal case (issue #5)
+# What one call may take of rerank_timeout (2026-10-29). A cross-encoder on a CPU scores the pairs at a steady speed,
+# so its time grows with every character it is sent: Mia's llama-server (jina-reranker-v2 Q4_K_M, 2 threads, ~485
+# tokens/s) answered 5 short facts in 0.4 s, 15 in 1.2 s and 40 in 3.3 s — over the default timeout, so the large
+# pools of a big store failed and paused the endpoint. A call sends as many of the first documents as the endpoint,
+# at the slowest of its last _SPEED_SAMPLES speeds, scores in this share of the timeout; the rest keep their order
+# behind the scored ones, as the tail beyond top_k does. The other half is the margin for a busy server and for text
+# with more tokens per character than the text measured. Before the first answer nothing is known and top_k goes out.
+RERANK_TIME_SHARE = 0.5
+_SPEED_SAMPLES = 5
 
 #: The core's budget for the provider's prefetch: _EXTERNAL_PREFETCH_TIMEOUT_S in agent/memory_manager.py.
 #: The embedding call and the rerank run back to back, so the sum of their clamps has to fit below
@@ -159,6 +170,11 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 _OPENER = net.opener(_NoRedirect)
 
 
+def _pair_document(query: str, document) -> str:
+    """The document as it goes out beside *query*: cut to what the query leaves of RERANK_PAIR_CHARS."""
+    return str(document)[:RERANK_PAIR_CHARS - len(query)]
+
+
 class Rescorer:
     """The endpoint: (query, documents) in, ``(index, score)`` pairs out. Shared by every store a provider opens;
     thread-safe. ``scores`` returns None on any failure (the caller keeps the current order)."""
@@ -186,6 +202,10 @@ class Rescorer:
         # True while a caller still waits in join() for that worker: a second call then finds a request in flight, not
         # an abandoned one, and must neither fail it nor pause the endpoint (independent review, 2026-10-25).
         self._awaited = False
+        # Seconds per character of the pairs, counted from the moment the connection was ready (net: "connected"):
+        # one per answered call, and one per call that timed out after connecting (a lower bound: the server had
+        # that long and did not answer). fitting() reads the slowest.
+        self._speeds: collections.deque = collections.deque(maxlen=_SPEED_SAMPLES)
 
     def unavailable(self) -> str:
         """Why the endpoint cannot be used at all (\"\" when it can): a refused address."""
@@ -245,9 +265,8 @@ class Rescorer:
             self.last_status = "skipped_single"
             return [(0, 1.0)]
         limit = int(self.settings.top_k)
-        docs = [documents[i] for i in range(min(limit, len(documents)))]
         body = {"model": self.settings.model, "query": query,
-                "documents": [str(d)[:RERANK_PAIR_CHARS - len(query)] for d in docs],
+                "documents": [_pair_document(query, d) for d in documents[:self.fitting(query, documents)]],
                 "top_n": limit}
         ranked = self._request(body)
         if ranked is _BUSY:
@@ -255,6 +274,24 @@ class Rescorer:
             return None
         self.last_status = "answered" if ranked is not None else f"failed: {self._last_error or 'unknown'}"
         return ranked
+
+    def fitting(self, query: str, documents: list[str]) -> int:
+        """How many of the first *documents* a call sends: top_k at most and, once the endpoint has answered or timed
+        out, as many as it scores in RERANK_TIME_SHARE of rerank_timeout at the slowest of its last speeds — two at
+        least, one would not be reordered. The provider's stage trace names the documents by the same count."""
+        query = (query or "").strip()
+        count = min(int(self.settings.top_k), len(documents))
+        with self._lock:
+            slowest = max(self._speeds, default=0.0)
+        if slowest <= 0.0:
+            return count
+        budget = RERANK_TIME_SHARE * self.settings.timeout / slowest  # characters of pairs
+        used = 0
+        for i, document in enumerate(documents[:count]):
+            used += len(query) + len(_pair_document(query, document))
+            if used > budget:
+                return max(i, min(2, count))
+        return count
 
     def _request(self, body: dict) -> list[tuple[int, float]] | None:
         """One request. Runs on a daemon thread; the caller waits ``rerank_timeout`` seconds and no longer."""
@@ -265,6 +302,7 @@ class Rescorer:
                                          method="POST")
         held = net.wire(request)  # the request's socket, for the caller to end the read on its deadline (issue #26)
         box: dict = {}
+        chars = sum(len(body["query"]) + len(d) for d in body["documents"])  # what the endpoint's time grows with
 
         def send():
             try:
@@ -343,6 +381,13 @@ class Rescorer:
                 # TimeoutError — a socket timeout must set the pause and raise failures, otherwise a slow
                 # server is polled every turn (PR #10, point 2).
                 noted = self._fail_locked("no answer (timeout)")  # both a live join and the worker's own deadline
+                connected = held.get("connected")
+                if chars and connected is not None and not isinstance(error, urllib.error.URLError):
+                    # Connected and not answered by the end of the wait: at least this slow, so the next call
+                    # (fitting) sends about half of this one. A timeout before the connection was ready (DNS, TCP,
+                    # TLS, a proxy) and a URLError's (sending the request) say nothing of the scoring speed.
+                    end = time.perf_counter() if alive else box.get("ended", time.perf_counter())
+                    self._speeds.append(max(end - connected, 0.0) / chars)
             self._log_failure(*noted)
             return None
         try:
@@ -371,6 +416,9 @@ class Rescorer:
                 return None  # a failure was counted while this request was in flight
             self._pause = self._paused_until = 0.0
             self._last_error = ""
+            connected = held.get("connected")
+            if chars and connected is not None:
+                self._speeds.append(max(box["ended"] - connected, 0.0) / chars)
         return ranked
 
     def _fail_locked(self, why: str) -> tuple:
