@@ -879,6 +879,10 @@ def test_every_text_of_a_night_record_passes_the_screen(family):
         {"entry": "Алёна не берёт сыр.", "fact_negations": [["не", "ест"]], "memory_negations": []},
         {"entry": "Алёна покупает сыр 3 раза в месяц.", "fact_numbers": ["2", "12.03", "month:03", "weekday:6"],
          "memory_numbers": ["3"]},
+        # a number dream writes of any length (its _numbers has no cap: an id, a card or account number) (third
+        # Codex pass: a 32-character cap dropped the whole conflict)
+        {"entry": "Номер карты лояльности Алёны другой.", "fact_numbers": ["340282366920938463463374607431768211455"],
+         "memory_numbers": ["1234567890123456789012345678901234567"]},
     ]})
     report["md_decays"] += [
         {"index": INJECTION, "entry": "Полить фикус в субботу.", "last_mention_days": 10.0},
@@ -894,7 +898,9 @@ def test_every_text_of_a_night_record_passes_the_screen(family):
     memory = [p for p in snap["PENDING"] if p["kind"] == "memory_conflict"]
     assert [(p["entry"], p.get("fact_numbers"), p.get("memory_numbers")) for p in memory] == [
         ("Алёна не ест молочное.", None, None),
-        ("Алёна покупает сыр 3 раза в месяц.", ["2", "12.03", "month:03", "weekday:6"], ["3"])]
+        ("Алёна покупает сыр 3 раза в месяц.", ["2", "12.03", "month:03", "weekday:6"], ["3"]),
+        ("Номер карты лояльности Алёны другой.", ["340282366920938463463374607431768211455"],
+         ["1234567890123456789012345678901234567"])]
     relevant = [p for p in snap["PENDING"] if p["kind"] == "relevant"]
     assert [(p["id"], p["last_mention_days"]) for p in relevant] == [("R-3", 61.0), ("R-9", None)]
     night = [e for e in snap["FEED"] if e["k"] == "night"]

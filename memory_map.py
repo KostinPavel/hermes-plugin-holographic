@@ -61,9 +61,10 @@ _DREAM_FILES = {"proposals": ("cache", "dream-proposals.json"), "report": ("cach
 _PROPOSAL_ID = re.compile(r"D-\d{1,9}")
 _CODE = re.compile(r"[a-z_]{1,40}")
 _STAT_KEY = re.compile(r"[a-z][a-z0-9_]{0,59}")
-# What dream writes as a MEMORY conflict's numbers (its _numbers: a number, a date or a time as written, a month or a
-# day of the week said in words), and the longest negated phrase it writes (a word or two after the negation)
-_NIGHT_NUMBER = re.compile(r"\d(?:[\d.,:/-]{0,30}\d)?|month:\d{2}|weekday:[1-7]")
+# What dream writes as a MEMORY conflict's numbers (its _numbers: a number, a date or a time as written, of any length
+# — an id or an account number too —, a month or a day of the week said in words), and the longest negated phrase it
+# writes (a word or two after the negation)
+_NIGHT_NUMBER = re.compile(r"\d(?:[\d.,:/-]*\d)?|month:\d{2}|weekday:[1-7]")
 _NEGATION_MAX = 120
 _QUEUE_FILE = re.compile(r"[A-Za-z0-9_.-]{1,80}\.json")
 _HIT_LISTS = ("fact_numbers", "memory_numbers", "fact_negations", "memory_negations")
