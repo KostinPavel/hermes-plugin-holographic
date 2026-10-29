@@ -666,8 +666,6 @@ def _keys(word: str, langs: tuple[str, ...], written: str = "", determined: bool
     # A Latin spelling joins its group only in English or in text of no known language: German "über" folds to
     # "uber", French "chat" is a cat, Spanish "botes" are boats (review 2026-10-15).
     loan = _loan_keys(word) if word_script(word) != "latin" or "en" in langs else frozenset()
-    if _RU_FORM_GROUPS and "ru" in langs:
-        loan |= _ru_form_keys(word)
     return frozenset(keys | loan)
 
 
@@ -751,30 +749,34 @@ def _loan_keys(word: str) -> frozenset:
 # every two-letter stem would join different words («ель» / «ели» of «есть», «рой» / «рою» of «рыть»), so each line
 # below is one noun's own case forms, written out and checked: on 0.22.1 most of them do not meet the first form; no
 # other Russian lexeme of Wikidata (CC0) has a form spelled like them, or the form is left out; forms that are also a
-# verb form are left out by hand (Wikidata has few Russian verbs): «ели», «шей», «рою», «вою», «лая». Kept although
-# also another word, judged rare in what people write: «чая», «чаю», «чаем» of «чаять»; «рот» of «рота»; «звонка» of
-# «звонкий». A word of a group gets the group's mark ("ru=:" + its first form), which only another form of the same
-# group meets, and its forms as whole FTS5 words (as a borrowed word does). «день» is not listed: measured, «дни
-# рождения» and «в какие дни» then met every «День рождения …» of the household set (two more questions with another
-# person's birthday in the top five); a word that light needs the question's other words, which the gate weighs
-# against it. Measured in plans/2026-10-29-two-topic-and-short-nouns-experiment.md (outside the repository).
+# verb form are left out by hand (Wikidata has few Russian verbs): «ели», «шей», «рою», «вою», «лая», «матери»
+# (материть); «потолок» (потолочь) is the noun's first form, and without it the rest of its forms already share the
+# stem «потолк», so the noun is not listed (Codex review 2026-10-29). «маю» is left out too: in Ukrainian it is "I
+# have". Kept although also another word, judged rare in what people write: «чая», «чаю», «чаем» of «чаять»; «рот» of
+# «рота»; «звонка» of «звонкий». A word of a group gets the group's mark ("ru=:" + its first form), which only another
+# form of the same group meets, and its forms as whole FTS5 words (as a borrowed word does). These keys are for search
+# and recall only (Word.forms): the write-time checks (content_keys, the claim of a conflict) compare a word by its own
+# keys, so «В мае я предпочитаю…» is no duplicate of «Мая предпочитает…». And only in Russian text (_ru_text): Cyrillic
+# alone is not Russian («Я маю новий план» is Ukrainian). «день» is not listed: measured, «дни рождения» and «в какие
+# дни» then met every «День рождения …» of the household set (two more questions with another person's birthday in the
+# top five); a word that light needs the question's other words, which the gate weighs against it. Measured in
+# plans/2026-10-29-two-topic-and-short-nouns-experiment.md (outside the repository).
 _RU_FORM_GROUPS = False
 _RU_FORMS = """
 чай чая чаю чаем чае чаи чаёв чаям чаями чаях
 сон сна сну сном сне сны снов снам снами снах | рот рта рту ртом рте рты ртов ртам ртами ртах
 лоб лба лбу лбом лбе лбы лбов лбам лбами лбах | пёс пса псу псом псе псы псов псам псами псах
-лёд льда льду льдом льде льды льдов льдам льдами льдах | май мая маю маем мае | рай раю раем рае
+лёд льда льду льдом льде льды льдов льдам льдами льдах | май мая маем мае | рай раю раем рае
 бой боя бою боем бое бои боёв боям боями боях | ум ума уму умом уме умы умов умам умах
 имя имени именем имена имён именам именами именах | шея шеи шее шею шеей шеею шеям шеями шеях
 ухо ухом уши ушей ушам ушами ушах | уха ухи ухой ухою | ель елью елям елями елях
 яйцо яйца яйцу яйцом яйце яиц яйцам яйцами яйцах | отец отца отцу отцом отце отцы отцов отцам отцами отцах
-мать матери матерью матерей матерям матерями матерях | дочь дочери дочерью дочерей дочерям дочерями дочерьми дочерях
+мать матерью матерей матерям матерями матерях | дочь дочери дочерью дочерей дочерям дочерями дочерьми дочерях
 ребёнок ребёнка ребёнку ребёнком ребёнке
 подарок подарка подарку подарком подарке подарки подарков подаркам подарками подарках
 рынок рынка рынку рынком рынке рынки рынков рынкам рынками рынках
 звонок звонка звонку звонком звонке звонки звонков звонкам звонками звонках
 кусок куска куску куском куске куски кусков кускам кусками кусках
-потолок потолка потолку потолком потолке потолки потолков потолкам потолками потолках
 палец пальца пальцу пальцем пальце пальцы пальцев пальцам пальцами пальцах
 перец перца перцу перцем перце перцы перцев перцам перцами перцах
 огурец огурца огурцу огурцом огурце огурцы огурцов огурцам огурцами огурцах
@@ -809,6 +811,22 @@ def _ru_form_table() -> dict:
 def _ru_form_keys(word: str) -> frozenset:
     """The group keys of a case form of a listed Russian noun (_RU_FORMS), or nothing."""
     return _ru_form_table().get(word, frozenset())
+
+
+# Common Ukrainian and Belarusian words spelled with letters Russian has too (і, ї, є, ґ, ў are _NOT_RUSSIAN): one of
+# them in a text says it is not Russian, and the Russian case forms stay out of it. None of them is a Russian word.
+_NOT_RUSSIAN_WORDS = _folded("""що це цей ця цю цих який яка яке якого якому якою якщо вона воно вони його ми ви
+    вже ще або дуже треба можна був була було були будуть хоче можу можемо маю мають тобто отже проте але аби хто
+    чому куди щось хтось десь вчора трохи мене також щоб чи тепер мого твого нашого вашого кожен кожна кожного багато
+    чого поки спочатку завжди
+    што гэта гэты гэтая ён яны таксама ёсць няма сёння учора твая яго яе трэба дзе чаму куды адкуль будзе каб""")
+
+
+def _ru_text(lowered: str, words) -> bool:
+    """Is a Cyrillic text Russian, as far as it tells: no letter of Ukrainian or Belarusian (_NOT_RUSSIAN) and none
+    of their common words (_NOT_RUSSIAN_WORDS). A text of a few words may say nothing either way and counts as Russian;
+    «Я маю новий план» does not."""
+    return _NOT_RUSSIAN.search(lowered) is None and _NOT_RUSSIAN_WORDS.isdisjoint(words)
 
 
 # -- same-root words ---------------------------------------------------------------------------------------------
@@ -1370,6 +1388,9 @@ class Word:
     lemmas: frozenset = frozenset()  # German / Spanish: stems of the lemmas whose form the word is ("ging": geh)
     lemma_of: tuple = ()  # those lemmas, and the word when it is one: a search for it also looks for their forms
     form_lang: str = ""  # "de" / "es" when the word's language is determined: lemma stems are compared only then
+    # the keys of its Russian case-form group (_RU_FORMS, an experiment) that are in `keys`: search and recall only, the
+    # write-time checks leave them out (content_keys, FactRetriever._claim)
+    forms: frozenset = frozenset()
 
 
 @dataclass(frozen=True)
@@ -1435,6 +1456,8 @@ def analyze(text: str) -> Analysis:
     # Cyrillic is Russian for roots unless the text has letters Russian does not (Ukrainian, Belarusian): the Russian
     # suffix rules would join "головний" (main) with "гол" (goal)
     russian = _NOT_RUSSIAN.search(lowered) is None
+    # Russian case forms (_RU_FORMS, an experiment, off by default): only in a text that is Russian as far as it tells
+    ru_forms = _RU_FORM_GROUPS and russian and _ru_text(lowered, {fold(g) for g in groups})
     # German compounds are split, and German or Spanish verb forms get their lemmas, only in text of that language
     german = determined and "de" in langs and "en" not in langs
     forms_lang = "" if not _LEMMA_FORMS else "de" if german else         "es" if determined and "es" in langs and "en" not in langs else ""  # "he went": English as much as Spanish
@@ -1458,6 +1481,9 @@ def analyze(text: str) -> Analysis:
             else word
         written = "" if written == word else written  # only a word whose letters folding changed is stemmed twice
         word_keys = _keys(word, word_langs, written, determined) if word_langs else frozenset({word})
+        forms = _ru_form_keys(word) - word_keys if ru_forms and script == "cyrillic" and not ident else frozenset()
+        if forms:
+            word_keys |= forms
         bag.add(word)
         keys |= word_keys
         for piece in (fold(e) for e in extra):  # the whole and the parts of a hyphenated word, for containment
@@ -1486,7 +1512,7 @@ def analyze(text: str) -> Analysis:
             # query (see _SCAN_LATIN); text of undetermined language might be in any of them
             scan=script in _SCAN_SCRIPTS or (script == "latin" and not _SCAN_LATIN.isdisjoint(word_langs)),
             fts=script not in _SCAN_SCRIPTS, roots=word_roots_, root_lang=root_lang, head=head, mods=mods,
-            mod_parts=mod_parts, lemmas=lemma_stems, lemma_of=lemma_of, form_lang=form_lang))
+            mod_parts=mod_parts, lemmas=lemma_stems, lemma_of=lemma_of, form_lang=form_lang, forms=forms))
     # the suffix test of 0.6.0 ("katze" ends "familienkatze") stays for the words the dictionary knows nothing of
     unknown = frozenset(w for w in bag if de_parts(w) is None) if german and _DE_COMPOUNDS and _de_splitter() else None
     folded = _fold_text(lowered)
@@ -1556,7 +1582,7 @@ def content_keys(text: str) -> list[frozenset]:
         if UNSEGMENTED.search(w.text):
             out += [frozenset({g}) for g, weight in run_grams(w.text) if weight]
         elif w.identifier or (not w.stop and len(w.text) > 1):
-            out.append(w.keys)
+            out.append(w.keys - w.forms if w.forms else w.keys)  # a case-form group is for recall, not for this
     return list(dict.fromkeys(out))
 
 
@@ -2321,45 +2347,118 @@ _QUESTION_WORDS = """что чем чего чему кто кого кому к
     what when where which who whom whose why how""".split()
 _QUESTION_PREPOSITIONS = """во в на с со у для по из о об при за от до к ко про через после перед
     at on in for with to from by of about""".split()
-_WH = "|".join(sorted(_QUESTION_WORDS, key=len, reverse=True))
-_PREP = "|".join(sorted(_QUESTION_PREPOSITIONS, key=len, reverse=True))
-_QUESTION_START = re.compile(rf"(?<![\w-])(?:(?:{_PREP})\s+)?(?:{_WH})(?![\w-])", re.IGNORECASE)
-# where a second question begins: after "?" or ";" (and an «и» / «а» / "and"), or after «и» / «а» / «а также» / "and"
-# (with a comma or not), at a question word: not «и» between two words of one question («чай и кофе»)
-_QUESTION_JOIN = re.compile(rf"(?:[?;]+\s*(?:(?:и|а|and)\s+)?|,?\s+(?:и|а|а\s+также|and)\s+)"
-                            rf"(?=(?:(?:{_PREP})\s+)?(?:{_WH})(?![\w-]))", re.IGNORECASE)
+_WH = frozenset(_QUESTION_WORDS)
+_PREP = frozenset(_QUESTION_PREPOSITIONS)
+# A question word that asks which one, or how many, of something: the word after it may be all it asks about, and the
+# question's verb may stand in the next one («какой чай и какой кофе она любит?», "which tea and which coffee does she
+# like?" are one question about two things). Its question stands alone only with a word of a clause of its own.
+_DETERMINERS = frozenset("""какой какая какое какие какого какому каким каком какую каких какими каков какова каковы
+    который которая которое которые которого которой которому которым котором которую которых чей чья чьё чье чьи
+    чьего чьей чьих сколько what which whose how""".split())
+# words of a clause: a personal pronoun, a predicative, a form of "be", an auxiliary or a modal verb
+_CLAUSE_WORDS = frozenset("""я ты он она оно мы вы они меня мне тебя тебе его её ее ему ей нас нам вас вам их им него
+    неё нее нему ней них ним нужно надо можно нельзя должен должна должно должны есть будет будут был была было были
+    i you he she it we they me him us them do does did is are was were be been am should shall can could will would
+    must may might have has had need needs""".split())
+# One pass over the message: a word (its hyphenated parts together: «что-то» is no «что») or one mark. A regular
+# expression that looks ahead over the spaces from every position takes quadratic time on a long run of them.
+_SPLIT_TOKEN = re.compile(r"[^\W_]+(?:-[^\W_]+)*|[?;,«»„“”\"]")
+_QUOTES = {"«": "»", "„": "“", "“": "”", '"': '"'}  # an opening quote -> the one that closes it
+_JOINS = frozenset({"и", "а", "and"})
 # a person the other question names: «и какой чай она любит?»
 PRONOUNS_3P = _folded("""он она оно они его её ее него неё нее ему ей нему ней им ими ним ними их них нём нем ею нею
     he she they him her them his hers their theirs""")
 
 
+def _stands_alone(tokens: list, at: int, end: int) -> bool:
+    """Do the words after the question word tokens[at], up to *end*, make a question of their own: at least one word,
+    and, after a word that asks which one (_DETERMINERS), a word of a clause (a pronoun, an auxiliary, a predicative or,
+    past the word it asks about, a Russian verb form)."""
+    after = [t for t, _, _ in tokens[at + 1:end] if t[0].isalnum()]
+    if not after:
+        return False
+    if tokens[at][0] not in _DETERMINERS:
+        return True
+    return any(w in _CLAUSE_WORDS for w in after) or any(
+        len(w) >= 4 and _RU_VERB.search(w.replace("ё", "е")) for w in after[1:])
+
+
 def two_questions(text: str) -> tuple[str, str] | None:
-    """The two questions of a message that asks exactly two, each starting with a question word, or None: one
-    question, three or more, or a «и» that joins two words of one question."""
+    """The two questions of a message that asks exactly two, or None. The second begins at a question word (after a
+    preposition or not) that follows "?" or ";" (and an «и» / «а» / "and" or not), or «и» / «а» / «а также» / "and"
+    (with a comma or not); a boundary inside quotes does not count (a quoted line is what is asked about). The first
+    has a question word too, and each stands alone (_stands_alone). When in doubt — one question, three or more, «и»
+    between two words of one question («какой чай и кофе», "which tea and which coffee does she like"), an unclosed
+    quote — None: the message is not split. Linear in the length of the message."""
     text = (text or "").strip()
-    joins = [m for m in _QUESTION_JOIN.finditer(text) if m.end() < len(text)]
+    tokens = [(m.group(0).lower(), m.start(), m.end()) for m in _SPLIT_TOKEN.finditer(text)]
+    quoted, stack = [], []
+    for t, _, _ in tokens:  # a token inside quotes (an unclosed quote runs to the end)
+        quoted.append(bool(stack))
+        if stack and t == _QUOTES[stack[-1]]:
+            stack.pop()
+        elif t in _QUOTES:
+            stack.append(t)
+    n = len(tokens)
+
+    def wh_at(k: int) -> int:
+        """The index of the question word a question starting at token k opens with, or -1."""
+        if k < n and not quoted[k] and tokens[k][0] in _WH:
+            return k
+        if k + 1 < n and not quoted[k] and not quoted[k + 1] and tokens[k][0] in _PREP and tokens[k + 1][0] in _WH:
+            return k + 1
+        return -1
+
+    joins, i = [], 0  # (where the first question ends, the token the second one starts at)
+    while i < n:
+        t = tokens[i][0]
+        if not quoted[i] and t in ("?", ";"):
+            k = i
+            while k + 1 < n and not quoted[k + 1] and tokens[k + 1][0] in ("?", ";"):
+                k += 1
+            start = k + 1
+            if start < n and not quoted[start] and tokens[start][0] in _JOINS:
+                start += 1
+            if wh_at(start) >= 0:
+                joins.append((tokens[i][1], start))
+                i = start  # past the «и» after the mark: it is this boundary, not another one
+            else:
+                i = k + 1
+            continue
+        if not quoted[i] and t in _JOINS and i > 0:
+            start = i + 2 if t == "а" and i + 1 < n and tokens[i + 1][0] == "также" else i + 1
+            if wh_at(start) >= 0:
+                joins.append((tokens[i - 1][1] if tokens[i - 1][0] == "," else tokens[i][1], start))
+        i += 1
     if len(joins) != 1:
         return None
-    first, second = text[:joins[0].start()].strip(" ,;?"), text[joins[0].end():].strip()
-    if not first or not second or not _QUESTION_START.search(first):
+    cut, start = joins[0]
+    end_first = next(k for k in range(n) if tokens[k][1] >= cut)
+    first_wh = next((k for k in range(end_first) if not quoted[k] and tokens[k][0] in _WH), -1)
+    second_wh = wh_at(start)
+    if first_wh < 0 or not _stands_alone(tokens, first_wh, end_first) or not _stands_alone(tokens, second_wh, n):
+        return None
+    first, second = text[:cut].strip(" ,;?"), text[tokens[start][1]:].strip()
+    if not first or not second:
         return None
     return first, second
 
 
-def question_parts(text: str) -> tuple[tuple[frozenset, bool], tuple[frozenset, bool]] | None:
-    """For a message of two questions (two_questions): each question's term keys (Term.stem) and whether it has a
-    pronoun of the third person, read in the whole message, as the gate reads it (the language, the function words):
-    the first question is the message's first len(analyze(first).words) words."""
+def question_parts(text: str) -> tuple[tuple[frozenset, bool, str], tuple[frozenset, bool, str]] | None:
+    """For a message of two questions (two_questions): each question's term keys (Term.stem), whether it has a
+    pronoun of the third person, and its text; the words read in the whole message, as the gate reads it (the language,
+    the function words): the first question is the message's first len(analyze(first).words) words."""
     parts = two_questions(text)
     if parts is None:
         return None
     words = analyze(text).words
     n = len(analyze(parts[0]).words)
 
-    def part(ws):
-        return frozenset(k for w in ws if (k := _term_key(w)) is not None), any(w.text in PRONOUNS_3P for w in ws)
+    def part(ws, said):
+        return (frozenset(k for w in ws if (k := _term_key(w)) is not None), any(w.text in PRONOUNS_3P for w in ws),
+                said)
 
-    return part(words[:n]), part(words[n:])
+    return part(words[:n], parts[0]), part(words[n:], parts[1])
 
 
 _ja_ready = True  # every word list above is built: Japanese spelling variants may load from here on

@@ -536,6 +536,18 @@ def _window_keep(keep: list[int] | None, ranked_len: int, need: int = _WINDOW_MI
     return sorted(out)
 
 
+def _free_places(facts: list[dict], rescued: set[int], places: int = _PREFETCH_FACTS) -> list[dict]:
+    """The ranked pool with the facts let in only by prefetch_clause_coverage (*rescued*) kept to the places the
+    others leave free among the first *places*: the reranker may put such a fact first, but it never takes the place of
+    a fact that would be recalled without it (Codex review 2026-10-29). The rank order stays. Nothing rescued: the pool
+    as it is."""
+    if not rescued:
+        return facts
+    room = max(places - sum(1 for f in facts if f["fact_id"] not in rescued), 0)
+    allowed = {f["fact_id"] for f in [f for f in facts if f["fact_id"] in rescued][:room]}
+    return [f for f in facts if f["fact_id"] not in rescued or f["fact_id"] in allowed]
+
+
 def blend_union(union: list[dict], ranked: list[tuple[int, float]], weight: float) -> list[dict]:
     """rerank_weight > 0: the reranker's min-max-normalised score blended with the first score of
     EVERY pool member (point 4(4) of the 10:34 review): facts the endpoint did not score (beyond
@@ -1156,8 +1168,12 @@ class HolographicMemoryProvider(MemoryProvider):
         rescorer = self._rescorer
         assert rescorer is not None  # called only when rerank is on
 
-        # Stream 1: membership is decided by the words, before any rank.
-        lexical = self._retriever.relevant(query, candidates, self._min_coverage)
+        # Stream 1: membership is decided by the words, before any rank. A fact let in only by
+        # prefetch_clause_coverage (an experiment, off by default) keeps that mark to the final cut (_free_places).
+        # With the experiment off the call is the one of main.
+        rescued: set[int] = set()
+        lexical = self._retriever.relevant(query, candidates, self._min_coverage,
+                                           **({"rescued": rescued} if self._clause_coverage else {}))
         self._observe("coverage_admitted", lexical)
         have = {f["fact_id"] for f in lexical}
         # Streams 2 and 3 by the same function: here have = ALL the lexical (union disjoint by construction);
@@ -1216,7 +1232,7 @@ class HolographicMemoryProvider(MemoryProvider):
                     # (maintainer 24:10, point 1: three proxy facts — off returns 3 lines, on returned 2).
                     fresh = ([union[i] for i in keep] if keep else []) + union[len(ranked):]
                 self._observe("rerank_window_admitted", fresh)
-                return fresh[:_PREFETCH_FACTS], by_meaning
+                return _free_places(fresh, rescued)[:_PREFETCH_FACTS], by_meaning
         except Exception as exc:  # noqa: BLE001 - ANY exception in the stage acts like a failed call (point 3)
             # Any exception raised by the stage (call, mapping, window — Codex caught a Thread.start()
             # RuntimeError, the counter overflow came even earlier) used to go to the prefetch handler:

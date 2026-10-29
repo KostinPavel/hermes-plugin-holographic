@@ -7,20 +7,24 @@ half of the words: the fact about tea holds «Злате», «чай» and «л�
 out gets a second look against each of the message's two questions alone. It is let in only when it holds at least two
 words of that question itself and covers the question's words (a word no fact holds counts against it, as in the gate),
 and when the question is about a person — named in it, or «она» / «он» of a name in the other question — only if the
-fact names that person: «Тимур любит зелёный чай» answers «какой чай она любит» only when «она» is Тимур. A rescued fact
-comes after the facts the gate kept, so it never takes the place of one of them. The facts are synthetic; the household
-is invented."""
+fact names that person: «Тимур любит зелёный чай» answers «какой чай она любит» only when «она» is Тимур. Whose answer
+it is must be told for sure (Codex review 2026-10-29): «она» of one of two people, a name the store does not know, a word
+that is also a known name («чай» when a dog is called «Чай») — nothing is let in. A rescued fact comes after the facts
+the gate kept and, with the reranker on too, only takes a place the others leave free, so it never takes the place of
+one of them. A message is split only outside quotes and only into two questions that each stand alone. The facts are
+synthetic; the household is invented."""
 
 from __future__ import annotations
 
 import json
+import time
 
 import pytest
 
 pytest.importorskip("numpy")
 pytest.importorskip("snowballstemmer")
 
-from hermes_plugin_holographic import HolographicMemoryProvider
+from hermes_plugin_holographic import HolographicMemoryProvider, rerank
 
 # key -> (text, declared names). Several people like tea, so that the second question has answers about the wrong
 # person; the words of the questions are spread over the other facts, so that IDF is that of a household store.
@@ -61,14 +65,14 @@ TWO = "что Злате нужно обязательно взять с соб�
 OTHER_TEA = {"timur_tea", "ira_tea", "vera_tea", "gleb_tea", "tea_shop"}
 
 
-def _store(tmp_path, on: bool, names: bool = True):
-    config = {"db_path": str(tmp_path / "two.db"), "hrr_dim": 1024}
+def _store(tmp_path, on: bool, names: bool = True, extra: dict | None = None, **config):
+    config = {"db_path": str(tmp_path / ("two-on.db" if on else "two.db")), "hrr_dim": 1024, **config}
     if on:
         config["prefetch_clause_coverage"] = True
     provider = HolographicMemoryProvider(config=config)
     provider.initialize(session_id="two")
     back = {}
-    for key, (text, entities) in FACTS.items():
+    for key, (text, entities) in {**FACTS, **(extra or {})}.items():
         args = {"action": "add", "content": text}
         if names and entities:
             args["entities"] = entities
@@ -175,7 +179,136 @@ def test_a_second_question_sharing_one_word_with_a_fact_does_not_bring_it(on):
     ("Злата любит чай и как это понимать", None),  # the first part asks nothing
     ("Что взять? Какой чай? Когда день рождения?", None),  # three questions: not two
     ("я выпью чай и пойду спать", None),
+    # one question about two things: "which tea" alone asks nothing, the verb is in the second half (Codex review)
+    ("which tea and which coffee does she like?", None),
+    ("какой зелёный чай и какой кофе она любит?", None),
+    # a quoted line is what is asked about, not two questions of the message (Codex review)
+    ("Что означает у Златы длинная надпись про плавание очки шапочку и четверг „Что упаковать? Какой чай она любит?“?",
+     None),
+    ("Что значит надпись «что взять в четверг и какой чай она любит»?", None),
 ])
 def test_the_split_finds_exactly_two_questions(message, parts):
     from hermes_plugin_holographic.text import two_questions  # new in this experiment: the other tests run on 0.22.1
     assert two_questions(message) == parts
+
+
+# -- whose answer it is (Codex review 2026-10-29, finding 1) --------------------------------------------------------
+
+def _on_and_off(tmp_path, query, extra=None) -> tuple[list, list]:
+    """What the message recalls with prefetch_clause_coverage on and off, over the same facts."""
+    out = []
+    for on in (True, False):
+        provider, back = _store(tmp_path, on, extra=extra)
+        try:
+            out.append(_recalled(provider, back, query))
+        finally:
+            provider.shutdown()
+    return out[0], out[1]
+
+
+def test_she_of_one_of_two_people_brings_neither_answer(tmp_path):
+    # «она» may be Злата or Тимур: whose tea is asked cannot be told, so no tea fact is let in, Тимур's least of all
+    on, off = _on_and_off(tmp_path, "что Тимуру и Злате нужно обязательно взять с собой на плавание в четверг и какой "
+                                    "чай она любит?")
+    assert "timur_tea" not in on, on
+    assert on == off, (on, off)
+
+
+def test_a_name_the_store_does_not_know_brings_nobodys_answer(tmp_path):
+    # «клара» typed in lower case is a word no fact holds: it may be a name, and the tea of Ира or Тимур is not hers
+    on, off = _on_and_off(tmp_path, "что Злате нужно обязательно взять с собой на плавание в четверг и какой чай любит "
+                                    "клара?")
+    assert not OTHER_TEA & set(on), on
+    assert on == off, (on, off)
+
+
+def test_a_word_that_is_also_a_known_name_does_not_say_whose_answer_it_is(tmp_path):
+    # a dog called «Чай»: the word «чай» in the question is no name of anybody, and «она» stays Злата's or nobody's
+    dog = {"dog": ("Чай — так зовут собаку Глеба.", ["Чай"])}
+    on, off = _on_and_off(tmp_path, TWO, extra=dog)
+    assert not OTHER_TEA & set(on), on
+
+
+def test_a_quoted_question_is_not_split(tmp_path):
+    # the message asks what an inscription means; the questions are the inscription's (Codex review, finding 2)
+    on, off = _on_and_off(tmp_path, "Что означает у Златы длинная надпись про плавание очки шапочку и четверг „Что "
+                                    "упаковать? Какой чай она любит?“?")
+    assert on == off, (on, off)
+
+
+def test_chit_chat_that_recalls_on_main_recalls_the_same(tmp_path):
+    # on 0.22.1 already «неделю» brings «Орхидеи поливать раз в неделю» (one rare word of three): a weakness of the
+    # gate, not of this experiment, which must not change it either way
+    on, off = _on_and_off(tmp_path, "как прошла неделя и что нового?")
+    assert on == off, (on, off)
+
+
+# -- the reranker (finding 3) ---------------------------------------------------------------------------------------
+
+class _BergamotFirst:
+    """rerank._OPENER, the endpoint: ranks the document about bergamot tea first, the others as sent."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def open(self, request, timeout=None):
+        self.calls += 1
+        documents = json.loads(request.data)["documents"]
+        order = sorted(range(len(documents)), key=lambda i: (0 if "бергамот" in documents[i] else 1, i))
+        results = [{"index": i, "relevance_score": float(len(order) - pos)} for pos, i in enumerate(order)]
+        return _Answer(json.dumps({"results": results}).encode())
+
+
+class _Answer:
+    def __init__(self, body: bytes):
+        self.body, self.at = body, 0
+
+    def read(self, n=-1):
+        piece = self.body[self.at:] if n is None or n < 0 else self.body[self.at:self.at + n]
+        self.at += len(piece)
+        return piece
+
+    read1 = read
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+SWIM = {  # more answers to the first question: the gate keeps enough facts to fill the five places
+    "swim_towel": ("В четверг Злате взять на плавание полотенце.", ["Злата"]),
+    "swim_goggles": ("Злате на плавание в четверг взять новые очки.", ["Злата"]),
+    "swim_coach": ("На плавание в четверг Злате взять с собой справку для тренера.", ["Злата"]),
+    "swim_cap": ("Шапочку для плавания Злате взять с собой в четверг.", ["Злата"]),
+}
+
+
+def test_a_rescued_fact_ranked_first_takes_no_place_of_a_kept_one(tmp_path, monkeypatch):
+    endpoint = _BergamotFirst()
+    monkeypatch.setattr(rerank, "_OPENER", endpoint)
+    blocks = []
+    for on in (True, False):
+        provider, back = _store(tmp_path, on, extra=SWIM, rerank="on", rerank_url="https://rerank.example.net/v1/rerank",
+                                rerank_model="fake-reranker", rerank_window="0.0")
+        try:
+            blocks.append(_recalled(provider, back, TWO))
+        finally:
+            provider.shutdown()
+    on, off = blocks
+    assert endpoint.calls >= 2, "the reranker was not asked"
+    assert len(off) == 5, off  # five facts without the rescue: no place is free
+    assert set(off) <= set(on), (on, off)  # none of them gives its place to the rescued tea
+
+
+# -- the cost of the split (finding 6) ------------------------------------------------------------------------------
+
+def test_the_split_is_linear_in_a_long_run_of_spaces():
+    # a pasted message with a long run of spaces: a regular expression that looks ahead from every space took about
+    # 0.35 s for 4 000 of them and grows with the square; one pass takes milliseconds. The bound is generous.
+    from hermes_plugin_holographic.text import two_questions
+    message = "what" + " " * 20_000 + "nothing"
+    start = time.perf_counter()
+    assert two_questions(message) is None
+    assert time.perf_counter() - start < 1.0

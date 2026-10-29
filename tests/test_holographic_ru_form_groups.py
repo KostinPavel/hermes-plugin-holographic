@@ -117,3 +117,37 @@ def test_a_form_written_with_e_for_yo_is_the_same_form(groups):
 def test_a_light_word_is_not_listed(groups):
     # «дни рождения» would meet every «День рождения …»: «день» keeps its own keys (measured, see text._RU_FORMS)
     assert text.analyze("дни").words[0].keys.isdisjoint(text.analyze("день").words[0].keys)
+
+
+# -- Codex review 2026-10-29 ----------------------------------------------------------------------------------------
+
+def test_the_forms_do_not_make_a_new_fact_a_duplicate(groups, store):
+    # the month «мае» and the name «Мая» are not one word to the duplicate check: auto-extraction skips a fact that
+    # near_duplicate finds, and this one says something else (finding 4)
+    provider, _ = store
+    provider.handle_tool_call("fact_store", {"action": "add", "content": "Мая предпочитает чай с бергамотом."})
+    assert provider._retriever.near_duplicate("В мае я предпочитаю чай с бергамотом.") is None
+
+
+@pytest.mark.parametrize("form, noun", [
+    ("матери", "мать"),  # also «матери!», the imperative of «материть»
+    ("потолок", "потолка"),  # also the past tense of «потолочь»
+])
+def test_a_form_that_is_also_a_verb_joins_no_group(groups, form, noun):
+    assert text.analyze(form).keys.isdisjoint(text.analyze(noun).keys)
+
+
+@pytest.mark.parametrize("fact, query", [
+    ("Я маю новий план.", "май"),  # Ukrainian «маю», "I have" (finding 5, Codex's case)
+    ("Мая сястра — гэта Ганна.", "Что будет в мае?"),  # Belarusian «мая», "my": no letter Russian lacks
+])
+def test_text_in_another_language_of_cyrillic_script_gets_no_russian_forms(groups, tmp_path, fact, query):
+    provider = HolographicMemoryProvider(config={"db_path": str(tmp_path / "uk.db"), "hrr_dim": 1024})
+    provider.initialize(session_id="uk")
+    try:
+        provider.handle_tool_call("fact_store", {"action": "add", "content": fact})
+        provider.handle_tool_call("fact_store", {"action": "add", "content": "Школа начинается в восемь утра."})
+        provider.on_session_switch("t0", reset=True)
+        assert fact not in provider.prefetch(query)
+    finally:
+        provider.shutdown()
