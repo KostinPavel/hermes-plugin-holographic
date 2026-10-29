@@ -14,8 +14,13 @@ experience_trace: on  # optional: bounded candidate/stage ids; off still records
 Both default to off. Restart the gateway / start a new session after configuration changes. With experience off,
 the extra tool is absent and no new journal tables or receipts are created. Existing receipts remain subject to
 forget triggers and to the retention limits, even after collection is disabled. An outcome removed by retention is
-scrubbed from the file like a forgotten fact (VACUUM and WAL checkpoint; retried by the next writer open if blocked). No new models, endpoints or
-dependencies are required.
+scrubbed from the file like a forgotten fact (VACUUM and WAL checkpoint), on the same open connection: right after
+the receipt write whose retention removed it, after that write's transaction and with a busy timeout of 0, so
+another process reading the database makes the rewrite come back at once instead of holding the answer. A blocked
+rewrite stays marked and is retried by a receipt write at most once a minute, and by every writer open. The price
+is a rewrite of the whole file when an outcome expires (about 10 ms for a store of 40 facts, 0.25-0.6 s for 3000
+facts and 15 MB on a Windows laptop); a receipt write with nothing to scrub pays one extra read. No new models,
+endpoints or dependencies are required.
 
 Search returns `memory_attempt`; nonempty prefetch appends an opaque attempt id. A prefetch that emits no facts
 (nothing matched, or every match was filtered or recalled recently) records nothing and opens no journal write.

@@ -956,7 +956,7 @@ class EntityMixin:
             if self._entry.get("migrated"):
                 for digest in sorted({d for n in names if entity_key(n) for d in self._name_digests(n)}):
                     self._write("INSERT OR IGNORE INTO entity_tombstones (digest) VALUES (?)", (digest,))
-                self._set_meta("scrub_pending", "1")
+                self._mark_scrub()
             self._reencode(facts)
             self._bump()
             result = {"entity": names[0], "deleted": True, "facts_unlinked": len(facts), "aliases_dropped": aliases,
@@ -974,7 +974,7 @@ class EntityMixin:
         if self._entry.get("migrated"):
             for digest in sorted({d for n in (name, *spelt) for d in self._name_digests(n)}):
                 self._write("INSERT OR IGNORE INTO entity_tombstones (digest) VALUES (?)", (digest,))
-        self._set_meta("scrub_pending", "1")
+        self._mark_scrub()
         self._bump()
         return {"entity": spelt[0] if spelt else name.strip(), "deleted": True, "facts_unlinked": 0, "aliases_dropped": 0,
                 "facts_deleted": 0, "past_versions_cleared": versions}

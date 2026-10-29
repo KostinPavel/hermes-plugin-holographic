@@ -1,10 +1,10 @@
 """0.21.0: prefetch_max_tokens — a budget, in approximate tokens, for the facts recalled before a turn.
 
 The person sets a budget so recalled memory does not crowd a small context. What they must be able to rely on:
-a fact is never cut (a cut fact can lose its "not", its condition or its date: the model would read a different
-claim), the facts that do go in keep their ranking order, the whole block — header and journal line included — stays
-within the budget, a fact left out is not treated as recalled, and the count of left-out facts is reported without
-their text. With the key unset or 0, recall injects exactly what it did before."""
+the budget never cuts a fact (a cut fact can lose its "not", its condition or its date: the model would read a
+different claim; the older 300-character line cap is separate and unchanged), the facts that do go in keep their
+ranking order, the whole block — header and journal line included — stays within the budget, a fact left out is not
+treated as recalled, and the count of left-out facts is reported without their text. With the key unset or 0, recall injects exactly what it did before."""
 from __future__ import annotations
 
 import json

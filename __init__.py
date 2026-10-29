@@ -703,8 +703,8 @@ class HolographicMemoryProvider(MemoryProvider):
             {"key": "prefetch_min_coverage", "description": "How much of a message a fact must match to be recalled "
              "automatically before a turn (0-1; higher = fewer, closer facts)", "default": current("prefetch_min_coverage", "0.3")},
             {"key": "prefetch_max_tokens", "description": "Approximate tokens the facts recalled before a turn may "
-             "take, header included (0 = off: up to five facts). A fact that does not fit is left out whole, never "
-             "cut", "default": current("prefetch_max_tokens", "0")},
+             "take, header included (0 = off: up to five facts). A fact that does not fit is left out whole; the budget "
+             "itself never cuts a line (the 300-character line cap still applies)", "default": current("prefetch_max_tokens", "0")},
             {"key": "recall_indicator", "description": "Show the core's status line when facts were recalled before a turn "
              "(on messaging platforms it arrives as a separate message)",
              "default": current("recall_indicator", "true"), "choices": ["true", "false"]},
@@ -1056,8 +1056,9 @@ class HolographicMemoryProvider(MemoryProvider):
 
     def _within_budget(self, facts: list[dict], lines: list[str]) -> tuple[list[dict], list[str]]:
         """The facts whose lines fit prefetch_max_tokens with the header (and the journal's attempt line), in ranking
-        order. A line that does not fit is left out whole, never cut — a cut fact can lose its "not", its condition
-        or its date; a later, shorter one may still fit. Counts and ids are reported, never text."""
+        order. A line that does not fit is left out whole, never cut here — a cut fact can lose its "not", its condition
+        or its date; a later, shorter one may still fit. The lines arrive already capped by _one_line (300
+        characters), which the budget neither adds nor lifts. Counts and ids are reported, never text."""
         used = approx_tokens(_PREFETCH_HEADER)
         if self._experience and self._tool_writable:  # the receipt line is known only after; its length is fixed
             used += approx_tokens(_ATTEMPT_PREFIX + "0" * _ATTEMPT_ID_CHARS)
