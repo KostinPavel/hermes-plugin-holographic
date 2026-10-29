@@ -5,6 +5,32 @@
 ### Tests
 - Timing tests no longer depend on the runner's speed; they failed now and then on the macOS runner. The journal contention tests checked a 0.5 s bound on the whole search, while SQLite's 50 ms busy wait alone took 160–340 ms per try there (it is a series of short sleeps, and the OS stretches each). They now check that search returns while the other process still holds the database, that the journal tries twice, and that each of its lock statements runs under a busy timeout of at most 50 ms. The rerank timeout tests time the rerank call instead of the whole prefetch; `test_timeout_keeps_order` also checks that recall is back while the endpoint still holds its answer and that the request carries the clamped 0.5 s, so an unclamped 0.2 s timeout, which passed before, now fails.
 
+## 0.22.1 — 2026-10-29
+
+### Changed
+- The screen is 30 times faster on long texts, with the same decisions. Its case-blind patterns (credential words,
+  requests to send them, instructions to drop the rules) gave the regex engine no character to skip to, so every
+  alternative was tried at every position: a megabyte of Russian prose took 9 s in `_recall_problem` and 5 s in
+  `_secret_in`, and hermes-dreaming, which screens every message of its window each night, 17 s. A pattern is now
+  tried only where one of its words can begin — found by one case-sensitive pattern of the words' starts in a
+  lower-case copy of the text, and by the text itself for a capital variable's name — and there the pattern decides
+  on the text as it is, so the matches are the ones a scan of the whole text finds, in the same order. A token's
+  shape, a secret's shape in configuration and hidden characters are looked for the same way. The patterns are
+  0.22.0's to the character. The places are produced one at a time and the patterns stop at their answer, as a scan
+  of the whole text did: a key, a password or an instruction at the start of a long text is found without reading
+  the rest (Codex review: a first version listed every place before trying the first one, 0.16 s and 11 MB for a key
+  at the start of 900 KB of "sk-"). Only the lower-case copy is made of the whole text, at C speed (about 1 ms per
+  MB of Latin text, 20 ms of Cyrillic).
+- Measured on 1 MB (Python 3.12): Russian prose `_recall_problem` 8.98 s → 0.30 s, `_secret_in` 5.14 s → 0.15 s;
+  English prose, logs, hex ids 8–13 times faster. Facts up to 1000 characters (the hot path): median `_fact_problem`
+  602 → 99 µs, `_recall_problem` 596 → 97 µs, `_sendable` 763 → 117 µs.
+- tests/test_holographic_screen_speed.py: the speed (a megabyte against 0.22.0 on a twentieth of it); every start a
+  pattern's match can have, derived from the pattern itself, is in the lists, so a word added without its start fails
+  there; the lower-case copy keeps every letter where the case-blind engine finds it (every code point); and every
+  screen function gives what 0.22.0's gives (a frozen copy in tests/fixtures/screen_0220.py) on every string of the
+  suite, a seeded corpus of credentials, requests, instructions and token shapes in all the screen's languages, and
+  long texts. An answer at the start of 0.9 MB is given after a dozen questions to the patterns, counted.
+
 ## 0.22.0 — 2026-10-29
 
 ### Fixed
