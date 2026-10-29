@@ -42,6 +42,7 @@ import http.client
 import logging
 import socket
 import threading
+import time
 import urllib.request
 
 logger = logging.getLogger(__name__)
@@ -99,6 +100,10 @@ class _Keeper:
         # holder must follow it — cut() on the old object would find fd=-1 and do nothing, in the very phase
         # #26 is about. For plain http this publishes the same object again.
         _publish(self.holder, self.sock)
+        if self.holder is not None:
+            # Connected (TCP, a proxy's CONNECT, TLS): the request goes out next, so from here on the time is the
+            # server's — what rerank measures its speed by; a timeout before this point says nothing of the speed.
+            self.holder["connected"] = time.perf_counter()
 
 
 class _Conn(_Keeper, http.client.HTTPConnection):

@@ -1,4 +1,4 @@
-"""Names given with a new text replace the names declared before (Unreleased).
+"""Names given with a new text replace the names declared before (0.22.0).
 
 Requirement: when the user's agent changes or corrects a fact and says who the new text is about (`entities`), a person
 the fact named before and no longer names must stop being linked to it — otherwise probe/reason by that person keeps
