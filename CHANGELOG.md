@@ -11,9 +11,14 @@
   keeps out of answers carry no text. The nightly review's files are optional and checked piece by piece: the report
   and the approval queue only for the profile store (`<home>/memory_store.db`), a merge question only when it names
   this store, a report item that names another store never; a record of another shape is left out and listed in
-  `SNAP.dreaming.invalid` instead of failing the export (Codex review, 30.10.2026). CLI `--store PATH --json`,
-  function `export_map()`. Nothing in the provider changes and nothing calls it yet. Its output is personal data:
-  keep any page made from it behind a password.
+  `SNAP.dreaming.invalid` instead of failing the export (Codex review, 30.10.2026). Second review the same day: every
+  section of the report is checked for whose it is (a MEMORY entry of another store no longer slipped through
+  `md_decays`); a merge question's relative `store` proves nothing (it was read from the exporter's folder) and is
+  left out as `store_relative`; numbers, negations, the entry's index and the stats' names pass the screen and the
+  format hermes-dreaming writes, or the record is left out; a queue date no calendar holds (`1e100`, NaN) or a
+  report moment that is not one is a record's state, not a failed export; no NaN or Infinity in the JSON. CLI
+  `--store PATH --json`, function `export_map()`. Nothing in the provider changes and nothing calls it yet. Its
+  output is personal data: keep any page made from it behind a password.
 - Memory map: entity `type` (`person` / `topic` / null) from what the store holds — a recorded chat author's name, or a
   word for a relative or a role beside the name in a stored fact, in any case form; a topic only by a form no person's
   name has (a digit, an identifier, "iPhone", "USDT"); never by a capital letter. Each contradiction says which fact

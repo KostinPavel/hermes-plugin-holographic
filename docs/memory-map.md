@@ -93,10 +93,22 @@ for approval). Whose each piece is, is checked separately, never inferred from a
 - the **report** (its `MEMORY.md` entries, its conflicts, the night's stats) and the **approval queue** belong to the
   profile store — `<home>/memory_store.db` — and are read only for that store. For any other store they are not even
   opened (`files: profile_only`), whatever the other files say;
-- a **merge question** is this store's only when it names this very file (`store`); one without a `store` is the
-  profile store's. A question that names a chat's store does not make the report or the queue that chat's;
-- a **report item that names another store** (a chat's own fact) is that store's: its fact number is not this store's
-  fact of the same number;
+- a **merge question** is this store's only when it names this very file (`store`, an absolute path, as hermes-dreaming
+  writes it: the provider's own `database`); one without a `store` is the profile store's. A relative `store` proves
+  nothing — read from the folder the export runs in, it would name whatever store lies there — so such a question is
+  left out (`invalid`, `store_relative`). Two spellings of one file are one store (`..`, links, letter case on
+  Windows). A question that names a chat's store does not make the report or the queue that chat's;
+- a **report item that names another store** (a chat's own fact or entry; hermes-dreaming names a chat's database by
+  its key) is that store's, in every section of the report (`conflicts`, `md_decays`): neither its text nor its fact
+  number reaches this map;
+- every **text of a night record** that reaches the JSON passes the provider's screen, not only the entry: a MEMORY
+  conflict's numbers must be what hermes-dreaming writes there (a number, date or time as text, `month:MM`,
+  `weekday:N`) and its negations short strings the screen lets through; a stat's name must be a code. Anything else
+  leaves the record out (`invalid`, with the field). A number that is not finite (NaN, Infinity) is never written;
+- a **date no calendar holds** (a queue record's `created_at: 1e100` or NaN, a moment past the year 9999 once moved to
+  UTC) is that record's problem: the queue counts the record without its date and lists it in `invalid`; a merge
+  question's date is null; a report whose `generated_at` is not an ISO moment (or has text after one) shows no night
+  and is listed;
 - a missing, unreadable or wrongly shaped **file** is a state (`absent | unreadable | unexpected`), never an error; a
   wrongly shaped **record** (a list where a record was expected, a store that is not a path, a fact number that is not
   a number) is left out and listed in `SNAP.dreaming.invalid` as `{file, id, why}` — the rest of the map, the night's
@@ -188,9 +200,14 @@ the week newest first), so the same store and `now` give the same bytes.
   `mrg`, `night` (dream report: alert kinds and numeric stats only).
 - `ATTEMPTS`: empty in this version (the usage journal is not exported yet).
 - `SNAP.dreaming.invalid[].why`: `id` (a proposal number the map cannot read; `id` is then null), `record` (not an
-  object), `store` (not a path), `keep` / `copy` (not an object), `fact_id` (not a number), `list` (a report section
-  that is not a list), `conflicts` / `entry` (an item's own field of another shape). `id` is the proposal number, or
-  the report section and index (`conflicts[2]`, `md_decays[0]`, `conflicts[1].conflicts[0]`).
+  object), `store` (not a path), `store_relative` (a merge question's store that is not an absolute path), `keep` /
+  `copy` (not an object), `fact_id` (not a number), `list` (a report section that is not a list), `conflicts` /
+  `entry` / `index` (an item's own field of another shape), `fact_numbers` / `memory_numbers` / `fact_negations` /
+  `memory_negations` (not the numbers or phrases hermes-dreaming writes, or text the screen refuses), `generated_at`
+  (the report's moment is not one), `key` (a stat's name is not a code; the name is not repeated), `created_at` (a
+  queue record's date no calendar holds). `file` is `proposals`, `report` or `queue`; `id` is the proposal number,
+  the report section and index (`conflicts[2]`, `md_decays[0]`, `conflicts[1].conflicts[0]`), `generated_at`,
+  `stats`, or the queue file's name (null when it is not a plain one).
 
 ## Entity types
 
