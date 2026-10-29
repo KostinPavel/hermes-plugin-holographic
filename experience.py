@@ -93,7 +93,7 @@ class ExperienceMixin:
         self._conn.execute("DELETE FROM memory_attempts WHERE attempt_id IN (SELECT attempt_id FROM "
                            "memory_attempts ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET ?)", (MAX_ATTEMPTS,))
         if self._one("SELECT count(*) AS n FROM memory_outcomes")["n"] < outcomes:
-            self._set_meta("scrub_pending", "1")  # an outcome's free text went: the file is rewritten as after a forget
+            self._mark_scrub()  # an outcome's free text went: the file is rewritten as after a forget
 
     def prune_experiences(self):
         """Retention when a writer opens the store, collection on or off: outcome text must not outlive the limits

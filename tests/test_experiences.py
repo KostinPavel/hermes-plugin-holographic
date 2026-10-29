@@ -669,7 +669,7 @@ def test_blocked_retention_scrub_neither_holds_search_nor_stays_pending(provider
         assert not store.read("SELECT 1 FROM memory_outcomes")
         assert any(s == "VACUUM" for s, _ in statements), f"no scrub was tried after retention: {statements}"
         assert all(busy == 0 for _, busy in statements), f"scrub waited on the other process: {statements}"
-        assert store._meta("scrub_pending") == "1"  # blocked: the mark stays for a retry
+        assert store._meta("scrub_pending") is not None  # blocked: the mark stays for a retry
         assert store._conn.execute("PRAGMA busy_timeout").fetchone()[0] == 10000
         again, statements, _ = _search_tracing_locks(provider, scrub_statements)
         assert again.get("memory_attempt") and not statements, f"rewrote the file again at once: {statements}"
@@ -833,3 +833,61 @@ def test_collection_off_keeps_the_prompt_and_tools_as_before(tmp_path):
         on.shutdown()
         off.shutdown()
         sub.shutdown()
+
+
+def test_every_statement_of_a_scrub_runs_without_waiting_on_another_process(tmp_path):
+    """The scrub a receipt write runs sits on the search path: none of its statements may wait out the 10 s busy
+    timeout, the closing checkpoint after the mark is cleared included (Codex review 2026-10-30: a reader opened
+    after the first checkpoint made the second one wait 10 s inside search). The timeout is restored last."""
+    store = MemoryStore(tmp_path / "trace.db", hrr_dim=64)
+    try:
+        store.add_fact("The observatory opens at noon.")
+        store._set_meta("scrub_pending", "1")
+        statements = []
+        store._conn.set_trace_callback(statements.append)
+        assert store.scrub()
+        store._conn.set_trace_callback(None)
+        timeout = None
+        for sql in statements:
+            words = sql.split()
+            if sql.startswith("PRAGMA busy_timeout") and "=" in sql:
+                timeout = int(words[-1].strip("= "))
+            elif timeout is not None and (sql.startswith(("VACUUM", "PRAGMA wal_checkpoint", "DELETE"))):
+                assert timeout == 0, f"{sql!r} ran with busy timeout {timeout}"
+        assert statements[-1].replace(" ", "").startswith("PRAGMAbusy_timeout=") and timeout > 0
+    finally:
+        store.close()
+
+
+def test_a_scrub_clears_only_the_mark_it_served(tmp_path):
+    """Another process can delete text, and set the mark, while this scrub runs between its rewrite and clearing the
+    mark; that mark must survive, or the other text stays on disk with nothing left to scrub it (Codex review
+    2026-10-30). Stores of one path share a connection in a process, so the other process is a plain connection
+    that writes its own mark, as its forget would, while a reader it does not control keeps its own rewrite back."""
+    db = tmp_path / "race.db"
+    store = MemoryStore(db, hrr_dim=64)
+    reader, other = sqlite3.connect(db), sqlite3.connect(db, isolation_level=None)
+    try:
+        assert store._conn.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+        store.add_fact("The observatory opens at noon.")
+        store._mark_scrub() if hasattr(store, "_mark_scrub") else store._set_meta("scrub_pending", "1")
+        fired = []
+
+        def before_clearing(sql):  # this scrub has rewritten and checkpointed the file
+            if sql.startswith("DELETE FROM meta") and not fired:
+                reader.execute("BEGIN")
+                reader.execute("SELECT count(*) FROM facts").fetchone()
+                other.execute("INSERT INTO meta (key, value) VALUES ('scrub_pending', 'other-forget') "
+                              "ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+                fired.append(sql)
+        store._conn.set_trace_callback(before_clearing)
+        store.scrub()
+        store._conn.set_trace_callback(None)
+        assert fired
+        assert store._meta("scrub_pending") == "other-forget", "the other process's mark was cleared"
+        reader.rollback()
+        assert store.scrub() and store._meta("scrub_pending") is None
+    finally:
+        reader.close()
+        other.close()
+        store.close()
