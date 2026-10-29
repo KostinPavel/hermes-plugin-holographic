@@ -96,6 +96,7 @@ In `config.yaml` under `plugins.hermes-memory-store`:
 | `hrr_dim` | `1024` | HRR vector dimensions |
 | `hrr_weight` | `0.3` | Weight of the HRR term in search ranking |
 | `prefetch_min_coverage` | `0.3` | Share of a message's informative words (rarer words weigh more) a fact must match to be recalled before the turn; a fact sharing one word of a longer message is recalled only when no other fact holds that word or it may be a name (capitalized inside the sentence, or in a script without capitals) |
+| `prefetch_clause_coverage` | `off` | **Experimental.** `on`: a message that asks two separate questions (Russian or English) gives each of them a second look at the facts the coverage gate left out, so the answer to the shorter question is not lost. Only for a fact that holds two words of its question and names the person that question is about. Not in the setup wizard; a value it does not recognise reads as off. See [Two questions in one message](#two-questions-in-one-message-experimental) |
 | `prefetch_repeat_turns` | `6` | A fact recalled before a turn is not injected again for this many turns of the session |
 | `prefetch_max_tokens` | `0` | Approximate tokens the block recalled before a turn may take, header and every line included (0.21.0). The budget never shortens a line: a fact whose line does not fit is left out whole; the rest keep their order. The older 300-character cap on each prefetch line still applies with or without a budget, so a longer fact's line ends in "…"; `stats` counts what was left out. `0` = off: up to five facts as before. See [docs/context-budget.md](docs/context-budget.md) |
 | `recall_source` | `off` | `short`: each fact recalled before a turn also says where it was written (`recorded 2026-10-12 · Anton · this chat`; no ids). Off by default: it costs tokens and tells the room which chat a fact came from. `list`, `history` and `export` always show the source in full |
@@ -117,6 +118,18 @@ type only: a YAML error quotes the line it stopped at, which may hold a key.
 
 Optional task outcomes and recorded explanations (separate from trust, off by default):
 [docs/experience.md](docs/experience.md).
+
+### Two questions in one message (experimental)
+
+«что Злате нужно взять с собой на плавание в четверг и какой чай она любит?» asks two things; the fact about tea holds
+every word of its question and still covers too little of the whole message to be recalled. With
+`prefetch_clause_coverage: on` (off by default) a fact the coverage gate left out gets a second look against each of
+the two questions alone — only when the message clearly splits into two Russian or English questions, the fact holds
+at least two words of its question, and, for a question about a person, that person is one entity the store knows and
+the fact names them. A rescued fact never takes the place of one that would be recalled anyway, with or without the
+reranker. On a synthetic set it brought both answers into the top five in 15 of 16 two-question messages instead of 12, and changed
+no answer on about 620 older test questions; it has not been checked on real conversations. What it misses and every
+risk: [docs/two-topics.md](docs/two-topics.md).
 
 ## Tools
 
@@ -326,6 +339,30 @@ human's "no longer true", "that was wrong" or "forget it" to a dream question be
 here, and after a `forget` the dream removes its own copies of the fact (cache, diary lines, its cron logs) by the
 tombstone's id. Use hermes-dreaming 2.4.0 or later with this release: cron jobs may write facts only from 0.8.0 on
 (`cron_writes`).
+
+### Memory map (experimental)
+
+`memory_map.py` exports one store as a read-only JSON snapshot a person can read: the facts with who said them and
+how much they are trusted, people and topics, contradictions and which side search leans on, the week's changes,
+forgotten facts as a number and a date, and what the nightly review asks about this store. The
+[hermes-dashboard](https://github.com/itpartypattaya/hermes-dashboard) "Memory map" tab draws it. Nothing calls it
+unless you do (`python <plugin dir>/memory_map.py --store PATH --json`); the provider is unchanged by it.
+
+**Experimental**: the format and the rules may change. Its output is personal data — keep any page made from it
+behind a password. What it shows and hides, and its limits (a closed word list for "person", "search leans on" only
+for a question that fits both facts equally, the night's files outside the database snapshot, a picture that ages
+until the next rebuild): [docs/memory-map.md](docs/memory-map.md).
+
+How to see it:
+
+- **In hermes-dashboard** (a page behind basic-auth, rebuilt by its cron): turn on its `views.memory_map` and point
+  `memory_map.plugin_dir` / `memory_map.store` at this plugin and the store — step by step in the dashboard's README,
+  "Memory map (experimental)".
+- **Your own page or tool**: run the exporter and draw the JSON; every key is described in
+  [docs/memory-map.md](docs/memory-map.md#the-json-schema_version-1). Draw only what it gives — the privacy rules are
+  applied by the exporter, so a renderer must not open the database itself — and escape every text (they are what
+  people told the agent).
+- A ready-made standalone HTML file and a `fact_store` action that builds it are not in this release.
 
 ## Languages
 

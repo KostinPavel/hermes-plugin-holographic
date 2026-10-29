@@ -1,5 +1,39 @@
 # Changelog
 
+## Unreleased
+
+## 0.24.0 — 2026-10-30
+
+Both additions are experimental and off by default; nothing changes for an install that does not turn them on.
+
+### Added (experimental)
+- **Memory map (experimental)**: `memory_map.py`, a read-only JSON snapshot of one store for a person to read (the
+  data layer of the memory map; [docs/memory-map.md](docs/memory-map.md), with its risks and limits). Experimental:
+  the JSON (`schema_version` 1) and its rules may change without a deprecation period. Opened `mode=ro` with the
+  provider's own read code, all reads in one read transaction (a `forget` during an export is all in it or not at
+  all); one store per export; a forgotten fact is its number and date only; corrected versions and texts the screen
+  keeps out of answers carry no text. The nightly review's files are optional and checked piece by piece: the report
+  and the approval queue only for the profile store (`<home>/memory_store.db`), a merge question only when it names
+  this store, a report item that names another store never; a record of another shape is left out and listed in
+  `SNAP.dreaming.invalid` instead of failing the export (Codex review, 30.10.2026). Second review the same day: every
+  section of the report is checked for whose it is (a MEMORY entry of another store no longer slipped through
+  `md_decays`); a merge question's relative `store` proves nothing (it was read from the exporter's folder) and is
+  left out as `store_relative`; numbers, negations, the entry's index and the stats' names pass the screen and the
+  format hermes-dreaming writes, or the record is left out; a queue date no calendar holds (`1e100`, NaN) or a
+  report moment that is not one is a record's state, not a failed export; no NaN or Infinity in the JSON. CLI
+  `--store PATH --json`, function `export_map()`. Nothing in the provider changes and nothing calls it yet. Its
+  output is personal data: keep any page made from it behind a password.
+- Memory map: entity `type` (`person` / `topic` / null) from what the store holds — a recorded chat author's name, or a
+  word for a relative or a role beside the name in a stored fact, in any case form; a topic only by a form no person's
+  name has (a digit, an identifier, "iPhone", "USDT"); never by a capital letter. Each contradiction says which fact
+  search puts first now (`relies`: the trust floor, then trust x decay from the config given with `--config`; null for
+  a tie, the reranker on or settings that cannot be read), the words that tell the two apart (`differ`) and `since`.
+  The decay is search's own code (`FactRetriever.decays`, split out of `_rerank`): the age counts from when the
+  fact's current text was recorded, as search does from 0.23.0, so a fact with new tags or a vote is old on the map
+  too.
+- `prefetch_clause_coverage` (default off, not in the setup wizard): a message that asks two separate questions («что Злате нужно обязательно взять с собой на плавание в четверг и какой чай она любит?») gives each question a second look at the facts the coverage gate left out. The fact «Злата любит чай с бергамотом.» holds every word of its question and covered 0.24 of the whole message, under the 0.3 gate. A fact is let in only when the message splits into exactly two Russian or English questions that each stand alone (not inside quotes, not «какой чай и какой кофе»), the fact holds at least two words of its question exactly and covers `prefetch_min_coverage` of them, and, for a question about a person, the question names exactly one entity the store knows (or «она» / «он» of the one person the other question names) and the fact names that person with a capital. A rescued fact comes after the facts the gate kept and, with the reranker on, only takes a free place among the five. Synthetic stand `tools/two_topics_set.py`: both answers in the top five 12 → 15 of 16 two-question messages; 0 changed answers on the existing sets (about 620 questions, 8 languages); rerank and embeddings off. Measured read-only on one live install (5,081 human messages): 73 split into two questions, 0 facts rescued and none displaced, +2-16 ms at p95; that install keeps it off. Not checked with a real reranker. It misses a fact that uses another word («пьёт» for «любит»), a person the store does not know, «она» of one of two people. A value it does not recognise reads as off without a warning. Details and risks: [docs/two-topics.md](docs/two-topics.md).
+- Case forms of about thirty short Russian nouns («чай / чая», «май / мае», «подарок / подарки») are in the code behind a module switch, `text._RU_FORM_GROUPS = False`. Not a setting and not supported: a hand-made list, homonyms removed by hand, and «Russian text» judged only by the absence of Ukrainian or Belarusian signs. When switched on in code, its keys are used for search and recall only, never for the duplicate and conflict checks at write time.
+
 ## 0.23.1 — 2026-10-30
 
 ### Fixed

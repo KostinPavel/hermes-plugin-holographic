@@ -18,7 +18,8 @@ from .embeddings import Meaning, VectorIndex
 from .history import CLOSED, error_kind, version_state
 from .text import (CJK_NEGATORS, CLAIM_WORDS, CONTRASTIVE, NEGATORS, UNSEGMENTED, analyze, content_chars,
                    content_keys, content_stems, gram_coverage, is_chinese, is_greeting, is_sea, name_forms,
-                   query_grams, query_terms, run_grams, soft_jaccard, soft_overlap, words, zh_char_text)
+                   query_grams, query_terms, question_parts, run_grams, soft_jaccard, soft_overlap, words,
+                   zh_char_text)
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,22 @@ def _inner_capitals(query: str) -> list[str]:
             if i and len(word) > 1 and word[0].isupper() and word[1:].islower():
                 names.append(word)
     return names
+
+
+def _capitalized(text: str, inner: bool) -> str:
+    """*text* with every word that is not written with a capital (or, when *inner*, is the first of its sentence) cut
+    out as a line break: what store.mentioned_entity_ids may read as a name, and nothing a lower-case word says («чай»
+    is no mention of a «Чай»)."""
+    ends = [m.end() for m in _RE_SENTENCE_END.finditer(text or "")]
+    out, last, e, first = [], 0, 0, True
+    for m in _RE_NAME_WORD.finditer(text or ""):
+        while e < len(ends) and ends[e] <= m.start():
+            e, first = e + 1, True
+        word = m.group(0)
+        capital = len(word) > 1 and word[0].isupper() and word[1:].islower() and not (inner and first)
+        out += [text[last:m.start()], word if capital else "\n"]
+        last, first = m.end(), False
+    return "".join(out) + (text or "")[last:]
 
 
 def _name_forms(analysis) -> frozenset:
@@ -167,6 +184,9 @@ class FactRetriever:
         self._current = _Corpus("facts", (), "facts_fts", "fact_id", {})
         self._version_cache: dict[int, tuple[str, object]] = {}
         self._vectors: VectorIndex | None = None  # search by meaning, built on first use
+        # prefetch_clause_coverage (an experiment, off by default): relevant() gives a fact it left out a second look
+        # against each of a message's two questions (_clause_rescue)
+        self.clause_coverage = False
 
     def _as_of(self, day: str) -> _Corpus:
         if self.store._merges_ready():
@@ -405,12 +425,8 @@ class FactRetriever:
         # Query vector is loop-invariant; encode lazily on the first candidate that carries an HRR vector
         # so stores whose hrr_vector was never backfilled don't pay for it.
         query_vec = None  # bind(encode_text(query), ROLE_CONTENT): the shape a fact's content is stored in
-        # Decay counts from when the version was recorded, not from updated_at: feedback stamped that until 0.22.2,
-        # so an old fact marked unhelpful came out "younger" (F1 research, 2026-10-29). A version of as_of carries
-        # its own recorded_at as created_at; a store without history falls back to the last change.
-        recorded = self.store.recorded_times([f["fact_id"] for f in candidates if "version_id" not in f]) \
-            if self.half_life > 0 else {}
-        for fact in candidates:
+        decays = self.decays(candidates) if self.half_life > 0 else None
+        for i, fact in enumerate(candidates):
             jaccard = self._jaccard_similarity(query_tokens, content_stems(_fact_text(fact)))
             hrr_sim = 0.5  # neutral
             fact_vec = self._phases(fact["hrr_vector"]) if self.hrr_weight > 0 and fact.get("hrr_vector") else None
@@ -423,10 +439,8 @@ class FactRetriever:
                 cos = meaning.cos(fact["fact_id"]) if meaning.fits(fact["fact_id"], fact["content"]) else meaning.neutral
                 relevance = (1.0 - meaning.weight) * relevance + meaning.weight * cos
             fact["score"] = relevance * fact["trust_score"]
-            if self.half_life > 0:
-                since = fact.get("created_at") if "version_id" in fact else (
-                    recorded.get(fact["fact_id"]) or fact.get("updated_at") or fact.get("created_at"))
-                fact["score"] *= self._temporal_decay(since)
+            if decays is not None:
+                fact["score"] *= decays[i]
         results = sorted(candidates, key=lambda x: x["score"], reverse=True)[:limit]
         for fact in results:
             fact.pop("hrr_vector", None)  # callers expect JSON-serializable dicts
@@ -724,14 +738,17 @@ class FactRetriever:
                     out[t] = probe
         return out
 
-    def relevant(self, query: str, candidates: list[dict], min_coverage: float = 0.3) -> list[dict]:
+    def relevant(self, query: str, candidates: list[dict], min_coverage: float = 0.3,
+                 rescued: set | None = None) -> list[dict]:
         """Keep the candidates that answer the query, not merely share a word with it.
 
         Coverage = IDF-weighted share of the query's informative terms the fact contains (exact word or same stem).
         Terms no fact contains are left out of the total (they cannot be matched by anything), and a matched
         identifier (pve-01, v0.21.6) is decisive on its own. A query with no informative term ("ok, thanks",
         "да, это так") recalls nothing, and a fact sharing one word of a longer message, a word other facts hold too
-        and no name inside the sentence ("What day is today?"), is left out. Order is preserved."""
+        and no name inside the sentence ("What day is today?"), is left out. Order is preserved. *rescued*, when given,
+        receives the ids of the facts let in only by prefetch_clause_coverage (_clause_rescue): they come after the
+        others here, and the final selection gives them only the places the others leave free."""
         if is_greeting(query):  # "good morning", "доброе утро", "早上好": a courtesy, not a question about mornings
             return []
         grams, zh = query_grams(query or ""), is_chinese(query or "")
@@ -795,7 +812,7 @@ class FactRetriever:
                 held[term] = sum(1 for _, _, a in self._texts() if term.match(a) == 1.0 or by_name(term, a))
             return held[term] > 1
 
-        kept = []
+        kept, left_out = [], []
         for fact in candidates:
             analysis = analyze(_fact_text(fact))
             if identifiers and not any(t.found_in(analysis) for t in identifiers):
@@ -819,7 +836,84 @@ class FactRetriever:
             if any(t.identifier and s for t, s in strength.items()) or fact in gram_kept or (
                     exact and not lone and sum(weights[t] * s for t, s in strength.items()) / total >= min_coverage):
                 kept.append(fact)
+            elif self.clause_coverage and exact and not grams:
+                left_out.append((fact, strength))
+        if left_out:
+            back = self._clause_rescue(query, terms, weights, set(unknown), named, name_keys, left_out, min_coverage)
+            kept += back
+            if rescued is not None:
+                rescued.update(f["fact_id"] for f in back)
         return kept
+
+    def _clause_rescue(self, query: str, terms, weights: dict, unknown: set, named: dict, name_keys: set,
+                       left_out: list, min_coverage: float) -> list:
+        """Facts the gate left out that answer one of a message's two questions (prefetch_clause_coverage, off by
+        default): each question's own terms, read in the whole message (text.question_parts), weighed as the gate
+        weighs them. A fact is let in when it holds at least two of that question's own words exactly and covers
+        min_coverage of the question, and only when whose answer it is can be told:
+        - a question with a word no fact holds lets nothing in: it may be a name the store does not know («какой чай
+          любит клара?»);
+        - a question about a person is bound to exactly one entity the store knows, by a name written with a capital
+          inside the sentence (or, for «она» / «он», to the one person the other question names); a word that is also a
+          form of a known name but is written in lower case («чай» when a «Чай» is known, «злата») leaves it unbound,
+          and so does a name the store does not know or two people: nothing is let in;
+        - the fact must then name that person itself, with a capital: an ordinary word or a shared stem («чай» for
+          «Чай») never says who it is about.
+        In the order of the candidates, after every fact the gate kept."""
+        parts = question_parts(query)
+        if parts is None or not weights:
+            return []
+        known = self.store.known_name_forms()
+
+        def name_like(t) -> bool:  # a word that may name someone (as the gate reads names)
+            return t in named or not t.keys.isdisjoint(name_keys) or bool(
+                known and not (t.keys | name_forms(t.word)).isdisjoint(known))
+
+        def bound(own, said) -> tuple[bool, set]:
+            """(can tell, the entities the question is about: empty = about nobody in particular)."""
+            names = {t for t in own if name_like(t)}
+            if not names:
+                return True, set()
+            if any(t.keys.isdisjoint(name_keys) for t in names):
+                return False, set()  # a known name's form in lower case, or at the start: a word or a name
+            people = self.store.mentioned_entity_ids(_capitalized(said, inner=True))
+            return len(people) == 1, people
+
+        by_key = {t.stem: t for t in terms}
+        questions = []  # (own terms, «она»?, whose it is can be told, nothing unknown in it, the people, the names)
+        for keys, pronoun, said in parts:
+            own = {by_key[k] for k in keys if k in by_key}
+            told, people = bound(own, said)
+            questions.append((own, pronoun, told, not (own & unknown), people, {t for t in own if name_like(t)}))
+        floor = min(weights.values())
+        rescued, about = [], {}
+        for fact, strength in left_out:
+            for i, (own, pronoun, told, all_known, people, names) in enumerate(questions):
+                if not told or not all_known:
+                    continue
+                said = set(own)
+                if not people and pronoun:
+                    _, _, other_told, _, people, other_names = questions[1 - i]
+                    if not other_told or len(people) != 1:
+                        continue  # «она» of nobody, or of one of two: whose answer it is cannot be told
+                    said |= other_names
+                    names = other_names
+                strength = dict(strength)
+                if people:
+                    if fact["fact_id"] not in about:
+                        about[fact["fact_id"]] = self.store.mentioned_entity_ids(
+                            _capitalized(_fact_text(fact), inner=False))
+                    if not people <= about[fact["fact_id"]]:
+                        continue
+                    strength.update({t: 1.0 for t in names})  # the fact names that person, in whatever case form
+                if sum(1 for t in own if strength.get(t, 0.0) == 1.0) < 2:
+                    continue
+                share = sum(weights[t] * strength.get(t, 0.0) for t in said if t in weights) / \
+                    sum(weights.get(t, floor) for t in said)
+                if share >= min_coverage:
+                    rescued.append(fact)
+                    break
+        return rescued
 
     def _char_weights(self, chars: list[str]) -> dict[str, float]:
         """IDF weight of each character over the store; a character no fact contains weighs like the most common
@@ -870,7 +964,7 @@ class FactRetriever:
             elif w in NEGATORS:
                 negated = negated or not contrast
             elif not word.stop or w in CLAIM_WORDS:  # "with" / "without" sugar is the claim
-                claim.append(word.keys)
+                claim.append(word.keys - word.forms if word.forms else word.keys)  # a case-form group: recall only
         return tuple(dict.fromkeys(claim)), negated
 
     @classmethod
@@ -1020,13 +1114,28 @@ class FactRetriever:
         """Jaccard similarity coefficient: |A ∩ B| / |A ∪ B|."""
         return len(set_a & set_b) / len(set_a | set_b) if set_a and set_b else 0.0
 
-    def _temporal_decay(self, timestamp_str: str | None) -> float:
-        """0.5^(age_days / half_life); 1.0 if disabled, missing, unparseable, or in the future."""
+    def decays(self, facts: list[dict], now: datetime | None = None) -> list[float]:
+        """The temporal decay search multiplies each fact's score by (1.0 each with decay off), at *now* (the present
+        by default; the memory map passes its snapshot's moment). *facts*: rows of `facts` (fact_id, created_at,
+        updated_at) or of a search as_of (with version_id).
+
+        Decay counts from when the version was recorded, not from updated_at: feedback stamped that until 0.22.2,
+        so an old fact marked unhelpful came out "younger" (F1 research, 2026-10-29). A version of as_of carries
+        its own recorded_at as created_at; a store without history falls back to the last change."""
+        if self.half_life <= 0:
+            return [1.0] * len(facts)
+        recorded = self.store.recorded_times([f["fact_id"] for f in facts if "version_id" not in f])
+        return [self._temporal_decay(f.get("created_at") if "version_id" in f else (
+            recorded.get(f["fact_id"]) or f.get("updated_at") or f.get("created_at")), now) for f in facts]
+
+    def _temporal_decay(self, timestamp_str: str | None, now: datetime | None = None) -> float:
+        """0.5^(age_days / half_life) at *now* (the present by default); 1.0 if disabled, missing, unparseable, or in
+        the future."""
         if not self.half_life or not timestamp_str:
             return 1.0
         try:
             ts = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00")) if isinstance(timestamp_str, str) else timestamp_str
-            age_days = (datetime.now(timezone.utc) - (ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc))).total_seconds() / 86400
+            age_days = ((now or datetime.now(timezone.utc)) -(ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc))).total_seconds() / 86400
             return 1.0 if age_days < 0 else math.pow(0.5, age_days / self.half_life)
         except (ValueError, TypeError):
             return 1.0
