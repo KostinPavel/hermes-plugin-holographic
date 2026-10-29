@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added (experimental)
+- `prefetch_clause_coverage` (default off, not in the setup wizard): a message that asks two separate questions («что Злате нужно обязательно взять с собой на плавание в четверг и какой чай она любит?») gives each question a second look at the facts the coverage gate left out. The fact «Злата любит чай с бергамотом.» holds every word of its question and covered 0.24 of the whole message, under the 0.3 gate. A fact is let in only when the message splits into exactly two Russian or English questions that each stand alone (not inside quotes, not «какой чай и какой кофе»), the fact holds at least two words of its question exactly and covers `prefetch_min_coverage` of them, and, for a question about a person, the question names exactly one entity the store knows (or «она» / «он» of the one person the other question names) and the fact names that person with a capital. A rescued fact comes after the facts the gate kept and, with the reranker on, only takes a free place among the five. Synthetic stand `tools/two_topics_set.py`: both answers in the top five 12 → 15 of 16 two-question messages; 0 changed answers on the existing sets (about 620 questions, 8 languages); rerank and embeddings off. Not checked on live data or with a real reranker. It misses a fact that uses another word («пьёт» for «любит»), a person the store does not know, «она» of one of two people. A value it does not recognise reads as off without a warning. Details and risks: [docs/two-topics.md](docs/two-topics.md).
+- Case forms of about thirty short Russian nouns («чай / чая», «май / мае», «подарок / подарки») are in the code behind a module switch, `text._RU_FORM_GROUPS = False`. Not a setting and not supported: a hand-made list, homonyms removed by hand, and «Russian text» judged only by the absence of Ukrainian or Belarusian signs. When switched on in code, its keys are used for search and recall only, never for the duplicate and conflict checks at write time.
+
 ## 0.22.2 — 2026-10-29
 
 ### Fixed

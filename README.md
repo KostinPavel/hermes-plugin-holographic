@@ -96,6 +96,7 @@ In `config.yaml` under `plugins.hermes-memory-store`:
 | `hrr_dim` | `1024` | HRR vector dimensions |
 | `hrr_weight` | `0.3` | Weight of the HRR term in search ranking |
 | `prefetch_min_coverage` | `0.3` | Share of a message's informative words (rarer words weigh more) a fact must match to be recalled before the turn; a fact sharing one word of a longer message is recalled only when no other fact holds that word or it may be a name (capitalized inside the sentence, or in a script without capitals) |
+| `prefetch_clause_coverage` | `off` | **Experimental.** `on`: a message that asks two separate questions (Russian or English) gives each of them a second look at the facts the coverage gate left out, so the answer to the shorter question is not lost. Only for a fact that holds two words of its question and names the person that question is about. Not in the setup wizard; a value it does not recognise reads as off. See [Two questions in one message](#two-questions-in-one-message-experimental) |
 | `prefetch_repeat_turns` | `6` | A fact recalled before a turn is not injected again for this many turns of the session |
 | `prefetch_max_tokens` | `0` | Approximate tokens the block recalled before a turn may take, header and every line included (0.21.0). A fact that does not fit is left out whole, never cut; the rest keep their order; `stats` counts what was left out. `0` = off: up to five facts as before. See [docs/context-budget.md](docs/context-budget.md) |
 | `recall_source` | `off` | `short`: each fact recalled before a turn also says where it was written (`recorded 2026-10-12 · Anton · this chat`; no ids). Off by default: it costs tokens and tells the room which chat a fact came from. `list`, `history` and `export` always show the source in full |
@@ -117,6 +118,18 @@ type only: a YAML error quotes the line it stopped at, which may hold a key.
 
 Optional task outcomes and recorded explanations (separate from trust, off by default):
 [docs/experience.md](docs/experience.md).
+
+### Two questions in one message (experimental)
+
+«что Злате нужно взять с собой на плавание в четверг и какой чай она любит?» asks two things; the fact about tea holds
+every word of its question and still covers too little of the whole message to be recalled. With
+`prefetch_clause_coverage: on` (off by default) a fact the coverage gate left out gets a second look against each of
+the two questions alone — only when the message clearly splits into two Russian or English questions, the fact holds
+at least two words of its question, and, for a question about a person, that person is one entity the store knows and
+the fact names them. A rescued fact never takes the place of one that would be recalled anyway, with or without the
+reranker. On a synthetic set it brought both answers into the top five in 15 of 16 two-question messages instead of 12, and changed
+no answer on about 620 older test questions; it has not been checked on real conversations. What it misses and every
+risk: [docs/two-topics.md](docs/two-topics.md).
 
 ## Tools
 
