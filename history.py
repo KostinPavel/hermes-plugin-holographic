@@ -347,7 +347,7 @@ class HistoryMixin:
         # Always, not only when nothing above was gone: both kinds of deletion can wait for the same open (review 2)
         cascaded = self._reconcile_merges()
         if gone or cascaded:
-            self._set_meta("scrub_pending", "1")
+            self._mark_scrub()
 
     def _reconcile_merges(self) -> bool:
         """0.19.0, after the step above: a merged copy whose keep is gone for good — forgotten (a tombstone: by an
@@ -682,7 +682,7 @@ class HistoryMixin:
                 target = self.merge_target(fact_id)
                 into = int(target["into_fact_id"]) if target is not None else None
                 versions = self._erase([fact_id, *copies])
-                self._set_meta("scrub_pending", "1")
+                self._mark_scrub()
         result = {"fact_id": fact_id, "forgotten": True, "versions": versions,
                   "scrub": "done" if self.scrub() else "pending"}
         if already:
@@ -916,30 +916,39 @@ class HistoryMixin:
             return None
         return {"fact_id": int(row[0][0]), "merged_from": int(row[0][1]), "merged_at": row[0][2]}
 
+    def _mark_scrub(self) -> None:
+        """Ask for a file rewrite after text was deleted. Each mark is new (a random token), so a scrub clears only the
+        mark it read: one set by another process meanwhile, for text the rewrite may have missed, stays (Codex review
+        2026-10-30)."""
+        self._set_meta("scrub_pending", secrets.token_hex(8))
+
     def scrub(self) -> bool:
         """Rewrite the file and empty the WAL so freed pages keep no copy of forgotten text. Best effort: another
         process holding the database can block it; then the mark stays and the next open or forget retries."""
         with self._lock:
-            if self._conn.in_transaction or self._meta("scrub_pending") is None:
-                return self._meta("scrub_pending") is None
-            # Without waiting on another process (busy timeout 0 for these two statements only, as the recall
-            # counts do): a reader blocks the checkpoint for as long as it reads, and every provider operation
-            # waits behind a forget, so "pending" must come back at once rather than after the 10 s timeout.
+            mark = self._meta("scrub_pending")
+            if self._conn.in_transaction or mark is None:
+                return mark is None
+            # Without waiting on another process (busy timeout 0 for every statement here, as the recall counts do;
+            # restored last): a reader blocks the checkpoint for as long as it reads, every provider operation waits
+            # behind a forget, and a receipt write runs this on the search path, so "pending" must come back at once
+            # rather than after the 10 s timeout — the closing checkpoint too (Codex review 2026-10-30).
             timeout = self._conn.execute("PRAGMA busy_timeout").fetchone()[0]
             self._conn.execute("PRAGMA busy_timeout = 0")
             try:
                 self._conn.execute("VACUUM")
                 busy = self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
-                done = busy is None or not busy[0]
+                if busy is not None and busy[0]:
+                    return False
+                # only the mark this rewrite served: a newer one asks for text written after the rewrite began
+                self._conn.execute("DELETE FROM meta WHERE key = 'scrub_pending' AND value = ?", (mark,))
+                self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")  # the cleared mark; text is already gone
+                return True
             except sqlite3.Error as exc:
                 logger.warning("holographic: scrub after forget deferred (%s)", exc)
                 return False
             finally:
                 self._conn.execute(f"PRAGMA busy_timeout = {int(timeout)}")
-            if done:
-                self._conn.execute("DELETE FROM meta WHERE key = 'scrub_pending'")
-                self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            return done
 
     # -- reads -----------------------------------------------------------------------------------------------------
 
