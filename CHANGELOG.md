@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- `memory_map.py`: a read-only JSON snapshot of one store for a person to read (the data layer of the memory map;
+  docs/memory-map.md). Opened `mode=ro` with the provider's own read code; one store per export; a forgotten fact is
+  its number and date only; corrected versions and texts the screen keeps out of answers carry no text; dreaming files
+  are optional and read only when they are about this store. CLI `--store PATH --json`, function `export_map()`.
+  Nothing in the provider changes and nothing calls it yet.
+
 ## 0.22.2 — 2026-10-29
 
 ### Fixed
