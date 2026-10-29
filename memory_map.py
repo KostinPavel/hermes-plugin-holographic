@@ -35,12 +35,13 @@ if __name__ == "__main__" and not __package__:  # run as a file: load the plugin
 import argparse
 import json
 import math
+import os
 import re
 import sqlite3
 import sys
 import threading
 from datetime import date, datetime, timedelta, timezone, tzinfo
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from .entity_names import entity_key, fold
 from .history import error_kind, source_of
@@ -59,6 +60,13 @@ _DREAM_FILES = {"proposals": ("cache", "dream-proposals.json"), "report": ("cach
                 "queue": ("pending", "memory")}
 _PROPOSAL_ID = re.compile(r"D-\d{1,9}")
 _CODE = re.compile(r"[a-z_]{1,40}")
+_STAT_KEY = re.compile(r"[a-z][a-z0-9_]{0,59}")
+# What dream writes as a MEMORY conflict's numbers (its _numbers: a number, a date or a time as written, a month or a
+# day of the week said in words), and the longest negated phrase it writes (a word or two after the negation)
+_NIGHT_NUMBER = re.compile(r"\d(?:[\d.,:/-]{0,30}\d)?|month:\d{2}|weekday:[1-7]")
+_NEGATION_MAX = 120
+_QUEUE_FILE = re.compile(r"[A-Za-z0-9_.-]{1,80}\.json")
+_HIT_LISTS = ("fact_numbers", "memory_numbers", "fact_negations", "memory_negations")
 _FEED_ORDER = {"night": 0, "del": 1, "mrg": 2, "end": 3, "chg": 4, "conf": 5, "new": 6}
 _REVIEW_REASONS = (("low trust", "low_trust"), ("never recalled", "never_recalled"),
                    ("an inference nobody confirmed", "unconfirmed_inference"), ("near-duplicate of #", "near_duplicate"))
@@ -148,6 +156,30 @@ def _shown(text):
     return None if text is None or _screen(text) else text
 
 
+def _hit_lists(hit: dict) -> tuple[dict, str | None]:
+    """(the numbers and negations of a MEMORY conflict, the first field of another shape or None). Each is what dream
+    writes there — numbers: a number, a date or a time as text (or a JSON number), `month:MM`, `weekday:N`;
+    negations: a short phrase — and passes the screen; anything else (a structure, a sentence among the numbers, a
+    negation the screen refuses) makes the field wrong, never text in the JSON."""
+    out = {}
+    for key in _HIT_LISTS:
+        value = hit.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, list):
+            return {}, key
+        if key.endswith("_numbers"):
+            items = [str(x) if isinstance(x, int) and not isinstance(x, bool) else x for x in value]
+            ok = all(isinstance(x, str) and _NIGHT_NUMBER.fullmatch(x) for x in items)
+        else:
+            items = value
+            ok = all(isinstance(x, str) and 0 < len(x) <= _NEGATION_MAX for x in items)
+        if not ok or any(_screen(x) for x in items):
+            return {}, key
+        out[key] = list(items)
+    return out, None
+
+
 def _round(value):
     return None if value is None else round(float(value), 2)
 
@@ -165,7 +197,8 @@ def _day(store: _ReadOnlyStore, timestamp) -> str | None:
 
 
 def _iso_day(value, zone: tzinfo) -> str | None:
-    """The day of an ISO 8601 moment in *zone* (a date alone, or a moment without an offset, as written)."""
+    """The day of an ISO 8601 moment in *zone* (a date alone, or a moment without an offset, as written); None when
+    it is none, or no calendar holds it in *zone* (past the year 9999 once moved there)."""
     try:
         moment = datetime.fromisoformat(str(value))
     except (TypeError, ValueError):
@@ -173,14 +206,55 @@ def _iso_day(value, zone: tzinfo) -> str | None:
             return date.fromisoformat(str(value)[:10]).isoformat()
         except ValueError:
             return None
-    return (moment.astimezone(zone) if moment.tzinfo else moment).date().isoformat()
+    try:
+        return (moment.astimezone(zone) if moment.tzinfo else moment).date().isoformat()
+    except OverflowError:
+        return None
+
+
+def _moment(value, zone: tzinfo) -> datetime | None:
+    """A text that is an ISO 8601 moment and nothing else, in *zone* when it has an offset; else None."""
+    if not isinstance(value, str):
+        return None
+    try:
+        moment = datetime.fromisoformat(value)
+        return moment.astimezone(zone) if moment.tzinfo else moment
+    except (ValueError, OverflowError):
+        return None
+
+
+def _finite(value) -> bool:
+    """A JSON number that is a number: not a bool, not NaN or Infinity (json.loads takes those; strict JSON not)."""
+    return isinstance(value, int) and not isinstance(value, bool) or isinstance(value, float) and math.isfinite(value)
 
 
 def _same_file(a, b) -> bool:
+    """Do two paths name one file: the same file when both exist (links, ".." and, on Windows, letter case
+    included), else the same resolved path. A relative path is read from the current folder — so only the caller's
+    own arguments may be one; a path read from a night file is checked to be absolute first (_record_store)."""
     try:
-        return Path(a).expanduser().resolve() == Path(b).expanduser().resolve()
+        a, b = Path(a).expanduser(), Path(b).expanduser()
+        if a.exists() and b.exists():
+            return os.path.samefile(a, b)
+        return a.resolve() == b.resolve()
     except (OSError, TypeError, ValueError):
         return False
+
+
+def _record_store(value, mine: Path) -> str:
+    """Whose a night record is by its `store`: none (absent or empty: the dream's profile store), this (an absolute
+    path naming this very file), other (another absolute path, or one absolute only on another system), relative
+    (not absolute: never resolved, or the current folder would decide whose it is — in the report it is a chat
+    store's name, in a merge question it proves nothing), bad (not text)."""
+    if value is None or value == "":
+        return "none"
+    if not isinstance(value, str) or "\0" in value:
+        return "bad"
+    if Path(value).is_absolute():
+        return "this" if _same_file(mine, value) else "other"
+    if PurePosixPath(value).is_absolute() or PureWindowsPath(value).is_absolute():
+        return "other"
+    return "relative"
 
 
 def _load_json(path: Path):
@@ -609,9 +683,11 @@ class _Snapshot:
         is, is checked piece by piece, never inferred from another (Codex review, 30.10.2026): the report (MEMORY.md
         entries, its conflicts, the night's stats) and the approval queue are the profile store's — <home>/memory_store.db
         — and never reach a map of another store; a merge question reaches a map only when it names this very store
-        (one without a store is the profile's); a report item that names another store is that store's, its fact
-        number too. A file that is missing, unreadable or of another shape is a state, never an error; a record of
-        another shape is left out and listed in ``invalid`` with the field that is wrong."""
+        by an absolute path (one without a store is the profile's; a relative one proves nothing: second review,
+        30.10.2026); a report item of any section that names another store is that store's, its text and fact number
+        too. A file that is missing, unreadable or of another shape is a state, never an error; a record of another
+        shape (a text the screen refuses or a date no calendar holds included) is left out and listed in ``invalid``
+        with the field that is wrong."""
         if self.home is None:
             return {"read": False, "reason": "not_requested", "files": {}, "invalid": []}, [], []
         home = Path(self.home).expanduser()
@@ -639,18 +715,25 @@ class _Snapshot:
         nights = []
         if profile and files["report"] == "ok":
             report = data["report"]
-            day = _iso_day(report.get("generated_at"), self.made.tzinfo) if report.get("generated_at") else None
+            # the night's moment: an ISO moment and nothing else (it is shown as written), in a calendar's range
+            at = report.get("generated_at")
+            moment = _moment(at, self.made.tzinfo) if at is not None else None
+            if at is not None and moment is None:
+                invalid.append({"file": "report", "id": "generated_at", "why": "generated_at"})
+            day = moment.date().isoformat() if moment else None
             pending += self._report_items(report, facts, day, invalid)
+            stats = report.get("stats") if isinstance(report.get("stats"), dict) else {}
+            if any(not (isinstance(k, str) and _STAT_KEY.fullmatch(k)) for k in stats):
+                invalid.append({"file": "report", "id": "stats", "why": "key"})  # the key itself is not repeated
             if day:
-                stats = report.get("stats") if isinstance(report.get("stats"), dict) else {}
                 alerts = report.get("alerts") if isinstance(report.get("alerts"), list) else []
-                nights.append({"d": day, "k": "night", "at": str(report["generated_at"]),
+                nights.append({"d": day, "k": "night", "at": at,
                                "alerts": sorted(str(a.get("kind")) for a in alerts
                                                 if isinstance(a, dict) and _CODE.fullmatch(str(a.get("kind")))),
                                "stats": {k: v for k, v in sorted(stats.items())
-                                         if isinstance(v, (int, float)) and not isinstance(v, bool)}})
+                                         if isinstance(k, str) and _STAT_KEY.fullmatch(k) and _finite(v)}})
         if profile and files["queue"] == "ok":
-            queue = self._queue(home.joinpath(*_DREAM_FILES["queue"]))
+            queue = self._queue(home.joinpath(*_DREAM_FILES["queue"]), invalid)
             if queue:
                 pending.append(queue)
         return {"read": True, "reason": None, "files": files, "invalid": invalid}, pending, nights
@@ -670,15 +753,12 @@ class _Snapshot:
             if not isinstance(rec, dict):
                 bad(pid, "record")
                 continue
-            store = rec.get("store")
-            if store is not None and not isinstance(store, str):
-                bad(pid, "store")
+            whose = _record_store(rec.get("store"), self.s.db_path)
+            if whose in ("bad", "relative"):
+                bad(pid, "store" if whose == "bad" else "store_relative")
                 continue
-            if store:
-                if not _same_file(self.s.db_path, store):
-                    continue  # about another store
-            elif not profile:
-                continue  # no store named: the dream's profile store, whatever its numbers match here
+            if whose == "other" or (whose == "none" and not profile):
+                continue  # about another store; or none named: the dream's profile store, whatever numbers match
             keep, copy = rec.get("keep"), rec.get("copy")
             if not isinstance(keep, dict) or not isinstance(copy, dict):
                 bad(pid, "keep" if not isinstance(keep, dict) else "copy")
@@ -722,7 +802,9 @@ class _Snapshot:
 
     def _report_items(self, report, facts, day, invalid) -> list[dict]:
         """The report's questions for the profile store (the caller checked whose the report is); records of another
-        shape go to *invalid*, by section and index."""
+        shape go to *invalid*, by section and index. Every item of every section is checked for whose it is (an item
+        that names another store — dream names a chat's own database by its key — is that store's, its text and its
+        fact number too), and every text of it that reaches the JSON passes the screen."""
         def bad(where, why):
             invalid.append({"file": "report", "id": where, "why": why})
 
@@ -733,6 +815,12 @@ class _Snapshot:
                 return []
             return items or []
 
+        def ours(item, where) -> bool:
+            whose = _record_store(item.get("store"), self.s.db_path)
+            if whose == "bad":
+                bad(where, "store")
+            return whose in ("none", "this")
+
         out = []
         n = 0
         for i, item in enumerate(section("conflicts")):
@@ -740,11 +828,7 @@ class _Snapshot:
             if not isinstance(item, dict):
                 bad(where, "record")
                 continue
-            store = item.get("store")
-            if store is not None and not isinstance(store, str):
-                bad(where, "store")
-                continue
-            if store and not _same_file(self.s.db_path, store):
+            if not ours(item, where):
                 continue  # a chat's own fact: its number is that store's, not this one's
             fid, hits = item.get("fact_id"), item.get("conflicts")
             if not isinstance(fid, int) or isinstance(fid, bool):
@@ -762,27 +846,35 @@ class _Snapshot:
                     continue
                 if hit.get("replace_unsafe") or _screen(entry) or self._forgotten_text(entry):
                     continue
+                lists, wrong = _hit_lists(hit)
+                if wrong:
+                    bad(f"{where}.conflicts[{j}]", wrong)
+                    continue
                 n += 1
-                out.append({"kind": "memory_conflict", "id": f"M-{n}", "fact": fid, "entry": entry,
-                            **{k: [str(x) for x in hit.get(k)] for k in ("fact_numbers", "memory_numbers",
-                                                                          "fact_negations", "memory_negations")
-                               if isinstance(hit.get(k), list)},
+                out.append({"kind": "memory_conflict", "id": f"M-{n}", "fact": fid, "entry": entry, **lists,
                             "asked": day, "status": "open"})
         for i, item in enumerate(section("md_decays")):
+            where = f"md_decays[{i}]"
             if not isinstance(item, dict) or not isinstance(item.get("entry"), str):
-                bad(f"md_decays[{i}]", "record" if not isinstance(item, dict) else "entry")
+                bad(where, "record" if not isinstance(item, dict) else "entry")
+                continue
+            if not ours(item, where):
+                continue  # MEMORY.md is the profile's; an item that names another store is that store's
+            index = item.get("index")
+            if not isinstance(index, int) or isinstance(index, bool) or index < 0:
+                bad(where, "index")  # dream's index of the entry in MEMORY.md, a number: the map shows it as R-<n>
                 continue
             if _screen(item["entry"]) or self._forgotten_text(item["entry"]):
                 continue
             days = item.get("last_mention_days")
-            out.append({"kind": "relevant", "id": f"R-{item.get('index')}", "text": item["entry"],
-                        "last_mention_days": days if isinstance(days, (int, float)) and not isinstance(days, bool)
-                        else None, "asked": day, "status": "open"})
+            out.append({"kind": "relevant", "id": f"R-{index}", "text": item["entry"],
+                        "last_mention_days": days if _finite(days) else None, "asked": day, "status": "open"})
         return out
 
-    def _queue(self, base: Path) -> dict | None:
+    def _queue(self, base: Path, invalid: list) -> dict | None:
         """Writes to long-term memory waiting for approval: how many and since when — never their text (they are
-        not memory yet)."""
+        not memory yet). A record's date no calendar holds is that record's: it is counted, its date is not, and it
+        goes to *invalid* by its file name (when the name is a plain one; else null)."""
         records = writes = unreadable = 0
         oldest = None
         for path in sorted(base.glob("*.json")):
@@ -796,12 +888,17 @@ class _Snapshot:
             writes += len([o for o in ops if isinstance(o, dict)]) if isinstance(ops, list) else 1
             created = data.get("created_at")
             if isinstance(created, (int, float)) and not isinstance(created, bool):
-                oldest = created if oldest is None else min(oldest, created)
+                try:
+                    moment = datetime.fromtimestamp(created, self.made.tzinfo)
+                except (OverflowError, OSError, ValueError):  # 1e100, NaN, before the platform's epoch range
+                    name = path.name if _QUEUE_FILE.fullmatch(path.name) and not _screen(path.name) else None
+                    invalid.append({"file": "queue", "id": name, "why": "created_at"})
+                    continue
+                oldest = moment if oldest is None else min(oldest, moment)
         if not records and not unreadable:
             return None
-        day = datetime.fromtimestamp(oldest, self.made.tzinfo).date().isoformat() if oldest is not None else None
         return {"kind": "queue", "id": "Q", "records": records, "writes": writes, "unreadable": unreadable,
-                "oldest": day, "status": "open"}
+                "oldest": oldest.date().isoformat() if oldest is not None else None, "status": "open"}
 
     # -- the week --
     def _feed(self, facts, versions, confirmations, names, forgotten, merged, nights) -> list[dict]:
