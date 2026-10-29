@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.22.2 — 2026-10-29
 
 ### Fixed
 - A large pool on a slow reranker no longer fails and pauses the endpoint. On a CPU the cross-encoder's time grows with everything it is sent: jina-reranker-v2 Q4_K_M on 2 threads answered 5 short facts in 0.4 s, 15 in 1.2 s and 40 (the default `rerank_top_k`) in 3.3 s, over the default `rerank_timeout` of 3 s, so recall went on without the reranker and the endpoint was paused for 60 s and longer on exactly the questions a big store pools the most facts for. Each answer now records the endpoint's speed: seconds per character of the pairs, from the moment the connection was ready (`net` marks it). A call that timed out after connecting records a lower bound; one that timed out before the connection was ready records nothing. A call sends as many of the first candidates as the slowest of the last five speeds fits, in characters, in half the timeout, never fewer than two; it is an estimate, so a call can still time out. The candidates not sent are treated as the tail beyond `rerank_top_k` always was: behind the scored ones with `rerank_weight: 0`, in the blend with the lowest rerank score above 0. A fast endpoint is sent the whole pool as before; before the first answer nothing is known and `rerank_top_k` goes out, so the first large pool on a slow endpoint can time out once, and the next call sends about half of its characters. The candidate count on the debug stage trace is what a call sends (`Rescorer.fitting()`); whether a call was made is on the answer line, as before.
