@@ -11,7 +11,11 @@
   lower-case copy of the text, and by the text itself for a capital variable's name — and there the pattern decides
   on the text as it is, so the matches are the ones a scan of the whole text finds, in the same order. A token's
   shape, a secret's shape in configuration and hidden characters are looked for the same way. The patterns are
-  0.22.0's to the character.
+  0.22.0's to the character. The places are produced one at a time and the patterns stop at their answer, as a scan
+  of the whole text did: a key, a password or an instruction at the start of a long text is found without reading
+  the rest (Codex review: a first version listed every place before trying the first one, 0.16 s and 11 MB for a key
+  at the start of 900 KB of "sk-"). Only the lower-case copy is made of the whole text, at C speed (about 1 ms per
+  MB of Latin text, 20 ms of Cyrillic).
 - Measured on 1 MB (Python 3.12): Russian prose `_recall_problem` 8.98 s → 0.30 s, `_secret_in` 5.14 s → 0.15 s;
   English prose, logs, hex ids 8–13 times faster. Facts up to 1000 characters (the hot path): median `_fact_problem`
   602 → 99 µs, `_recall_problem` 596 → 97 µs, `_sendable` 763 → 117 µs.
@@ -20,7 +24,7 @@
   there; the lower-case copy keeps every letter where the case-blind engine finds it (every code point); and every
   screen function gives what 0.22.0's gives (a frozen copy in tests/fixtures/screen_0220.py) on every string of the
   suite, a seeded corpus of credentials, requests, instructions and token shapes in all the screen's languages, and
-  long texts.
+  long texts. An answer at the start of 0.9 MB is given after a dozen questions to the patterns, counted.
 
 ## 0.22.0 — 2026-10-29
 
