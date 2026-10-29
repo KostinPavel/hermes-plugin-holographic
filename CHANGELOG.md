@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Tests
+- Timing tests no longer depend on the runner's speed; they failed now and then on the macOS runner. The journal contention tests checked a 0.5 s bound on the whole search, while SQLite's 50 ms busy wait alone took 160–340 ms per try there (it is a series of short sleeps, and the OS stretches each). They now check that search returns while the other process still holds the database, that the journal tries twice, and that each of its lock statements runs under a busy timeout of at most 50 ms. The rerank timeout tests time the rerank call instead of the whole prefetch; `test_timeout_keeps_order` also checks that recall is back while the endpoint still holds its answer and that the request carries the clamped 0.5 s, so an unclamped 0.2 s timeout, which passed before, now fails.
+
 ## 0.22.0 — 2026-10-29
 
 ### Fixed

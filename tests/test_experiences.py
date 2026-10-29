@@ -1,5 +1,6 @@
 """Task outcomes describe relevance, never the truth of a stored claim."""
 import json
+import re
 import importlib.util
 from pathlib import Path
 import sqlite3
@@ -382,28 +383,72 @@ def test_retry_refuses_a_fact_changed_or_forgotten_between_attempts(provider, op
     assert not thread.is_alive()
 
 
-def test_external_writer_cannot_stall_search_for_journal(provider, caplog):
-    seed(provider)
-    acquired, release = threading.Event(), threading.Event()
+# Another process holds the database; search must answer while it still holds, the journal giving up after a bounded
+# busy wait. Wall time is not the measure: SQLite's busy wait is a series of short sleeps the OS stretches, so a 50 ms
+# busy timeout took 95 ms on a Windows laptop and, on the macOS runner, 164 ms for a BEGIN that only waited for a lock
+# and 160-340 ms for a refused COMMIT (a 0.5 s bound on the whole search failed there at 0.51-0.72 s). So the bound
+# is read where it is set: the busy timeout each lock statement of the journal runs under, and how many it runs.
+# The hold ends before the connection's own 10 s busy timeout would: a search that waits for the holder instead of
+# giving up can only return after the holder has let go, however fast or slow the machine.
+_HOLD_S = 5
+_JOURNAL_BUSY_MS = 50  # docs/experience.md: a 50 ms busy timeout per lock acquisition, a busy failure retried once
+_BUSY_SET = re.compile(r"PRAGMA\s+busy_timeout\s*=\s*(\d+)\s*$", re.IGNORECASE)
 
-    def writer():
-        external = sqlite3.connect(provider._store.db_path, isolation_level=None)
+
+def _hold(db_path, *statements):
+    """A thread that opens its own connection, runs `statements` in one transaction and holds it until `release` is
+    set or _HOLD_S passes. Returns (thread, acquired, release, let_go): `let_go` is set just before it rolls back."""
+    acquired, release, let_go = threading.Event(), threading.Event(), threading.Event()
+
+    def holder():
+        external = sqlite3.connect(db_path, isolation_level=None)
         try:
-            external.execute("BEGIN IMMEDIATE")
+            for statement in statements:
+                external.execute(statement).fetchall()
             acquired.set()
-            release.wait(2)
+            release.wait(_HOLD_S)
+            let_go.set()
             external.execute("ROLLBACK")
         finally:
             external.close()
 
-    thread = threading.Thread(target=writer)
+    thread = threading.Thread(target=holder)
     thread.start()
+    return thread, acquired, release, let_go
+
+
+def _search_tracing_locks(provider):
+    """Search, and list each BEGIN / COMMIT the store's connection ran with the busy timeout in force for it."""
+    conn = provider._store._conn
+    busy = [conn.execute("PRAGMA busy_timeout").fetchone()[0]]
+    locks = []
+
+    def trace(statement):
+        statement = statement.strip()
+        assigned = _BUSY_SET.match(statement)
+        if assigned:
+            busy[0] = int(assigned.group(1))
+        elif statement.upper().startswith(("BEGIN", "COMMIT")):
+            locks.append((statement.upper(), busy[0]))
+
+    conn.set_trace_callback(trace)
+    start = time.monotonic()
+    try:
+        result = call(provider, "search", query="Alice observatory")
+    finally:
+        conn.set_trace_callback(None)
+    return result, locks, time.monotonic() - start
+
+
+def test_external_writer_cannot_stall_search_for_journal(provider, caplog):
+    seed(provider)
+    thread, acquired, release, let_go = _hold(provider._store.db_path, "BEGIN IMMEDIATE")
     try:
         assert acquired.wait(5)
-        start = time.monotonic()
-        result = call(provider, "search", query="Alice observatory")
-        elapsed = time.monotonic() - start
-        assert elapsed < 0.5, f"optional journal held search for {elapsed:.2f} seconds"
+        result, locks, elapsed = _search_tracing_locks(provider)
+        assert not let_go.is_set(), f"search waited {elapsed:.2f} s, until the other writer let go"
+        assert [statement for statement, _ in locks] == ["BEGIN IMMEDIATE"] * 2, locks  # one try, one retry
+        assert all(busy <= _JOURNAL_BUSY_MS for _, busy in locks), f"journal lock wait not bounded: {locks}"
         assert result["results"] and "memory_attempt" not in result
         assert experience(provider, "recent")["error_kind"].startswith("OperationalError")
         diagnostic = [r.getMessage() for r in caplog.records if "experience slow" in r.getMessage()]
@@ -421,27 +466,14 @@ def test_external_writer_cannot_stall_search_for_journal(provider, caplog):
 def test_delete_mode_reader_cannot_hold_journal_commit(provider, caplog):
     seed(provider)
     assert provider._store._conn.execute("PRAGMA journal_mode=DELETE").fetchone()[0] == "delete"
-    acquired, release = threading.Event(), threading.Event()
-
-    def reader():
-        external = sqlite3.connect(provider._store.db_path, isolation_level=None)
-        try:
-            external.execute("BEGIN")
-            external.execute("SELECT count(*) FROM facts").fetchone()
-            acquired.set()
-            release.wait(2)
-            external.execute("ROLLBACK")
-        finally:
-            external.close()
-
-    thread = threading.Thread(target=reader)
-    thread.start()
+    thread, acquired, release, let_go = _hold(provider._store.db_path, "BEGIN", "SELECT count(*) FROM facts")
     try:
         assert acquired.wait(5)
-        start = time.monotonic()
-        result = call(provider, "search", query="Alice observatory")
-        elapsed = time.monotonic() - start
-        assert elapsed < 0.5, f"journal commit held search for {elapsed:.2f} seconds"
+        result, locks, elapsed = _search_tracing_locks(provider)
+        assert not let_go.is_set(), f"journal commit held search {elapsed:.2f} s, until the reader let go"
+        # The reader blocks the COMMIT, not the BEGIN: each try gets as far as committing and gives up there.
+        assert [statement for statement, _ in locks] == ["BEGIN IMMEDIATE", "COMMIT"] * 2, locks
+        assert all(busy <= _JOURNAL_BUSY_MS for _, busy in locks), f"journal lock wait not bounded: {locks}"
         assert result["results"] and "memory_attempt" not in result
         assert experience(provider, "recent")["error_kind"].startswith("OperationalError")
         diagnostic = [r.getMessage() for r in caplog.records if "experience slow" in r.getMessage()]
