@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.23.0 — 2026-10-30
 
 ### Fixed
 - **Feedback no longer makes a fact younger.** `fact_feedback helpful` / `unhelpful` stamped `updated_at`, and
@@ -22,7 +22,10 @@
   `revert` brings it back, as after a change (its helpful marks and confirmations do not come back, as after a
   change). Copies merged into the fact said the old claim: their helpful marks, added to the keep's at the merge,
   go with the rest, and a person who confirmed a copy confirms the corrected text as a new claim (already so, by the
-  merge's version link). Tests: `tests/test_holographic_trust_signals.py`.
+  merge's version link). A store without history (no versions to close) starts the new text at the origin the call names too; before the Codex review it fell back to `default_trust`. Tests: `tests/test_holographic_trust_signals.py`.
+
+### Changed
+- `updated_at` now means "the fact itself last changed", not "last touched". Readers that break ties or rank by it see feedback no more: `probe`, `reason` and entity recall order facts of equal trust by it, and hermes-dreaming reads it for its recency and consolidation signals, so a fact voted on lately no longer counts as recent there either.
 
 ## 0.22.2 — 2026-10-29
 

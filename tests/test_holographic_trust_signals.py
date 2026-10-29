@@ -183,6 +183,22 @@ def test_a_corrected_inference_starts_as_an_inference_unless_the_person_said_the
         p.shutdown()
 
 
+
+@pytest.mark.parametrize("origin, start", [("inferred", 0.4), ("said", 0.6)])
+def test_without_history_a_new_text_starts_at_the_origin_it_names(tmp_path, origin, start):
+    """A store no writer of 0.8.0 has migrated keeps no versions, but the origin a correction names still sets where
+    its new text starts (Codex review: it fell back to the default 0.5)."""
+    store = MemoryStore(db_path=str(tmp_path / "plain.db"), default_trust=0.5, hrr_dim=64, migrate=False)
+    try:
+        assert not store.history_ready()
+        fact = store.add_fact_status("Irma's school starts at 8")[0]
+        store.update_fact(fact, content="Irma's school starts at 9", source={"origin": origin})
+        trust = store._one("SELECT trust_score FROM facts WHERE fact_id = ?", (fact,))["trust_score"]
+        assert trust == pytest.approx(start)
+    finally:
+        store.close()
+
+
 def test_update_with_a_new_text_and_a_trust_step_starts_over_then_takes_the_step(tmp_path):
     p, fact = _earned(tmp_path)
     try:

@@ -430,7 +430,7 @@ class MemoryStore(EntityMixin, HistoryMixin, ExperienceMixin):
                 self._write("UPDATE fact_versions SET tags = COALESCE(?, tags), category = COALESCE(?, category) "
                             "WHERE fact_id = ? AND status = 'current'", (tags, category, fact_id))
             if new_claim:
-                start = self.start_trust((source or {}).get("origin")) if history else None
+                start = self.start_trust((source or {}).get("origin"))  # no history: the origin given still counts
                 base = self.default_trust if start is None else start
             changes = {col: val for col, val in {
                 "content": content, "tags": tags, "category": category,
