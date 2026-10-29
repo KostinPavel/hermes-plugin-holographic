@@ -571,6 +571,9 @@ class HolographicMemoryProvider(MemoryProvider):
             self._config = {k: v for k, v in self._config.items() if k not in empty}
         self._min_trust = self._number("min_trust_threshold", 0.3)
         self._min_coverage = self._number("prefetch_min_coverage", 0.3)
+        # An experiment, off by default: a message of two questions gives each of them a second look at the facts the
+        # coverage gate left out (FactRetriever._clause_rescue). Not in the setup schema while it is measured.
+        self._clause_coverage = is_truthy_value(self._config.get("prefetch_clause_coverage", False))
         self._repeat_turns = self._number("prefetch_repeat_turns", 6, int)
         # Approximate tokens the block recalled before a turn may take (0.21.0); 0 = no limit beyond five facts
         raw = self._config.get("prefetch_max_tokens", 0)
@@ -870,6 +873,7 @@ class HolographicMemoryProvider(MemoryProvider):
             return None
         retriever = FactRetriever(store=store, hrr_dim=hrr_dim, hrr_weight=self._hrr_weight,
                                   temporal_decay_half_life=self._half_life)
+        retriever.clause_coverage = self._clause_coverage
         if self._embedding is None and self._tool_writable:  # off: no vector of an outside model stays in the file
             try:
                 dropped = store.drop_vectors()

@@ -666,6 +666,8 @@ def _keys(word: str, langs: tuple[str, ...], written: str = "", determined: bool
     # A Latin spelling joins its group only in English or in text of no known language: German "über" folds to
     # "uber", French "chat" is a cat, Spanish "botes" are boats (review 2026-10-15).
     loan = _loan_keys(word) if word_script(word) != "latin" or "en" in langs else frozenset()
+    if _RU_FORM_GROUPS and "ru" in langs:
+        loan |= _ru_form_keys(word)
     return frozenset(keys | loan)
 
 
@@ -741,6 +743,72 @@ def _loan_table() -> dict:
 def _loan_keys(word: str) -> frozenset:
     """The group keys of a borrowed word written in Latin or Cyrillic (_LOANWORDS), or nothing."""
     return _loan_table().get(word, frozenset())
+
+
+# -- case forms of Russian nouns that share no key (an experiment, off by default) ------------------------------------
+# Snowball cuts «чай» to «ча», «мае» to «ма», «рта» to «рт»; a stem under _MIN_STEM is no key, so «чая» never meets
+# «чай». A dropped vowel does the same with longer stems: «подарок» / «подарк(а)», «отец» / «отц(а)». A shared key for
+# every two-letter stem would join different words («ель» / «ели» of «есть», «рой» / «рою» of «рыть»), so each line
+# below is one noun's own case forms, written out and checked: on 0.22.1 most of them do not meet the first form; no
+# other Russian lexeme of Wikidata (CC0) has a form spelled like them, or the form is left out; forms that are also a
+# verb form are left out by hand (Wikidata has few Russian verbs): «ели», «шей», «рою», «вою», «лая». Kept although
+# also another word, judged rare in what people write: «чая», «чаю», «чаем» of «чаять»; «рот» of «рота»; «звонка» of
+# «звонкий». A word of a group gets the group's mark ("ru=:" + its first form), which only another form of the same
+# group meets, and its forms as whole FTS5 words (as a borrowed word does). «день» is not listed: measured, «дни
+# рождения» and «в какие дни» then met every «День рождения …» of the household set (two more questions with another
+# person's birthday in the top five); a word that light needs the question's other words, which the gate weighs
+# against it. Measured in plans/2026-10-29-two-topic-and-short-nouns-experiment.md (outside the repository).
+_RU_FORM_GROUPS = False
+_RU_FORMS = """
+чай чая чаю чаем чае чаи чаёв чаям чаями чаях
+сон сна сну сном сне сны снов снам снами снах | рот рта рту ртом рте рты ртов ртам ртами ртах
+лоб лба лбу лбом лбе лбы лбов лбам лбами лбах | пёс пса псу псом псе псы псов псам псами псах
+лёд льда льду льдом льде льды льдов льдам льдами льдах | май мая маю маем мае | рай раю раем рае
+бой боя бою боем бое бои боёв боям боями боях | ум ума уму умом уме умы умов умам умах
+имя имени именем имена имён именам именами именах | шея шеи шее шею шеей шеею шеям шеями шеях
+ухо ухом уши ушей ушам ушами ушах | уха ухи ухой ухою | ель елью елям елями елях
+яйцо яйца яйцу яйцом яйце яиц яйцам яйцами яйцах | отец отца отцу отцом отце отцы отцов отцам отцами отцах
+мать матери матерью матерей матерям матерями матерях | дочь дочери дочерью дочерей дочерям дочерями дочерьми дочерях
+ребёнок ребёнка ребёнку ребёнком ребёнке
+подарок подарка подарку подарком подарке подарки подарков подаркам подарками подарках
+рынок рынка рынку рынком рынке рынки рынков рынкам рынками рынках
+звонок звонка звонку звонком звонке звонки звонков звонкам звонками звонках
+кусок куска куску куском куске куски кусков кускам кусками кусках
+потолок потолка потолку потолком потолке потолки потолков потолкам потолками потолках
+палец пальца пальцу пальцем пальце пальцы пальцев пальцам пальцами пальцах
+перец перца перцу перцем перце перцы перцев перцам перцами перцах
+огурец огурца огурцу огурцом огурце огурцы огурцов огурцам огурцами огурцах
+ветер ветра ветру ветром ветре ветры ветров ветрам ветрами ветрах
+угол угла углу углом углы углов углам углами углах
+"""
+_RU_FORM_TABLE: dict | None = None
+_RU_FORM_LOCK = threading.Lock()
+
+
+def _ru_form_table() -> dict:
+    """form -> the keys of its group: the mark "ru=:<first form>" and every form as "fts=:<form>" (a whole word for
+    Term.fts). A form with «ё» is listed with «е» too, as people type it."""
+    global _RU_FORM_TABLE
+    if _RU_FORM_TABLE is None:
+        with _RU_FORM_LOCK:
+            if _RU_FORM_TABLE is None:
+                table = {}
+                for group in _RU_FORMS.replace("\n", " | ").split("|"):
+                    forms = [fold(w) for w in group.split()]
+                    if not forms:
+                        continue
+                    spellings = list(dict.fromkeys(s for f in forms for s in (f, f.replace("ё", "е"))))
+                    keys = frozenset({"ru=:" + forms[0]} | {"fts=:" + s for s in spellings})
+                    for s in spellings:
+                        table[s] = keys
+                _RU_FORM_TABLE = table
+    return _RU_FORM_TABLE
+
+
+@lru_cache(maxsize=65536)
+def _ru_form_keys(word: str) -> frozenset:
+    """The group keys of a case form of a listed Russian noun (_RU_FORMS), or nothing."""
+    return _ru_form_table().get(word, frozenset())
 
 
 # -- same-root words ---------------------------------------------------------------------------------------------
@@ -2216,23 +2284,82 @@ class Term:
         return self.word in fact.text and self._bounded.search(fact.text) is not None
 
 
+def _term_key(w: Word) -> str | None:
+    """The key by which a word of a query is one of its terms (Term.stem), or None for a word that is no term."""
+    if w.stop or w.text in QUERY_ONLY_STOP or (not w.identifier and len(w.text) < 2):
+        return None
+    tokens = w.text.translate(FTS_OPERATORS).split()
+    if not tokens:
+        return None
+    return w.stem if len(tokens) == 1 else w.text
+
+
 def query_terms(text: str) -> list[Term]:
     """Distinct informative terms of a natural-language query, in order of appearance."""
     seen, terms = set(), []
     for w in analyze(text).words:
-        if w.stop or w.text in QUERY_ONLY_STOP or (not w.identifier and len(w.text) < 2):
+        key = _term_key(w)
+        if key is None:
             continue
         tokens = tuple(w.text.translate(FTS_OPERATORS).split())
-        if not tokens:
-            continue
         single = len(tokens) == 1
-        key = w.stem if single else w.text
         if key not in seen:
             seen.add(key)
             terms.append(Term(w.text, key, w.identifier, tokens, w.keys if single else frozenset({w.text}), w.scan, w.fts,
                               w.roots if single else frozenset(), w.root_lang if single else "",
                               *((w.head, w.mod_parts, w.lemmas, w.lemma_of, w.form_lang) if single else ())))
     return terms
+
+
+# -- two questions in one message (prefetch_clause_coverage, an experiment, off by default) -------------------------
+# «что Злате нужно взять с собой в четверг и какой чай она любит?» asks two things: each answer holds only its half of
+# the words, and the coverage gate, which weighs a fact against the whole message, can leave it out. Only Russian and
+# English questions are split; a question starts with one of these words, after a preposition or not.
+_QUESTION_WORDS = """что чем чего чему кто кого кому кем где куда откуда когда как какой какая какое какие какого какому
+    каким каком какую каких какими каков какова каковы который которая которое которые которого которой которому
+    которым котором которую которых сколько почему зачем чей чья чьё чье чьи чьего чьей чьих
+    what when where which who whom whose why how""".split()
+_QUESTION_PREPOSITIONS = """во в на с со у для по из о об при за от до к ко про через после перед
+    at on in for with to from by of about""".split()
+_WH = "|".join(sorted(_QUESTION_WORDS, key=len, reverse=True))
+_PREP = "|".join(sorted(_QUESTION_PREPOSITIONS, key=len, reverse=True))
+_QUESTION_START = re.compile(rf"(?<![\w-])(?:(?:{_PREP})\s+)?(?:{_WH})(?![\w-])", re.IGNORECASE)
+# where a second question begins: after "?" or ";" (and an «и» / «а» / "and"), or after «и» / «а» / «а также» / "and"
+# (with a comma or not), at a question word: not «и» between two words of one question («чай и кофе»)
+_QUESTION_JOIN = re.compile(rf"(?:[?;]+\s*(?:(?:и|а|and)\s+)?|,?\s+(?:и|а|а\s+также|and)\s+)"
+                            rf"(?=(?:(?:{_PREP})\s+)?(?:{_WH})(?![\w-]))", re.IGNORECASE)
+# a person the other question names: «и какой чай она любит?»
+PRONOUNS_3P = _folded("""он она оно они его её ее него неё нее ему ей нему ней им ими ним ними их них нём нем ею нею
+    he she they him her them his hers their theirs""")
+
+
+def two_questions(text: str) -> tuple[str, str] | None:
+    """The two questions of a message that asks exactly two, each starting with a question word, or None: one
+    question, three or more, or a «и» that joins two words of one question."""
+    text = (text or "").strip()
+    joins = [m for m in _QUESTION_JOIN.finditer(text) if m.end() < len(text)]
+    if len(joins) != 1:
+        return None
+    first, second = text[:joins[0].start()].strip(" ,;?"), text[joins[0].end():].strip()
+    if not first or not second or not _QUESTION_START.search(first):
+        return None
+    return first, second
+
+
+def question_parts(text: str) -> tuple[tuple[frozenset, bool], tuple[frozenset, bool]] | None:
+    """For a message of two questions (two_questions): each question's term keys (Term.stem) and whether it has a
+    pronoun of the third person, read in the whole message, as the gate reads it (the language, the function words):
+    the first question is the message's first len(analyze(first).words) words."""
+    parts = two_questions(text)
+    if parts is None:
+        return None
+    words = analyze(text).words
+    n = len(analyze(parts[0]).words)
+
+    def part(ws):
+        return frozenset(k for w in ws if (k := _term_key(w)) is not None), any(w.text in PRONOUNS_3P for w in ws)
+
+    return part(words[:n]), part(words[n:])
 
 
 _ja_ready = True  # every word list above is built: Japanese spelling variants may load from here on

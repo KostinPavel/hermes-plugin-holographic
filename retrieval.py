@@ -18,7 +18,8 @@ from .embeddings import Meaning, VectorIndex
 from .history import CLOSED, error_kind, version_state
 from .text import (CJK_NEGATORS, CLAIM_WORDS, CONTRASTIVE, NEGATORS, UNSEGMENTED, analyze, content_chars,
                    content_keys, content_stems, gram_coverage, is_chinese, is_greeting, is_sea, name_forms,
-                   query_grams, query_terms, run_grams, soft_jaccard, soft_overlap, words, zh_char_text)
+                   query_grams, query_terms, question_parts, run_grams, soft_jaccard, soft_overlap, words,
+                   zh_char_text)
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +168,9 @@ class FactRetriever:
         self._current = _Corpus("facts", (), "facts_fts", "fact_id", {})
         self._version_cache: dict[int, tuple[str, object]] = {}
         self._vectors: VectorIndex | None = None  # search by meaning, built on first use
+        # prefetch_clause_coverage (an experiment, off by default): relevant() gives a fact it left out a second look
+        # against each of a message's two questions (_clause_rescue)
+        self.clause_coverage = False
 
     def _as_of(self, day: str) -> _Corpus:
         if self.store._merges_ready():
@@ -788,7 +792,7 @@ class FactRetriever:
                 held[term] = sum(1 for _, _, a in self._texts() if term.match(a) == 1.0 or by_name(term, a))
             return held[term] > 1
 
-        kept = []
+        kept, left_out = [], []
         for fact in candidates:
             analysis = analyze(_fact_text(fact))
             if identifiers and not any(t.found_in(analysis) for t in identifiers):
@@ -812,7 +816,51 @@ class FactRetriever:
             if any(t.identifier and s for t, s in strength.items()) or fact in gram_kept or (
                     exact and not lone and sum(weights[t] * s for t, s in strength.items()) / total >= min_coverage):
                 kept.append(fact)
+            elif self.clause_coverage and exact and not grams:
+                left_out.append((fact, strength))
+        if left_out:
+            known = self.store.known_name_forms()
+            names = {t for t in weights.keys() | set(unknown) if t in named or not t.keys.isdisjoint(name_keys)
+                     or (known and not (t.keys | name_forms(t.word)).isdisjoint(known))}
+            kept += self._clause_rescue(query, terms, weights, names, left_out, min_coverage)
         return kept
+
+    @staticmethod
+    def _clause_rescue(query: str, terms, weights: dict, names: set, left_out: list, min_coverage: float) -> list:
+        """Facts the gate left out that answer one of a message's two questions (prefetch_clause_coverage, off by
+        default): each question's own terms, read in the whole message (text.question_parts), weighed as the gate
+        weighs them (a term no fact holds counts like the commonest known one). A fact is let in when it holds at least
+        two of that question's own words exactly and covers min_coverage of the question; when the question names a
+        person, or says «она» / «он» of a person the other question names, the fact must name that person (whom the
+        store holds a fact about: an unknown name cannot be told apart, and nothing is let in by it). In the order of
+        the candidates, after every fact the gate kept."""
+        parts = question_parts(query)
+        if parts is None or not weights:
+            return []
+        by_key = {t.stem: t for t in terms}
+        questions = [({by_key[k] for k in keys if k in by_key}, pronoun) for keys, pronoun in parts]
+        floor = min(weights.values())
+        rescued = []
+        for fact, strength in left_out:
+            for i, (own, pronoun) in enumerate(questions):
+                need = own & names
+                if not need and pronoun:
+                    need = questions[1 - i][0] & names
+                    if not need:
+                        continue  # «она» of nobody the message names: whose answer it is cannot be told
+                said = own | need
+                if need:
+                    known = [t for t in need if t in weights]
+                    if not known or not any(strength.get(t, 0.0) > 0.0 for t in known):
+                        continue
+                if sum(1 for t in own if strength.get(t, 0.0) == 1.0) < 2:
+                    continue
+                share = sum(weights[t] * strength.get(t, 0.0) for t in said if t in weights) / \
+                    sum(weights.get(t, floor) for t in said)
+                if share >= min_coverage:
+                    rescued.append(fact)
+                    break
+        return rescued
 
     def _char_weights(self, chars: list[str]) -> dict[str, float]:
         """IDF weight of each character over the store; a character no fact contains weighs like the most common
