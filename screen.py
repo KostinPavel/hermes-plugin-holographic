@@ -507,7 +507,8 @@ def _run_start(first: str, anchors) -> re.Pattern:
 _ENV_ANCHORS = ("KEY", "TOKEN", "SECRET", "PASS", "PWD", "CREDENTIAL", "HASH", "SESSION", "DSN", "AK", "SK", "WEBHOOK")
 _RE_ENV_START = _run_start(r"[A-Z]", _ENV_ANCHORS)
 # What a credential word (_CREDENTIAL_WORD) can start with, folded; the names of _SECRET_ENV_NAMES by their first five
-# letters.
+# letters (a generator, not a set comprehension: Python 3.12 inlines that into the module, and hermes-dreaming's check
+# of its copy reads the loop variable as a name the copy must define).
 _CREDENTIAL_STARTS = (
     # en
     "pass", "pwd", "pin", "api", "access", "auth", "bearer", "refresh", "secret", "token", "otp", "2fa ",
@@ -531,7 +532,7 @@ _CREDENTIAL_STARTS = (
     # th, hi, bn, ar
     "รหัส", "โทเค็น", "คีย์", "पासवर्ड", "ओटीपी", "टोकन", "एपीआई", "गुप्त", "कूटशब्द",
     "পাসওয়ার্ড", "ওটিপি", "টোকেন", "এপিআই", "গোপন", "পিন", "كلمة", "الرقم", "رمز", "مفتاح", "المفتاح",
-) + tuple(sorted({name.lower()[:5] for name in _SECRET_ENV_NAMES}))
+) + tuple(sorted(set(name.lower()[:5] for name in _SECRET_ENV_NAMES)))
 _RE_CREDENTIAL_START = _starts_pattern(_CREDENTIAL_STARTS)
 # What a request to send a credential (_RE_EXFILTRATION) can start with, folded: the verb, or the credential where the
 # language puts it first.
@@ -558,7 +559,7 @@ _EXFILTRATION_STARTS = (
     "पासवर्ड", "ओटीपी", "टोकन", "एपीआई", "गुप्त", "कूटशब्द", "कुंजी",
     "পাসওয়ার্ড", "ওটিপি", "টোকেন", "এপিআই", "গোপন", "পিন",
     "أرسل", "ارسل", "شارك", "انشر", "اكشف",
-) + tuple(sorted({name.lower()[:5] for name in _SECRET_ENV_NAMES}))
+) + tuple(sorted(set(name.lower()[:5] for name in _SECRET_ENV_NAMES)))
 _RE_EXFILTRATION_START = _starts_pattern(_EXFILTRATION_STARTS)
 # What an instruction to drop the rules (_RE_INJECTION) can start with, folded.
 _INJECTION_STARTS = (
