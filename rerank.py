@@ -202,8 +202,9 @@ class Rescorer:
         # True while a caller still waits in join() for that worker: a second call then finds a request in flight, not
         # an abandoned one, and must neither fail it nor pause the endpoint (independent review, 2026-10-25).
         self._awaited = False
-        # Seconds per character of the pairs, one per answered call and one per timed-out call (a lower bound: it
-        # did not answer within the timeout); fitting() reads the slowest.
+        # Seconds per character of the pairs, counted from the moment the connection was ready (net: "connected"):
+        # one per answered call, and one per call that timed out after connecting (a lower bound: the server had
+        # that long and did not answer). fitting() reads the slowest.
         self._speeds: collections.deque = collections.deque(maxlen=_SPEED_SAMPLES)
 
     def unavailable(self) -> str:
@@ -304,7 +305,6 @@ class Rescorer:
         chars = sum(len(body["query"]) + len(d) for d in body["documents"])  # what the endpoint's time grows with
 
         def send():
-            box["started"] = time.perf_counter()
             try:
                 # The worker cuts off ITSELF: a body that runs over the cap is aborted here, on ITS OWN thread,
                 # by its own deadline; `with` closes the connection on that same thread. A caller-side
@@ -381,10 +381,13 @@ class Rescorer:
                 # TimeoutError — a socket timeout must set the pause and raise failures, otherwise a slow
                 # server is polled every turn (PR #10, point 2).
                 noted = self._fail_locked("no answer (timeout)")  # both a live join and the worker's own deadline
-                if chars and not isinstance(error, urllib.error.URLError):
-                    # Not answered within the timeout: at least this slow, so the next call (fitting) sends at most
-                    # half of this one. A URLError's timeout is the connection's, which says nothing of the speed.
-                    self._speeds.append(timeout / chars)
+                connected = held.get("connected")
+                if chars and connected is not None and not isinstance(error, urllib.error.URLError):
+                    # Connected and not answered by the end of the wait: at least this slow, so the next call
+                    # (fitting) sends about half of this one. A timeout before the connection was ready (DNS, TCP,
+                    # TLS, a proxy) and a URLError's (sending the request) say nothing of the scoring speed.
+                    end = time.perf_counter() if alive else box.get("ended", time.perf_counter())
+                    self._speeds.append(max(end - connected, 0.0) / chars)
             self._log_failure(*noted)
             return None
         try:
@@ -413,8 +416,9 @@ class Rescorer:
                 return None  # a failure was counted while this request was in flight
             self._pause = self._paused_until = 0.0
             self._last_error = ""
-            if chars and "started" in box:
-                self._speeds.append((box["ended"] - box["started"]) / chars)
+            connected = held.get("connected")
+            if chars and connected is not None:
+                self._speeds.append(max(box["ended"] - connected, 0.0) / chars)
         return ranked
 
     def _fail_locked(self, why: str) -> tuple:
