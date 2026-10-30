@@ -12,7 +12,9 @@
   Unchanged: a name that shares a longer stem with another («Евгений» / «Евгения», «Александр» / «Александра») meets it
   through the words' own keys, as before 0.25.1. A sweep of 34 names in all their forms: no case form missed (36
   before), no pair of different names joined but those. Codex review: «-ей» after ж, ш, ч, щ, ц is also a name in
-  «-а» («Яшей» of «Яша»). Tests: `tests/test_holographic_names_fit_cases.py`.
+  «-а» («Яшей» of «Яша»). Codex review on GitHub: a dropped vowel is restored only for the names that drop
+  it («Лев», «Павел», «Любовь»), not for every final consonant pair, which made «Марек» of «Марка» and «Петер» of
+  «Петра». Tests: `tests/test_holographic_names_fit_cases.py`.
 
 ## 0.25.1 — 2026-10-30
 

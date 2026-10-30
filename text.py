@@ -1564,15 +1564,17 @@ def name_keys(name: str) -> tuple[tuple[frozenset, bool], ...]:
 
 
 # A Russian name's case ending -> the endings its first form may have after the stem; "~" marks a stem that may have
-# lost a vowel («Льв-а» of «Лев», «Павл-а» of «Павел»). Every ending that fits is read: «Зою» is «-ою» of «За…» and
+# lost a vowel, looked up in _RU_NAME_DROPPED («Льв-а» of «Лев»). Every ending that fits is read: «Зою» is «-ою» of «За…» and
 # «-ю» of «Зоя», «Илью» «-ью» and «-ю» of «Илья». «-ой», «-ы» are only «-а» names («Яной»,
 # «Яны» of «Яна»), «-ом» only names with no ending («Яном» of «Ян»); «-а», «-у», «-е» are either («Яну»: «Ян», «Яна»).
 # «-ей», «-ею» after ж, ш, ч, щ, ц are «-а» names too («Яшей» of «Яша»; Codex review): "^" is «-а» after those only.
 _RU_NAME_CASES = (("ью", ("ь",)), ("ою", ("а",)), ("ею", ("я", "^")), ("ой", ("а",)), ("ей", ("я", "^")), ("ом", ("", "~")),
-                  ("ем", ("ь", "й")), ("ы", ("а",)), ("и", ("я", "ь", "й", "а")), ("а", ("", "~")),
+                  ("ем", ("ь", "й")), ("ы", ("а",)), ("и", ("я", "ь", "й", "а", "~")), ("а", ("", "~")),
                   ("я", ("ь", "й")), ("у", ("", "а", "~")), ("ю", ("ь", "й", "я")),
                   ("е", ("", "а", "я", "ь", "~")))
-_RU_CONSONANTS = frozenset("бвгджзклмнпрстфхцчшщ")
+# The names whose stem drops a vowel in its other forms, by that stem. Only these: a rule for every final pair of
+# consonants made «Марек» of «Марка» and «Петер» of «Петра» (Codex review).
+_RU_NAME_DROPPED = {"льв": "лев", "павл": "павел", "любв": "любовь"}
 
 
 @lru_cache(maxsize=65536)
@@ -1595,10 +1597,8 @@ def name_lemmas(word: str) -> frozenset:
                     out.add(stem_ + "а")
             elif first != "~":
                 out.add(stem_ + first)
-            elif len(stem_) >= 2 and stem_[-1] in _RU_CONSONANTS and stem_[-2] in _RU_CONSONANTS:
-                out.add(stem_[:-1] + "е" + stem_[-1])  # павл -> павел
-            elif len(stem_) == 3 and stem_[1] == "ь" and stem_[0] in _RU_CONSONANTS and stem_[2] in _RU_CONSONANTS:
-                out.add(stem_[0] + "е" + stem_[2])  # льв -> лев; not «Ольг-а» -> «олег»
+            elif stem_ in _RU_NAME_DROPPED:
+                out.add(_RU_NAME_DROPPED[stem_])
     return frozenset(out)
 
 
