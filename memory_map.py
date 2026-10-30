@@ -969,8 +969,9 @@ def _limit(snapshot: dict, max_facts: int | None, max_entities: int | None) -> d
     """Cut a snapshot to at most *max_facts* facts and *max_entities* names (None: no limit) and say so in
     SNAP.limits. Facts a person is asked about or that changed this week come first (contradictions, then the
     nightly review's questions, then the week's feed, newest first), then current facts and then closed ones, each
-    newest first by when the current text was recorded. Names with the most facts stay. SNAP.counts stay the
-    whole store's; a kept fact lists only the kept names."""
+    newest first by when the current text was recorded. Names with the most facts stay. SNAP.counts and a name's
+    `facts` stay the whole store's; a kept fact and a contradiction list only the kept names. Records that name a cut
+    fact (a merge, a question, a feed line) keep their own fields."""
     facts, ents = snapshot["FACTS"], snapshot["ENT"]
     limits = {"facts": {"max": max_facts, "total": len(facts), "shown": len(facts)},
               "entities": {"max": max_entities, "total": len(ents), "shown": len(ents)}}
@@ -989,6 +990,8 @@ def _limit(snapshot: dict, max_facts: int | None, max_entities: int | None) -> d
         snapshot["ENT"] = [e for e in ents if e["id"] in ids]
         for f in snapshot["FACTS"]:
             f["ents"] = [e for e in f["ents"] if e in ids]
+        for c in snapshot["CONFLICTS"]:
+            c["shared"] = [e for e in c.get("shared") or [] if e in ids]
         limits["entities"]["shown"] = len(snapshot["ENT"])
     snapshot["SNAP"]["limits"] = limits
     return snapshot

@@ -180,12 +180,14 @@ and took 8 s to draw per language. So the export keeps at most **1000 facts and 
 - Facts a person is asked about or that changed lately come first: both sides of each contradiction, then what the
   nightly review asks about, then the facts of the week's feed (newest first). Then current facts, then closed ones,
   each newest first by when the current text was recorded.
-- Names with the most facts stay; a kept fact lists only kept names.
+- Names with the most facts stay; a kept fact and a contradiction (`shared`) list only kept names. A name's `facts`
+  is the whole store's count, so a name card can count more facts than the map shows.
 - `SNAP.counts` stay the whole store's; `SNAP.limits` says what was cut:
   `{"facts": {"max", "total", "shown"}, "entities": {"max", "total", "shown"}}` (`max` null: no limit).
-- What is cut is simply not on the map: an old fact past the limit is not shown at all, and a record that names it
-  (a merge, a feed line) shows its number only. If the questions alone name more facts than the limit, some of them
-  are cut too.
+- A cut fact has no card and is not in `FACTS`. Records that name it keep their own fields, which the privacy rules
+  already allow: a merge keeps the merged copy's text, a nightly-review question its texts, a feed line the number.
+  A renderer must expect a fact id it cannot find. If the questions alone name more facts than the limit, some of
+  them are cut too.
 - Versions of one fact, forgotten numbers and merges are not limited.
 
 By the 10,000-fact measurement the default limit makes a dashboard page of roughly 3 MB per language (an estimate:

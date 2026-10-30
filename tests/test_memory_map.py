@@ -1050,3 +1050,30 @@ def test_the_command_line_sets_the_limit_and_zero_lifts_it(tmp_path):
     bad = subprocess.run([sys.executable, str(REPO_ROOT / "memory_map.py"), "--store", str(db), "--json",
                           "--max-facts", "-1"], capture_output=True, timeout=120)
     assert bad.returncode == 2
+
+
+def test_a_contradiction_names_only_names_the_map_keeps(tmp_path):
+    """Names past the limit leave no trace: a contradiction's shared name that was cut is not listed either."""
+    db, tue, wed, others = _big_store(tmp_path / "home")
+    p = _provider(tmp_path / "home", "k3", chat_type="dm", chat_id="301", user_id="301", user_name="Дмитрий")
+    try:
+        _add(p, "Аркадий продаёт мёд на рынке.", "said", ["Аркадий"])
+        _add(p, "Аркадий чинит лодки зимой.", "said", ["Аркадий"])
+    finally:
+        p.shutdown()
+    snap = export_map(db, now=NOW, max_entities=1)
+    assert [e["name"] for e in snap["ENT"]] == ["Аркадий"]
+    pair = _pair(snap, tue, wed)
+    assert pair["shared"] == []
+
+
+def test_a_fact_confirmed_this_week_stays_under_the_limit(tmp_path):
+    """What changed this week comes before the newest facts: the oldest fact, confirmed by a person today, is kept."""
+    db, tue, wed, others = _big_store(tmp_path / "home")
+    p = _provider(tmp_path / "home", "k4", chat_type="dm", chat_id="302", user_id="302", user_name="Алёна")
+    try:
+        _call(p, "fact_feedback", action="confirmed", fact_id=others[-1])
+    finally:
+        p.shutdown()
+    snap = export_map(db, now=NOW, max_facts=5)
+    assert {f["id"] for f in snap["FACTS"]} == {tue, wed, others[-1], others[0], others[1]}

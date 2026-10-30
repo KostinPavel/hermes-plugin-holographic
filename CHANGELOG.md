@@ -15,7 +15,9 @@
   `test_a_store_over_the_limit_is_cut_and_the_snapshot_says_so`,
   `test_names_over_the_limit_keep_those_with_most_facts`,
   `test_a_store_under_the_limit_is_whole_and_the_limit_is_on_by_default`,
-  `test_the_command_line_sets_the_limit_and_zero_lifts_it`.
+  `test_the_command_line_sets_the_limit_and_zero_lifts_it`. Codex review: a contradiction's `shared` names are cut
+  with the names (`test_a_contradiction_names_only_names_the_map_keeps`); the docs say which fields a record
+  naming a cut fact keeps; a test pins that a fact confirmed this week stays ahead of newer ones.
 
 ## 0.24.0 — 2026-10-30
 
