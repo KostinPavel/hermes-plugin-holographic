@@ -15,9 +15,9 @@ pytest.importorskip("numpy")
 from agent.memory_context import build_memory_context_block
 from hermes_plugin_holographic import HolographicMemoryProvider
 
-CYR = "Ловушка: change без keywords вычищает их — by design"
+CYR = "Красный велосипед стоял у синей стены весь вторник"
 LINE = f"- #7 [0.5] {CYR}"
-LEGACY_TEXT = "Пользователь предпочитает лаконичные ответы на русском."
+LEGACY_TEXT = "Зелёный чай пахнет свежей травой после дождя."
 
 
 def _key(provider, session="s"):
