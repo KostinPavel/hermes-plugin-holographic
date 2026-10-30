@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.25.1 — 2026-10-30
+
 ### Fixed
 - **A short Russian name in another case no longer drops a fact found by meaning.** `names_fit` keeps a fact offered
   on meaning alone only when it mentions whoever the message names, in any word form; «Ева» / «Еву», «Ира» / «Иру»,
