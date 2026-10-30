@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.25.2 — 2026-10-30
+
 ### Fixed
 - **A Russian name whose stem changes between its forms meets its other forms, and two names that only share a short
   stem no longer meet.** For a fact offered on meaning alone, `names_fit` now reads a capitalized word of the fact as
