@@ -465,10 +465,18 @@ class FactRetriever:
         sentence, in any word form (or among the fact's keywords), and every known entity the message mentions? In
         meaning "When is Peter's birthday?" is as close to "Lena's birthday is on June 3" as a paraphrase is to its
         fact (calibration 2026-10-14); only the name tells them apart."""
-        analysis = analyze(_fact_text(fact))
+        analysis, capitals = analyze(_fact_text(fact)), None
         for name in _inner_names(query):
             terms = query_terms(name)
-            if terms and not any(t.found_in(analysis) for t in terms):
+            if not terms or any(t.found_in(analysis) for t in terms):
+                continue
+            # «Ева» and «Еву» share only «ев», a stem under _MIN_STEM that plain text keeps out of a word's keys, so the
+            # fact read as being about someone else (2026-10-30). A name also meets a word of the fact written with a
+            # capital that shares a stem with it read as a name (text.name_forms), and never a lower-case word: «Мая»
+            # is no «в мае». «Евгений» and «Ольга» have stems of their own and stay apart.
+            if capitals is None:
+                capitals = _name_forms(analyze(_capitalized(fact.get("content", ""), inner=False)))
+            if frozenset().union(*(name_forms(t.word) for t in terms if not t.identifier)).isdisjoint(capitals):
                 return False
         known = self.store.mentioned_entity_ids(query)
         if known:
