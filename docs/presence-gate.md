@@ -1,7 +1,9 @@
 # The presence gate: design note (proposed for 0.26.0)
 
 Working note for the presence-gate PR, mapped line by line to the acceptance conditions in issue #59
-(conditions 0–8 of comment 6523787794). Status: design agreed in the thread, code not started.
+(conditions 0–8 of comment 6523787794). Status: design agreed in the thread; Blocks I–II are implemented on
+this branch (`1ec319c`: config, state, generations, snapshot ingestion; `c6c6a29`: the gate in `_not_recent` and
+the grace window), the Block III tests land with them. The gate stays off by default.
 The gate is an experiment behind `prefetch_presence_gate: false` — off is byte-identical to today (condition 6).
 
 ## Why
