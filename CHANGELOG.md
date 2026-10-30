@@ -11,7 +11,8 @@
   «Яной». Forms that are one word for two names still meet both: «Яна», «Яну», «Яне» are forms of «Ян» and of «Яна».
   Unchanged: a name that shares a longer stem with another («Евгений» / «Евгения», «Александр» / «Александра») meets it
   through the words' own keys, as before 0.25.1. A sweep of 34 names in all their forms: no case form missed (36
-  before), no pair of different names joined but those. Tests: `tests/test_holographic_names_fit_cases.py`.
+  before), no pair of different names joined but those. Codex review: «-ей» after ж, ш, ч, щ, ц is also a name in
+  «-а» («Яшей» of «Яша»). Tests: `tests/test_holographic_names_fit_cases.py`.
 
 ## 0.25.1 — 2026-10-30
 

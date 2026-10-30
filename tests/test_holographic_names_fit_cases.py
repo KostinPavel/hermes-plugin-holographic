@@ -126,6 +126,12 @@ def test_a_case_form_of_a_short_name_fits(provider, query, text, name, declared)
     # an ending read two ways (these held on 0.25.1 too): «Илью» is not «-ью» of «Ил…», «Зою» not «-ою» of «З…»
     ("Где сейчас Илья?", "Илью забрали из школы пораньше."),
     ("Что подарить Зое?", "Зою пригласили на день рождения."),
+    # «-ей» after ж, ш, ч, щ, ц is a name in «-а» («Яшей» of «Яша»), not only one in «-я» (Codex review)
+    ("Где сейчас Яша?", "С Яшей договорились на субботу."),
+    ("Когда забирать Яшу?", "С Яшей договорились на субботу."),
+    ("Где сейчас Яша?", "Яшею все гордятся."),
+    ("Где сейчас Гоша?", "С Гошей договорились на субботу."),
+    ("Где сейчас Даша?", "С Дашей договорились на субботу."),
 ])
 def test_a_name_whose_stem_changes_fits(provider, query, text):
     assert provider._retriever.names_fit(query, _fact(provider, text))
