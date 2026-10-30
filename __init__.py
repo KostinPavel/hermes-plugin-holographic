@@ -662,6 +662,7 @@ class HolographicMemoryProvider(MemoryProvider):
         # Presence gate (issue #59): compaction generation per session|store, the context snapshot of the last
         # sync_turn, and the exact line each tracked injection emitted (filled only while the gate is on).
         self._generations: dict[str, int] = {}
+        self._presence_grace = 0  # suppressions by a snapshot that predates the injection (lag measurement)
         self._snapshots: OrderedDict[str, dict] = OrderedDict()
         self._emitted: OrderedDict[str, OrderedDict] = OrderedDict()
         self._withheld: set = set()  # fact ids recall left out (_recall_problem), logged once each
@@ -1438,9 +1439,30 @@ class HolographicMemoryProvider(MemoryProvider):
     def _not_recent(self, session: str, fact: dict, turn: int) -> bool:
         seen = self._injected.get(session, {}).get(_revision(fact))
         keep = seen is None or turn - seen > self._repeat_turns
+        if keep and seen is not None and self._presence_gate and self._presence_holds(session, fact, seen):
+            keep = False  # injected by us, window expired, still held: a repeat (issue #59)
         if not keep:
             self._observe("rejected_repeat", [fact])
         return keep
+
+    def _presence_holds(self, session: str, fact: dict, injected_turn: int) -> bool:
+        """Presence gate (issue #59): hold back what this key injected when the model can still read it - the exact
+        line the injection emitted is whole in a `<memory-context>` block of the snapshot, or the fact's
+        (fact_id, content) sits in one of our fact_store results there. Injected after the snapshot was taken:
+        absence there proves nothing, so the injection stays held until a snapshot catches up (condition 3, grace;
+        its lag is counted for the PR's measurement). No snapshot: today's window alone."""
+        snapshot = self._snapshots.get(session)
+        if snapshot is None:
+            return False
+        if injected_turn > snapshot["turn"]:
+            self._presence_grace += 1
+            logger.debug("holographic: presence grace: injected turn %d after the snapshot turn %d (lag +%d)",
+                         injected_turn, snapshot["turn"], injected_turn - snapshot["turn"])
+            return True
+        emitted = self._emitted.get(session, {}).get(_revision(fact), ())
+        if any(line in snapshot["lines"] for line in emitted):
+            return True
+        return (fact.get("fact_id"), fact.get("content") or "") in snapshot["pairs"]
 
     def _remember(self, session: str, fact: dict, turn: int, line: str | None = None) -> None:
         facts = self._injected.setdefault(session, OrderedDict())
@@ -1576,8 +1598,8 @@ class HolographicMemoryProvider(MemoryProvider):
                     continue
                 for pair in _iter_fact_pairs(payload):
                     pairs.add(pair)
-        return {"key": key, "generation": self._generations.get(key, 0), "lines": lines, "pairs": pairs,
-                "summary": _summary_row(view)}
+        return {"key": key, "generation": self._generations.get(key, 0), "turn": self._turns.get(key, 0),
+                "lines": lines, "pairs": pairs, "summary": _summary_row(view)}
 
     def _publish_snapshot(self, snapshot: dict) -> None:
         """Presence gate, under the provider lock: the snapshot counts only while its generation is still current
