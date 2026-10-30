@@ -21,7 +21,8 @@ agent. It is not a tool for the agent: no tool calls it, and the provider behave
 Nothing calls the export unless you do: there is no setting to turn on.
 
 ```
-python <plugin dir>/memory_map.py --store PATH [--hermes-home DIR] [--tz ZONE] [--now ISO] [--config YAML] [--json]
+python <plugin dir>/memory_map.py --store PATH [--hermes-home DIR] [--tz ZONE] [--now ISO] [--config YAML]
+                                 [--max-facts N] [--max-entities N] [--json]
 python -m <package>.memory_map --store PATH ...       # the same; needs Hermes core importable (the package's __init__ loads it)
 ```
 
@@ -32,10 +33,13 @@ python -m <package>.memory_map --store PATH ...       # the same; needs Hermes c
   package knows only the offsets).
 - `--config`: Hermes `config.yaml`, so that "which side search leans on" uses the search settings in force (trust
   floor, decay half-life, reranker). Without it the plugin's defaults are assumed and `SNAP.ranking.source` says so.
+- `--max-facts` / `--max-entities`: the size limit, 1000 facts and 300 names by default; `0` lifts it (see
+  [Size](#size)). A negative number is an error (exit 2).
 - `--now`: the moment of the snapshot (default: now). Prints JSON to stdout; exit 2 when there is no store file
   (nothing is created), 1 when the store cannot be read (only the kind of the error is printed, never a stored value).
 
-From Python: `export_map(store_path, hermes_home=None, tz=None, now=None, config=None) -> dict` — the same dict.
+From Python: `export_map(store_path, hermes_home=None, tz=None, now=None, config=None, max_facts=1000,
+max_entities=300) -> dict` — the same dict (`None` for no limit).
 `python <plugin dir>/memory_map.py` runs without Hermes core on the path; the dashboard calls it that way, on a
 schedule (see its README).
 
@@ -167,6 +171,28 @@ writers are not held.
   to the model, not whether it helped.
 - **"Stale" names** (provisional for 60+ days) are counted by the clock of the run, not by `--now`.
 
+## Size
+
+The map is read as a page, and a page made from it (the dashboard's) holds every fact, its versions and a card per
+name; every visit downloads it. On a test store of 10,000 facts and 1,000 names the dashboard page grew to about 26 MB
+and took 8 s to draw per language. So the export keeps at most **1000 facts and 300 names** unless told otherwise:
+
+- Facts a person is asked about or that changed lately come first: both sides of each contradiction, then what the
+  nightly review asks about, then the facts of the week's feed (newest first). Then current facts, then closed ones,
+  each newest first by when the current text was recorded.
+- Names with the most facts stay; a kept fact and a contradiction (`shared`) list only kept names. A name's `facts`
+  is the whole store's count, so a name card can count more facts than the map shows.
+- `SNAP.counts` stay the whole store's; `SNAP.limits` says what was cut:
+  `{"facts": {"max", "total", "shown"}, "entities": {"max", "total", "shown"}}` (`max` null: no limit).
+- A cut fact has no card and is not in `FACTS`. Records that name it keep their own fields, which the privacy rules
+  already allow: a merge keeps the merged copy's text, a nightly-review question its texts, a feed line the number.
+  A renderer must expect a fact id it cannot find. If the questions alone name more facts than the limit, some of
+  them are cut too.
+- Versions of one fact, forgotten numbers and merges are not limited.
+
+By the 10,000-fact measurement the default limit makes a dashboard page of roughly 3 MB per language (an estimate:
+not measured at exactly 1000 facts).
+
 ## The JSON (`schema_version` 1)
 
 Top-level keys, in this order: `schema_version, SNAP, ENT, FACTS, CONFLICTS, PENDING, TOMBS, MERGES, HIDDEN, FEED,
@@ -177,7 +203,8 @@ the week newest first), so the same store and `now` give the same bytes.
   merged, forgotten, corrected, hidden, entities, provisional, legacy), `week_from`, `excluded`, `ranking` (the search
   settings contradictions are ordered by: `source` defaults | config | absent | unreadable, `min_trust`, `half_life`,
   `rerank`, `meaning`), `experience` (`included: false` in this version), `dreaming` (`read`, `reason`, per-file
-  state `ok | absent | unreadable | unexpected | profile_only`, `invalid` [{file, id, why}]).
+  state `ok | absent | unreadable | unexpected | profile_only`, `invalid` [{file, id, why}]), `limits` (see
+  [Size](#size)).
 - `ENT`: `id, name, type (person | topic | null), type_by, type_fact, declared, aliases, text_aliases, standing
   (established | provisional), stale (provisional 60+ days, as review), since, facts` — see "Entity types".
 - `FACTS` (current and ended; merged copies are under their keep): `id, text, ents, cat, origin (said | confirmed |

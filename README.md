@@ -351,7 +351,8 @@ unless you do (`python <plugin dir>/memory_map.py --store PATH --json`); the pro
 **Experimental**: the format and the rules may change. Its output is personal data — keep any page made from it
 behind a password. What it shows and hides, and its limits (a closed word list for "person", "search leans on" only
 for a question that fits both facts equally, the night's files outside the database snapshot, a picture that ages
-until the next rebuild): [docs/memory-map.md](docs/memory-map.md).
+until the next rebuild, at most 1000 facts and 300 names by default — `--max-facts` / `--max-entities`, `0` for no
+limit): [docs/memory-map.md](docs/memory-map.md).
 
 How to see it:
 

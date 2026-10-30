@@ -970,3 +970,110 @@ def test_the_agents_settings_are_read_without_pyyaml(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "yaml", None)  # PyYAML not installed
     snap = export_map(db, now=NOW, config=good)
     assert (_pair(snap, tue, wed)["relies"]["on"], _pair(snap, tue, wed)["relies"]["why"]) == (tue, "floor")
+
+
+# -- the size limit ---------------------------------------------------------------------------------------------------
+
+_MANY = [("Кафе «Ромашка» закрывается на обед в два часа.", "Ромашка"),
+         ("Сосед Аркадий держит пасеку за рекой.", "Аркадий"),
+         ("Ключи от гаража лежат в синей коробке.", "Гараж"),
+         ("Бабушка Нина любит вишнёвое варенье.", "Нина"),
+         ("Парикмахер Оксана принимает только по записи.", "Оксана"),
+         ("Велосипед Тимура стоит в подвале.", "Тимур"),
+         ("Школьный автобус приходит без пятнадцати восемь.", "Автобус"),
+         ("Дядя Слава переехал в Казань.", "Слава"),
+         ("Кот Барсик боится пылесоса.", "Барсик"),
+         ("Стоматолог Ирина работает по субботам.", "Ирина"),
+         ("Пароход «Заря» ходит по озеру летом.", "Заря"),
+         ("Тренер Лев ведёт секцию дзюдо.", "Лев")]
+
+
+def _big_store(home: Path) -> tuple[Path, int, int, list[int]]:
+    """A store with a contradiction between two old facts and twelve others recorded 20-31 days ago (outside the
+    week, so the feed names none of them); the others are newer the earlier they are in the list."""
+    db, tue, wed = _conflict_store(home)
+    p = _provider(home, "k2", chat_type="dm", chat_id="301", user_id="301", user_name="Дмитрий")
+    try:
+        others = [_add(p, text, "said", [name]) for text, name in _MANY]
+    finally:
+        p.shutdown()
+    _set(db, tue, 0.6, 200)
+    _set(db, wed, 0.6, 201)
+    for i, fid in enumerate(others):
+        _set(db, fid, 0.6, 20 + i)
+    return db, tue, wed, others
+
+
+def test_a_store_over_the_limit_is_cut_and_the_snapshot_says_so(tmp_path):
+    """A map is a page: a store of thousands of facts made a page of tens of megabytes that every visit downloads.
+    Over the limit the export keeps what waits for a person (both sides of a contradiction) and then the newest facts,
+    says how many it left out, and keeps the counts of the whole store."""
+    db, tue, wed, others = _big_store(tmp_path / "home")
+    snap = export_map(db, now=NOW, max_facts=5)
+    shown = {f["id"] for f in snap["FACTS"]}
+    assert shown == {tue, wed, *others[:3]}
+    assert snap["SNAP"]["limits"]["facts"] == {"max": 5, "total": 14, "shown": 5}
+    assert snap["SNAP"]["counts"]["current"] == 14
+    assert any({c["a"], c["b"]} == {tue, wed} for c in snap["CONFLICTS"])
+    kept_ents = {e["id"] for e in snap["ENT"]}
+    assert all(set(f["ents"]) <= kept_ents for f in snap["FACTS"])
+
+
+def test_names_over_the_limit_keep_those_with_most_facts(tmp_path):
+    db, tue, wed, others = _big_store(tmp_path / "home")
+    snap = export_map(db, now=NOW, max_entities=3)
+    assert len(snap["ENT"]) == 3
+    assert "Варя" in {e["name"] for e in snap["ENT"]}  # two facts, the others one each
+    limits = snap["SNAP"]["limits"]["entities"]
+    assert limits["max"] == 3 and limits["shown"] == 3 and limits["total"] >= 13
+    assert snap["SNAP"]["counts"]["entities"] == limits["total"]
+    kept = {e["id"] for e in snap["ENT"]}
+    assert all(set(f["ents"]) <= kept for f in snap["FACTS"])
+    assert len(snap["FACTS"]) == 14
+
+
+def test_a_store_under_the_limit_is_whole_and_the_limit_is_on_by_default(tmp_path):
+    db, tue, wed, others = _big_store(tmp_path / "home")
+    snap = export_map(db, now=NOW)
+    assert len(snap["FACTS"]) == 14
+    assert snap["SNAP"]["limits"]["facts"] == {"max": 1000, "total": 14, "shown": 14}
+    assert snap["SNAP"]["limits"]["entities"]["max"] == 300
+
+
+def test_the_command_line_sets_the_limit_and_zero_lifts_it(tmp_path):
+    db, tue, wed, others = _big_store(tmp_path / "home")
+    cut = _run_cli("--store", str(db), "--json", "--max-facts", "4")
+    assert len(cut["FACTS"]) == 4 and cut["SNAP"]["limits"]["facts"]["total"] == 14
+    whole = _run_cli("--store", str(db), "--json", "--max-facts", "0", "--max-entities", "0")
+    assert len(whole["FACTS"]) == 14
+    assert whole["SNAP"]["limits"]["facts"]["max"] is None
+    bad = subprocess.run([sys.executable, str(REPO_ROOT / "memory_map.py"), "--store", str(db), "--json",
+                          "--max-facts", "-1"], capture_output=True, timeout=120)
+    assert bad.returncode == 2
+
+
+def test_a_contradiction_names_only_names_the_map_keeps(tmp_path):
+    """Names past the limit leave no trace: a contradiction's shared name that was cut is not listed either."""
+    db, tue, wed, others = _big_store(tmp_path / "home")
+    p = _provider(tmp_path / "home", "k3", chat_type="dm", chat_id="301", user_id="301", user_name="Дмитрий")
+    try:
+        _add(p, "Аркадий продаёт мёд на рынке.", "said", ["Аркадий"])
+        _add(p, "Аркадий чинит лодки зимой.", "said", ["Аркадий"])
+    finally:
+        p.shutdown()
+    snap = export_map(db, now=NOW, max_entities=1)
+    assert [e["name"] for e in snap["ENT"]] == ["Аркадий"]
+    pair = _pair(snap, tue, wed)
+    assert pair["shared"] == []
+
+
+def test_a_fact_confirmed_this_week_stays_under_the_limit(tmp_path):
+    """What changed this week comes before the newest facts: the oldest fact, confirmed by a person today, is kept."""
+    db, tue, wed, others = _big_store(tmp_path / "home")
+    p = _provider(tmp_path / "home", "k4", chat_type="dm", chat_id="302", user_id="302", user_name="Алёна")
+    try:
+        _call(p, "fact_feedback", action="confirmed", fact_id=others[-1])
+    finally:
+        p.shutdown()
+    snap = export_map(db, now=NOW, max_facts=5)
+    assert {f["id"] for f in snap["FACTS"]} == {tue, wed, others[-1], others[0], others[1]}

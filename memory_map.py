@@ -947,12 +947,67 @@ class _Snapshot:
         return sorted(out, key=key, reverse=True)
 
 
-def export_map(store_path, *, hermes_home=None, tz=None, now: datetime | None = None, config=None) -> dict:
+# -- the size limit (docs/memory-map.md, "Size") -------------------------------------------------------------------
+MAX_FACTS = 1000
+MAX_ENTITIES = 300
+_FACT_REFS = ("a", "b", "keep", "copy", "fact", "f", "into")
+
+
+def _refs(items) -> list[int]:
+    """Fact ids the records name, in their order, each once."""
+    out: list[int] = []
+    for item in items:
+        if isinstance(item, dict):
+            for key in _FACT_REFS:
+                v = item.get(key)
+                if isinstance(v, int) and not isinstance(v, bool) and v not in out:
+                    out.append(v)
+    return out
+
+
+def _limit(snapshot: dict, max_facts: int | None, max_entities: int | None) -> dict:
+    """Cut a snapshot to at most *max_facts* facts and *max_entities* names (None: no limit) and say so in
+    SNAP.limits. Facts a person is asked about or that changed this week come first (contradictions, then the
+    nightly review's questions, then the week's feed, newest first), then current facts and then closed ones, each
+    newest first by when the current text was recorded. Names with the most facts stay. SNAP.counts and a name's
+    `facts` stay the whole store's; a kept fact and a contradiction list only the kept names. Records that name a cut
+    fact (a merge, a question, a feed line) keep their own fields."""
+    facts, ents = snapshot["FACTS"], snapshot["ENT"]
+    limits = {"facts": {"max": max_facts, "total": len(facts), "shown": len(facts)},
+              "entities": {"max": max_entities, "total": len(ents), "shown": len(ents)}}
+    if max_facts is not None and len(facts) > max_facts:
+        by_id = {f["id"]: f for f in facts}
+        feed = sorted((x for x in snapshot["FEED"] if isinstance(x, dict)), key=lambda x: str(x.get("d") or ""),
+                      reverse=True)
+        first = [i for i in _refs(snapshot["CONFLICTS"]) + _refs(snapshot["PENDING"]) + _refs(feed) if i in by_id]
+        rest = sorted(facts, key=lambda f: (str(f.get("rec") or ""), f["id"]), reverse=True)
+        rest = sorted(rest, key=lambda f: f["status"] != "current")  # stable: current first, each newest first
+        keep = set(list(dict.fromkeys(first + [f["id"] for f in rest]))[:max_facts])
+        snapshot["FACTS"] = [f for f in facts if f["id"] in keep]
+        limits["facts"]["shown"] = len(snapshot["FACTS"])
+    if max_entities is not None and len(ents) > max_entities:
+        ids = {e["id"] for e in sorted(ents, key=lambda e: (-(e.get("facts") or 0), e["id"]))[:max_entities]}
+        snapshot["ENT"] = [e for e in ents if e["id"] in ids]
+        for f in snapshot["FACTS"]:
+            f["ents"] = [e for e in f["ents"] if e in ids]
+        for c in snapshot["CONFLICTS"]:
+            c["shared"] = [e for e in c.get("shared") or [] if e in ids]
+        limits["entities"]["shown"] = len(snapshot["ENT"])
+    snapshot["SNAP"]["limits"] = limits
+    return snapshot
+
+
+def export_map(store_path, *, hermes_home=None, tz=None, now: datetime | None = None, config=None,
+               max_facts: int | None = MAX_FACTS, max_entities: int | None = MAX_ENTITIES) -> dict:
     """The memory map of the store at *store_path* as a dict (schema_version, SNAP, ENT, FACTS, CONFLICTS, PENDING,
     TOMBS, MERGES, HIDDEN, FEED, ATTEMPTS). *hermes_home*: where the dreaming files are (none read without it).
     *tz*: the zone of the snapshot's dates (IANA name or "+07:00"; UTC by default). *now*: the snapshot's moment.
     *config*: the plugin's settings search ranks by (its config.yaml path, or the plugins.hermes-memory-store section
-    as a dict); None = the plugin's defaults. Read-only; raises FileNotFoundError when there is no store file."""
+    as a dict); None = the plugin's defaults. *max_facts* / *max_entities*: the size limit (None: none; see
+    _limit). Read-only; raises FileNotFoundError when there is no store file."""
+    for name, value in (("max_facts", max_facts), ("max_entities", max_entities)):
+        if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value < 1):
+            raise ValueError(f"{name} must be a positive whole number or None")
     zone, zone_name = _zone(tz)
     made = (now or datetime.now(timezone.utc))
     made = (made if made.tzinfo else made.replace(tzinfo=timezone.utc)).astimezone(zone)
@@ -961,7 +1016,7 @@ def export_map(store_path, *, hermes_home=None, tz=None, now: datetime | None = 
         snapshot = _Snapshot(store, made, zone_name, hermes_home, _ranking(config)).build()
         if not store.in_snapshot():  # something ended the read transaction midway: the reads are not one moment
             raise RuntimeError("memory_map: the read transaction ended before the export did")
-        return snapshot
+        return _limit(snapshot, max_facts, max_entities)
     finally:
         store.close()
 
@@ -974,11 +1029,16 @@ def main(argv=None) -> int:
     parser.add_argument("--now", help="the snapshot's moment, ISO 8601 (default: now)")
     parser.add_argument("--config", help="Hermes config.yaml: the search settings that order contradictions "
                                          "(default: the plugin's defaults)")
+    parser.add_argument("--max-facts", type=int, default=MAX_FACTS,
+                        help=f"at most this many facts in the map (default {MAX_FACTS}; 0: no limit)")
+    parser.add_argument("--max-entities", type=int, default=MAX_ENTITIES,
+                        help=f"at most this many names in the map (default {MAX_ENTITIES}; 0: no limit)")
     parser.add_argument("--json", action="store_true", help="print JSON (the only output format so far)")
     args = parser.parse_args(argv)
     try:
         now = datetime.fromisoformat(args.now) if args.now else None
-        data = export_map(args.store, hermes_home=args.hermes_home, tz=args.tz, now=now, config=args.config)
+        data = export_map(args.store, hermes_home=args.hermes_home, tz=args.tz, now=now, config=args.config,
+                          max_facts=args.max_facts or None, max_entities=args.max_entities or None)
     except FileNotFoundError as exc:
         print(f"memory_map: {exc}", file=sys.stderr)
         return 2
