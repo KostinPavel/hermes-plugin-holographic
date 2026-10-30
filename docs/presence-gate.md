@@ -128,9 +128,42 @@ lines read structurally (`<memory-context>`, our `- #N [trust]` shape only). Sna
 (kept in, per the maintainer)**, **106 identical line text**, **9 differing text under one `#N`** (a revision or
 two stores sharing an id — the replayed row does not name its store, so pairs are grouped by text and the 9 stay
 a labeled residual); cause between first and last live row: **8 compaction-preceded, 107 other** — window expiry
-in uncompacted context dominates ("preceded by", not "caused by"). The same script runs after the gate for the
-after number. The PR also reports `sync_turn` lag (how often a sync starts after the next turn's prefetch has
-already run, by how many turns) and prefetch/sync latency, as asked.
+in uncompacted context dominates ("preceded by", not "caused by"). This is a structural proxy — rows live at
+once, not observed re-injections — and the cause split is an operational signature (a summary row between the
+live rows), not causation. The **after** number needs a live run with the gate on: the counting script and the
+protocol ship with the PR, and the numbers follow from that run on one store — the maintainer's decision input
+(condition 8).
+
+## What this PR measures: the gate's own cost, on synthetics
+
+The project records no baseline for `sync_turn` or prefetch latency (its timing tests pin the screen), so
+`tools/presence_delta.py` measures the baseline in-process: every scenario runs gate off and on — same provider,
+same inputs, phases interleaved to cancel drift — and reports the added cost next to each phase. Inputs are
+synthetic and neutral (blocks via `build_memory_context_block`, `fact_store` JSON in both encodings, noise rows
+without `<memory-context>`, one 200 KB tool row); the output is aggregates only.
+
+| scenario | off p50 | on p50 | added p50 / p95 |
+|---|---|---|---|
+| sync, 10 rows | 0.001 ms | 0.115 ms | **+0.11 / 0.13 ms** |
+| sync, 100 rows | 0.002 ms | 0.282 ms | **+0.28 / 0.29 ms** |
+| sync, 1000 rows | 0.002 ms | 1.929 ms | **+1.93 / 1.95 ms** (~2 µs/row) |
+| prefetch, no snapshot | 1.377 ms | 1.371 ms | ~0 (within noise) |
+| prefetch, snapshot present | 1.366 ms | 1.368 ms | ~0 (within noise) |
+
+Byte-identity without a snapshot: **True** (off == on per call). State per tracked injection: ~55 bytes of
+emitted-line text (512-revision cap ⇒ ≈28 KB worst case per session key). Against the core's budgets — a 5 s
+sync drain, a 30 s background stall — 1000 rows add ≈0.04% of the drain bound. Two runs (30/40 pairs) reproduced
+every figure within ±0.5%. One machine, fixed inputs: a cost, reproducible in any CI — **not** a live-session
+p95.
+
+## What this PR does not claim
+
+- **No after-numbers**: the gate has never run live; the counting script and protocol ship, the numbers come
+  from one store's run with the flag on.
+- **No lag numbers**: with extraction off `sync_turn` leaves no trace in the store, replay was ruled out, and a
+  scheduler cannot be measured synthetically — the PR ships the instrumentation (late-sync event + the grace
+  `lag +N` counter); lower-bound readings follow a live run only.
+- Latency figures are fixed-input compute costs on one machine, not a live p95.
 
 ## Implementation checkpoints
 
