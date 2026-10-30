@@ -78,10 +78,13 @@ fact longer than 299 characters would then never suppress, i.e. the very duplica
 ## Spill policy
 
 An injection whose block was spilled **keeps today's window** instead of being released by absence: the core's
-`hooks.output_spill` (default cap 10 000) replaces an oversized hook payload with `preview_head`/`preview_tail`
-plus a path, so a fresh snapshot may show the preview instead of the block; treating that as "not visible" would
-hide and re-show the facts on alternating turns. Order verified: `_remember` runs inside `prefetch`, the core
-spills later in `turn_context` (`agent/turn_context.py`, `spill_if_oversized`). Test: no flip-flop.
+opt-in spill (`tools/hook_output_spill.py`, as the maintainer named it) replaces oversized replayed text with
+`preview_head`/`preview_tail` plus a path, so a fresh snapshot may show the preview instead of the block;
+treating that as "not visible" would hide and re-show the facts on alternating turns. For recall specifically the
+call sits in `memory_manager.py` (`spill_if_oversized`, "Opt-in spill limits recall replayed with the user turn's
+api_content"): the base cap (default 10 000) applies only when the core's `memory.prefetch_spill_enabled` is
+true — otherwise it is raised to ×10 / ≥100 000. Order verified: `_remember` runs inside `prefetch`, the core
+spills after it returns. Test: no flip-flop.
 
 ## Gate placement
 
