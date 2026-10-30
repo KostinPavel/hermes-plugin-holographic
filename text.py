@@ -1563,6 +1563,41 @@ def name_keys(name: str) -> tuple[tuple[frozenset, bool], ...]:
     return tuple(out)
 
 
+# A Russian name's case ending -> the endings its first form may have after the stem; "~" marks a stem that may have
+# lost a vowel («Льв-а» of «Лев», «Павл-а» of «Павел»). Every ending that fits is read: «Зою» is «-ою» of «За…» and
+# «-ю» of «Зоя», «Илью» «-ью» and «-ю» of «Илья». «-ой», «-ы» are only «-а» names («Яной»,
+# «Яны» of «Яна»), «-ом» only names with no ending («Яном» of «Ян»); «-а», «-у», «-е» are either («Яну»: «Ян», «Яна»).
+_RU_NAME_CASES = (("ью", ("ь",)), ("ою", ("а",)), ("ею", ("я",)), ("ой", ("а",)), ("ей", ("я",)), ("ом", ("", "~")),
+                  ("ем", ("ь", "й")), ("ы", ("а",)), ("и", ("я", "ь", "й", "а")), ("а", ("", "~")),
+                  ("я", ("ь", "й")), ("у", ("", "а", "~")), ("ю", ("ь", "й", "я")),
+                  ("е", ("", "а", "я", "ь", "~")))
+_RU_CONSONANTS = frozenset("бвгджзклмнпрстфхцчшщ")
+
+
+@lru_cache(maxsize=65536)
+def name_lemmas(word: str) -> frozenset:
+    """The first forms a lower-cased Russian name may have, read from its case ending: «Льва» -> «лев», «льва» (a
+    name in «-а», as written), «Никите» -> «никита», «Яной» -> «яна», «Яном» -> «ян». Two forms of one name share one;
+    «Яны» and «Ян» do not, nor «Аня» and «Анна», while «Яну» (of «Ян» or of «Яна») shares with both. Unlike a stem,
+    this keeps what the ending says. frozenset() for a word not in Cyrillic (a Latin name matches as written)."""
+    word = word.replace("ё", "е")
+    if word_script(word) != "cyrillic" or len(word) < 2:
+        return frozenset()
+    out = {word}
+    for ending, firsts in _RU_NAME_CASES:
+        stem_ = word[:-len(ending)]
+        if not word.endswith(ending) or not stem_:
+            continue
+        for first in firsts:
+            if first != "~":
+                out.add(stem_ + first)
+            elif len(stem_) >= 2 and stem_[-1] in _RU_CONSONANTS and stem_[-2] in _RU_CONSONANTS:
+                out.add(stem_[:-1] + "е" + stem_[-1])  # павл -> павел
+            elif len(stem_) == 3 and stem_[1] == "ь" and stem_[0] in _RU_CONSONANTS and stem_[2] in _RU_CONSONANTS:
+                out.add(stem_[0] + "е" + stem_[2])  # льв -> лев; not «Ольг-а» -> «олег»
+    return frozenset(out)
+
+
 def words(text: str) -> list[str]:
     """Folded, lower-cased words with surrounding punctuation stripped."""
     return [w.text for w in analyze(text).words]
