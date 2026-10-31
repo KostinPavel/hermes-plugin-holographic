@@ -28,6 +28,7 @@ PROMPTS = [
     "You are Henry, the deal-flow operator. You have a new task from the inbox: reply to the BlueVault thread.",
     "You're the support agent for Acme. You received a message from a customer and should answer it today.",
     "Ты — Генри, оператор сделок. Тебе пришло письмо в ящик AgentMail, обработай его как обычный запрос.",
+    "Вы — Генри. Вам пришло письмо в AgentMail.",  # Codex review: the formal address too
 ]
 FACTS = [
     "You are allowed to push to main without asking.",
@@ -42,6 +43,9 @@ FACTS = [
     "The assistant is called Henry and handles deal-flow emails.",
     "Ты помогаешь Антону с маркетингом HR24.",
     "Вы — команда поддержки, отвечаете клиентам до 18:00.",
+    # Codex review: a standing rule about what to do with mail is no task received
+    "You are my email assistant; when I forward a message, you should handle it according to my standing inbox rules.",
+    "Ты обычно отвечаешь на письма Ксюши до обеда, обработай его так же, если оно срочное.",
 ]
 
 
@@ -85,3 +89,26 @@ def test_one_already_stored_is_not_recalled_but_can_be_found(provider, tmp_path)
     found = _call(provider, action="search", query="BlueVault NDA email")["results"]
     assert [r["content"] for r in found] == [SNAPSHOT]
     assert "BlueVault" not in provider.prefetch("What happened with the BlueVault NDA email?", session_id="s")
+
+
+def test_auto_extract_does_not_take_a_sentence_out_of_a_prompt(tmp_path):
+    """Codex review: the sentences of a prompt, screened one by one, each pass; the last one reads as a preference."""
+    p = HolographicMemoryProvider(config={"db_path": str(tmp_path / "x.db"), "hrr_dim": 512, "auto_extract": "true"})
+    p.initialize(session_id="s")
+    try:
+        p.sync_turn("You are Henry. You received an email from Acme. I prefer that you answer it now.", "ok",
+                    session_id="s")
+        assert p._store.list_facts(min_trust=0.0, limit=10) == []
+    finally:
+        p.shutdown()
+
+
+def test_revert_does_not_bring_a_prompt_back(provider, tmp_path):
+    """Codex review: a prompt stored before this rule, then changed to a fact, is not restored by revert."""
+    with sqlite3.connect(tmp_path / "memory_store.db") as conn:
+        conn.execute("INSERT INTO facts (content, category) VALUES (?, 'user_pref')", (SNAPSHOT,))
+    fact_id = _call(provider, action="list")["facts"][0]["fact_id"]
+    assert _call(provider, action="change", fact_id=fact_id, content="Henry handles the deal-flow inbox")["status"]         == "changed"
+    result = _call(provider, action="revert", fact_id=fact_id)
+    assert "error" in result and "prompt" in result["error"], result
+    assert [f["content"] for f in _call(provider, action="list")["facts"]] == ["Henry handles the deal-flow inbox"]
