@@ -14,7 +14,9 @@
   search and prefetch take the same time as before. On the multilingual quality set (450 questions in 18 languages) two
   answers changed, both toward the other languages: `HR24 Copilot能做什么` ranks the fact that ends in `HR24` higher,
   and `hr-vpsのメモリはどれくらい？` also recalls the other `hr-vps` fact, as the English, Russian and Chinese questions
-  do. Not covered: other forms of the word (`keyrings`). Tests: `tests/test_holographic_latin_in_cjk.py`.
+  do. Codex review: a letter of another script next to the word is no edge (`яkeyring保存` holds no `keyring`), and
+  a fact the index already finds by the word (`keyring保存`, a prefix; the word also written apart) counts once in
+  its frequency. Not covered: other forms of the word (`keyrings`). Tests: `tests/test_holographic_latin_in_cjk.py`.
 
 ## 0.25.2 — 2026-10-30
 

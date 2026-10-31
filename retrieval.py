@@ -32,6 +32,13 @@ _FTS_OPERATORS = str.maketrans({c: " " for c in '"()*^:-+'})
 _RE_UNSEGMENTED = UNSEGMENTED
 # A letter or digit written against unsegmented script ("用keyring保存"): FTS5 holds the two as one token (_glued).
 _GLUED = re.compile(rf"[a-z0-9](?:{UNSEGMENTED.pattern})|(?:{UNSEGMENTED.pattern})[a-z0-9]")
+
+
+def _glued_at(text: str, start: int, end: int) -> bool:
+    """Does the word at text[start:end] touch unsegmented script on a side, and no letter or digit of another script
+    on either (Codex review: "яkeyring保存" holds no "keyring"; Term._bounded stops only ASCII ones)?"""
+    sides = [text[k] for k in (start - 1, end) if 0 <= k < len(text)]
+    return any(UNSEGMENTED.match(c) for c in sides) and not any(c.isalnum() and not UNSEGMENTED.match(c) for c in sides)
 # The commonest Indonesian function words: a store with none of them holds no Indonesian, and Latin words of a query
 # of undetermined language need no word scan (Indonesian prefixes are what hides a word from FTS5).
 _INDONESIAN_PROBE = '"yang" OR "dengan" OR "untuk" OR "tidak" OR "adalah" OR "sudah" OR "belum"'
@@ -272,8 +279,7 @@ class FactRetriever:
         """The same weighted share for the current facts, cheaply: document frequencies from the FTS index (one COUNT
         per term, as the recall gate takes them), the share computed on the candidates only, not on every fact."""
         total_facts = max(self.store.count_facts(), 1)
-        glued = self._glued_freq(terms)
-        df = {t: self._doc_freq(t) + glued.get(t, 0) for t in terms}
+        df = self._doc_freqs(terms)
         weight = {t: math.log(1.0 + total_facts / df[t]) for t in terms if df[t]}
         if not weight:
             return
@@ -417,8 +423,7 @@ class FactRetriever:
                 continue
             folded = analysis.text
             found = [t for t in glued if t.word in folded and any(
-                UNSEGMENTED.match(folded, k) for m in t._bounded.finditer(folded)
-                for k in (m.start() - 1, m.end()) if 0 <= k < len(folded))]
+                _glued_at(folded, m.start(), m.end()) for m in t._bounded.finditer(folded))]
             if found:
                 out.append((rid, trust, analysis, found))
         return out
@@ -443,13 +448,27 @@ class FactRetriever:
             self._glued_cache = (version, out)
         return out
 
-    def _glued_freq(self, terms) -> dict:
-        """term -> the facts holding it glued to unsegmented script (_glued), which the FTS count does not see."""
-        counts: dict = {}
-        for _, _, _, found in self._glued(terms):
+    def _doc_freqs(self, terms) -> dict:
+        """term -> the facts that may hold it: the FTS count (_doc_freq) and the facts holding it glued to
+        unsegmented script (_glued) that the index does not find too, each fact once (Codex review: a word at the start
+        of a glued run, "keyring保存", is an FTS prefix match; a fact may hold the word apart as well)."""
+        glued: dict = {}
+        for rid, _, _, found in self._glued(terms):
             for t in found:
-                counts[t] = counts.get(t, 0) + 1
-        return counts
+                glued.setdefault(t, []).append(rid)
+        out = {}
+        for t in terms:
+            out[t] = self._doc_freq(t)
+            ids = glued.get(t)
+            if ids:
+                try:
+                    seen = {row[0] for row in self.store.read(
+                        f"SELECT rowid FROM facts_fts WHERE facts_fts MATCH ? AND rowid IN ({','.join('?' * len(ids))})",
+                        (self._df_expression(t), *ids))}
+                except Exception:  # noqa: BLE001 - a damaged index: _doc_freq counted nothing either
+                    seen = set()
+                out[t] += len(set(ids) - seen)
+        return out
 
     def _glued_candidates(self, terms, category: str | None, min_trust: float, limit: int,
                           corpus: _Corpus | None = None) -> list[dict]:
@@ -797,13 +816,18 @@ class FactRetriever:
         """Facts that may hold the term: its own forms, and the words of its root when it has any (the population the
         coverage counts it in: "ночные" is weighed by every fact with a night word, not only by the one that says
         "ночные")."""
-        extra = term.fts_extra()
-        expression = term.fts(_FTS_OPERATORS) if not extra else f"({term.fts(_FTS_OPERATORS)} OR {extra})"
         try:
-            return int(self.store.read("SELECT COUNT(*) FROM facts_fts WHERE facts_fts MATCH ?", (expression,))[0][0])
+            return int(self.store.read("SELECT COUNT(*) FROM facts_fts WHERE facts_fts MATCH ?",
+                                       (self._df_expression(term),))[0][0])
         except Exception as exc:  # noqa: BLE001 - a damaged index: the term weighs nothing, and that is said (as _fts_query does)
             _warn_once("FTS5 count failed; recall weighs that word as absent", exc)
             return 0
+
+    @staticmethod
+    def _df_expression(term) -> str:
+        """The FTS5 expression _doc_freq counts a term by: its own forms, and the words of its root when it has any."""
+        extra = term.fts_extra()
+        return term.fts(_FTS_OPERATORS) if not extra else f"({term.fts(_FTS_OPERATORS)} OR {extra})"
 
     def _named_terms(self, terms) -> dict:
         """term -> the keys it shares with a name the store knows (an entity's name or alias) and not with its own
@@ -868,10 +892,10 @@ class FactRetriever:
         # which the FTS index cannot count (it finds "яне"*, not "яны"); counted over the texts, as a scan term is.
         scan_df.update({t: sum(1 for _, _, a in texts if t.found_in(a) or not probe.isdisjoint(_name_forms(a)))
                         for t, probe in named.items()})
-        glued = self._glued_freq([t for t in terms if t not in scan_df])  # the scan counts these itself
+        index_df = self._doc_freqs([t for t in terms if t not in scan_df])  # the scan counts its terms itself
         weights, unknown, freq = {}, [], {}
         for term in terms:
-            df = scan_df[term] if term in scan_df else self._doc_freq(term) + glued.get(term, 0)
+            df = scan_df[term] if term in scan_df else index_df[term]
             if df:
                 weights[term], freq[term] = math.log(1.0 + total_facts / df), df
             else:

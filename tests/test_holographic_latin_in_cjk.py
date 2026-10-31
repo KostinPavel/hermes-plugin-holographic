@@ -128,3 +128,23 @@ def test_other_unsegmented_scripts(provider, text):
     fact = _add(provider, text)
     assert _found(provider, "keyring") == [fact]
     assert _found(provider, "key") == []
+
+
+def test_a_letter_of_another_script_is_no_edge(provider):
+    """Codex review: the word must stand whole on both sides; a Cyrillic or accented letter glued to it makes it part
+    of another word (`яkeyring保存`), as an ASCII letter does."""
+    _add(provider, "яkeyring保存密钥")
+    _add(provider, "用户用keyringé保存")
+    assert _found(provider, "keyring") == []
+
+
+def test_a_fact_is_counted_once_in_the_words_frequency(provider):
+    """Codex review: the recall gate weighs a word by how many facts hold it. A word at the start of a glued run
+    (`keyring保存密钥`) is found by the index as a prefix already, and a fact that has the word both apart and glued is
+    one fact: each counts once."""
+    from hermes_plugin_holographic.text import query_terms
+    for text in ("keyring保存密钥", "用户用keyring保存密钥", "The keyring backend is KWallet; 系统keyring默认开启"):
+        _add(provider, text)
+    _add(provider, "用户的猫叫小白")
+    term = query_terms("keyring")[0]
+    assert provider._retriever._doc_freqs([term]) == {term: 3}
