@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.25.3 — 2026-10-31
+
 ### Fixed
 - **Starting the provider no longer imports numpy; the first search that scores by structure does.** PR #45 moved
   the module-level imports to first use, but the first use still came at start: opening the store asked
