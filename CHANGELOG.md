@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Fixed
+- **A Latin word or identifier written into Chinese text is found by itself** (NousResearch/hermes-agent#83593).
+  FTS5 indexes `用户用keyring保存密钥` as one token, letters and characters together, and the substring path ran only
+  for a query with Chinese in it, so `keyring`, `watchdog`, `ppid`, `HERMES_PARENT_PID` or `web_server` alone found
+  nothing while `密钥` did, and an English question about them recalled nothing before the turn. Search now also looks
+  for the query's ASCII words in the facts where a letter or digit touches Chinese, Japanese, Korean or Thai script,
+  as a whole word (`key` is not in `keyring`, `pid` not in `ppid`), and the recall gate counts those facts as holding
+  the word. The list of such facts is kept until a fact's text may have changed (a write other than the recall counts,
+  or a commit by another process), so a store without them reads nothing more per message: on 3,000 English facts
+  search and prefetch take the same time as before. On the multilingual quality set (450 questions in 18 languages) two
+  answers changed, both toward the other languages: `HR24 Copilot能做什么` ranks the fact that ends in `HR24` higher,
+  and `hr-vpsのメモリはどれくらい？` also recalls the other `hr-vps` fact, as the English, Russian and Chinese questions
+  do. Not covered: other forms of the word (`keyrings`). Tests: `tests/test_holographic_latin_in_cjk.py`.
+
 ## 0.25.2 — 2026-10-30
 
 ### Fixed

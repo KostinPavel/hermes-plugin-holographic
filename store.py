@@ -603,6 +603,14 @@ class MemoryStore(EntityMixin, HistoryMixin, ExperienceMixin):
     def count_facts(self) -> int:
         return int(self.read("SELECT COUNT(*) FROM facts")[0][0])
 
+    def facts_version(self) -> tuple:
+        """A key that changes whenever a fact's text may have: a write on this connection other than the recall
+        counts (total_changes less those), a rollback (generation) or a commit by another connection (PRAGMA
+        data_version). For caches of what the facts hold: the recall counts are written every few searches."""
+        with self._lock:
+            return (self._entry.get("generation", 0), self._conn.total_changes - self._entry.get("counted", 0),
+                    self._one("PRAGMA data_version")[0])
+
     def fact_tags(self, fact_id: int) -> str | None:
         """The tags column of a current fact ("" when empty), None when no current fact has that id."""
         rows = self.read("SELECT tags FROM facts WHERE fact_id = ?", (fact_id,))
@@ -632,8 +640,10 @@ class MemoryStore(EntityMixin, HistoryMixin, ExperienceMixin):
         if not ids:
             return 0
         with self._lock:
+            before = self._conn.total_changes
             cur = self._write(f"UPDATE facts SET retrieval_count = retrieval_count + 1 "
                               f"WHERE fact_id IN ({','.join('?' * len(ids))})", ids)
+            self._entry["counted"] = self._entry.get("counted", 0) + self._conn.total_changes - before
             return max(cur.rowcount, 0)
 
     def add_retrieval_counts(self, counts: dict) -> bool:
@@ -646,8 +656,10 @@ class MemoryStore(EntityMixin, HistoryMixin, ExperienceMixin):
         with self._lock:
             self._conn.execute("PRAGMA busy_timeout = 0")
             try:
+                before = self._conn.total_changes
                 with self._tx():
                     self._conn.executemany("UPDATE facts SET retrieval_count = retrieval_count + ? WHERE fact_id = ?", rows)
+                self._entry["counted"] = self._entry.get("counted", 0) + self._conn.total_changes - before
                 return True
             except sqlite3.OperationalError as exc:
                 logger.debug("holographic: recall counts deferred (%s)", error_kind(exc))

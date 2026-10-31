@@ -30,6 +30,8 @@ _ROLE_ENTITY, _ROLE_CONTENT = hrr.ROLE_ENTITY, hrr.ROLE_CONTENT
 # tokens unicode61 indexed, adjacent (deleting them gave "pve01", which matches nothing).
 _FTS_OPERATORS = str.maketrans({c: " " for c in '"()*^:-+'})
 _RE_UNSEGMENTED = UNSEGMENTED
+# A letter or digit written against unsegmented script ("用keyring保存"): FTS5 holds the two as one token (_glued).
+_GLUED = re.compile(rf"[a-z0-9](?:{UNSEGMENTED.pattern})|(?:{UNSEGMENTED.pattern})[a-z0-9]")
 # The commonest Indonesian function words: a store with none of them holds no Indonesian, and Latin words of a query
 # of undetermined language need no word scan (Indonesian prefixes are what hides a word from FTS5).
 _INDONESIAN_PROBE = '"yang" OR "dengan" OR "untuk" OR "tidak" OR "adalah" OR "sudah" OR "belum"'
@@ -183,6 +185,7 @@ class FactRetriever:
         # row id -> (text, Analysis), for word-level scans: one cache for the current facts, one for versions
         self._current = _Corpus("facts", (), "facts_fts", "fact_id", {})
         self._version_cache: dict[int, tuple[str, object]] = {}
+        self._glued_cache: tuple | None = None  # (facts_version, _glued_rows of the current facts)
         self._vectors: VectorIndex | None = None  # search by meaning, built on first use
         # prefetch_clause_coverage (an experiment, off by default): relevant() gives a fact it left out a second look
         # against each of a message's two questions (_clause_rescue)
@@ -229,7 +232,8 @@ class FactRetriever:
                 if fact[key] not in candidates and self._contains_a_term(terms, fact):
                     fact["fts_rank"] *= _text._DERIV_WEIGHT
                     candidates[fact[key]] = fact
-        for fact in self._ngram_candidates(query, category, min_trust, limit * 3, corpus):
+        for fact in [*self._ngram_candidates(query, category, min_trust, limit * 3, corpus),
+                     *self._glued_candidates(terms, category, min_trust, limit * 3, corpus)]:
             if fact[key] not in candidates or candidates[fact[key]].get("fts_rank", 0) < fact["fts_rank"]:
                 candidates[fact[key]] = fact
         for fact in self._scan_candidates(terms, category, min_trust, limit * 3, corpus, exact=not roots, query=query):
@@ -268,7 +272,8 @@ class FactRetriever:
         """The same weighted share for the current facts, cheaply: document frequencies from the FTS index (one COUNT
         per term, as the recall gate takes them), the share computed on the candidates only, not on every fact."""
         total_facts = max(self.store.count_facts(), 1)
-        df = {t: self._doc_freq(t) for t in terms}
+        glued = self._glued_freq(terms)
+        df = {t: self._doc_freq(t) + glued.get(t, 0) for t in terms}
         weight = {t: math.log(1.0 + total_facts / df[t]) for t in terms if df[t]}
         if not weight:
             return
@@ -395,6 +400,72 @@ class FactRetriever:
         for fact in rows:
             fact["fts_rank"] = rank[fact[corpus.key]]
         return rows
+
+    def _glued(self, terms, category: str | None = None, min_trust: float | None = None,
+               corpus: _Corpus | None = None) -> list[tuple[int, float, object, list]]:
+        """Facts holding a word of the query written into unsegmented script with no space between ("用户用keyring保存
+        密钥", hermes-agent#83593): FTS5 indexes the letters and the characters around them as one token, so its index
+        never finds the word. Only words of ASCII letters, digits and the joiners of identifiers ("web_server",
+        "pve-01"); each found whole (Term._bounded: not "key" in "keyring") and touching a character of that script,
+        where the index cannot see it. (row id, trust, Analysis, the terms found so) of each."""
+        glued = [t for t in terms if t.fts_ok and t.word.isascii() and any(c.isalnum() for c in t.word)]
+        if not glued:
+            return []
+        out = []
+        for rid, trust, cat, analysis in self._glued_rows(corpus or self._current):
+            if (min_trust is not None and trust < min_trust) or (category and cat != category):
+                continue
+            folded = analysis.text
+            found = [t for t in glued if t.word in folded and any(
+                UNSEGMENTED.match(folded, k) for m in t._bounded.finditer(folded)
+                for k in (m.start() - 1, m.end()) if 0 <= k < len(folded))]
+            if found:
+                out.append((rid, trust, analysis, found))
+        return out
+
+    def _glued_rows(self, corpus: _Corpus) -> list[tuple[int, float, str, object]]:
+        """(row id, trust, category, Analysis) of the facts where a letter or digit touches unsegmented script: few or
+        none in most stores. Reading every fact's text takes milliseconds per thousand facts, too slow for every
+        message, so for the current facts the list is kept until a fact's text may have changed (facts_version)."""
+        version = self.store.facts_version() if corpus is self._current else None
+        if version is not None and self._glued_cache is not None and self._glued_cache[0] == version:
+            return self._glued_cache[1]
+        rows = self.store.read(f"SELECT f.{corpus.key} AS rid, f.content, f.tags, f.trust_score, f.category "
+                               f"FROM {corpus.source} f ORDER BY rid", corpus.params)
+        out = []
+        for row in rows:
+            text = f'{row["content"]} {row["tags"] or ""}'
+            if UNSEGMENTED.search(text):
+                analysis = analyze(text)
+                if _GLUED.search(analysis.text):
+                    out.append((row["rid"], row["trust_score"], row["category"], analysis))
+        if version is not None:
+            self._glued_cache = (version, out)
+        return out
+
+    def _glued_freq(self, terms) -> dict:
+        """term -> the facts holding it glued to unsegmented script (_glued), which the FTS count does not see."""
+        counts: dict = {}
+        for _, _, _, found in self._glued(terms):
+            for t in found:
+                counts[t] = counts.get(t, 0) + 1
+        return counts
+
+    def _glued_candidates(self, terms, category: str | None, min_trust: float, limit: int,
+                          corpus: _Corpus | None = None) -> list[dict]:
+        """The facts of _glued, ranked by the share of the query's terms they hold ('fts_rank'), as the n-gram path
+        ranks by the share of its grams."""
+        corpus = corpus or self._current
+        hits = self._glued(terms, category, min_trust, corpus)
+        if not hits:
+            return []
+        ranked = sorted(((sum(t.match(a) for t in terms) / len(terms), trust, rid) for rid, trust, a, _ in hits),
+                        reverse=True)[:limit]
+        rank = {rid: score for score, _, rid in ranked}
+        rows = self._rows(list(rank), category, min_trust, corpus)
+        for fact in rows:
+            fact["fts_rank"] = rank[fact[corpus.key]]
+        return sorted(rows, key=lambda f: f["fts_rank"], reverse=True)
 
     def _ngram_candidates(self, query: str, category: str | None, min_trust: float, limit: int,
                           corpus: _Corpus | None = None) -> list[dict]:
@@ -797,9 +868,10 @@ class FactRetriever:
         # which the FTS index cannot count (it finds "яне"*, not "яны"); counted over the texts, as a scan term is.
         scan_df.update({t: sum(1 for _, _, a in texts if t.found_in(a) or not probe.isdisjoint(_name_forms(a)))
                         for t, probe in named.items()})
+        glued = self._glued_freq([t for t in terms if t not in scan_df])  # the scan counts these itself
         weights, unknown, freq = {}, [], {}
         for term in terms:
-            df = scan_df[term] if term in scan_df else self._doc_freq(term)
+            df = scan_df[term] if term in scan_df else self._doc_freq(term) + glued.get(term, 0)
             if df:
                 weights[term], freq[term] = math.log(1.0 + total_facts / df), df
             else:
