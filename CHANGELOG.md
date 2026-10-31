@@ -16,6 +16,15 @@
   results is refused; of 13 second-person rules and facts written for the check, none. A separate check after
   `_fact_problem`, whose decisions stay 0.22.0's (`tests/test_holographic_screen_speed.py`). Tests:
   `tests/test_holographic_role_prompt.py`.
+- **The agent's report of its own steps is not stored as a fact** (NousResearch/hermes-agent#117790). Besides
+  tool-call JSON (refused since 0.3.0), stores filled with "I just read the file and updated the config as requested."
+  A first-person action ("I read", "I've updated", "I ran", "I checked" …) together with words saying it was done for
+  the one the agent works for ("as requested", "as you asked", "per your request") is refused with a reason that says
+  to store what is now true instead. Both, so a person's own past ("I moved to Bangkok", "I switched to Postgres last
+  week", "I updated my passport in March") and a request of someone else ("as requested by the course") are stored as
+  before; a report without those words is still stored (the tool's description asks not to store task progress).
+  English only. Measured: none of the 7,065 strings of the test suite and benchmark results is refused; of 16
+  first-person facts and 36 preferences written for the check, none. Tests: `tests/test_holographic_narration.py`.
 
 ## 0.25.2 — 2026-10-30
 

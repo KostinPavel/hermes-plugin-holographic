@@ -976,6 +976,20 @@ _RE_ROLE_TASK = re.compile(
     re.IGNORECASE | re.MULTILINE)
 
 
+# The agent's account of its own steps (hermes-agent#117790): "I just read the file and updated the config as
+# requested." is no fact about anyone. A first-person action ("I read", "I've updated", "I ran") done for the one the
+# agent works for ("as requested", "as you asked", "per your request"): both, so a person's own past ("I moved to
+# Bangkok", "I switched to Postgres") and a request of someone else ("as requested by the course") stay facts. A report
+# without those words is still stored; the tool's description asks not to store task progress.
+_STEP_VERBS = (r"(?:read|updated|edited|created|ran|run|executed|checked|fixed|wrote|written|saved|opened|installed"
+               r"|deleted|removed|modified|changed|added|applied|committed|pushed|restarted|searched|looked\s+(?:at|through)"
+               r"|reviewed|renamed|moved|copied|downloaded|uploaded|sent|replied|tested|refactored|patched|deployed"
+               r"|cleaned\s+up)")
+_RE_OWN_STEP = re.compile(r"\bI(?:['’]ve|\s+have)?\s+(?:just\s+|now\s+|already\s+)?" + _STEP_VERBS + r"\b", re.IGNORECASE)
+_RE_FOR_YOU = re.compile(r"\bas\s+(?:you\s+)?(?:requested|asked|instructed)\b(?!\s+by\s+(?!you\b))"
+                         r"|\bper\s+your\s+(?:request|instructions?)\b|\bas\s+you\s+(?:said|wanted)\b", re.IGNORECASE)
+
+
 def _role_prompt(content: str) -> bool:
     """A prompt to an assistant, not a fact (_RE_ROLE_OPEN and _RE_ROLE_TASK)."""
     text = content or ""
@@ -987,6 +1001,9 @@ def _not_a_fact(content: str) -> str | None:
     if _role_prompt(content):
         return ("reads like a prompt to an assistant (who it is and a task to handle), not a fact: store what is true, "
                 "e.g. 'Henry handles the deal-flow inbox', and keep tasks out of memory")
+    if _RE_OWN_STEP.search(content or "") and _RE_FOR_YOU.search(content or ""):
+        return ("reads like a report of steps taken for the person, not a fact: store what is now true, e.g. 'The "
+                "config uses port 8080', or nothing")
     return None
 
 
