@@ -16,6 +16,17 @@
   search by meaning when on (the endpoint check). That alone does not stop the hang there: the first recall still
   loads numpy, and the fix is in core (NousResearch/hermes-agent#144287, #146471). Tests:
   `tests/test_holographic_numpy_not_at_startup.py`.
+- **Search by meaning on no longer imports numpy at start either, and a broken numpy no longer takes memory down.** The
+  provider's constructor asked `Embedder.unavailable()`, which imported numpy; it now asks
+  `holographic.numpy_findable()` (no import), the import moves to `Embedder.usable()` before a vector is needed, and a
+  recall checks that the store holds a vector of the model before that. numpy that Python finds but that fails to import
+  is treated as missing whatever it raises: a DLL that does not load comes out as ImportError, but numpy's own BLAS
+  sanity check at import raises RuntimeError, and its Windows wheel's DLL setup can raise OSError. Either used to raise
+  from the provider's constructor with search by meaning on; otherwise every write failed (`fact_store add failed
+  (OSError)`), and on 0.25.2 memory was off for the session as "cannot open … if the file is damaged". Now recall goes
+  on by words, the log says `numpy is installed but did not load (…)` once per process, and `stats` gives the reason
+  (`structural_recall: off (numpy did not load: …)`, search by meaning `unavailable: numpy did not load (…)`). Tests:
+  `tests/test_holographic_numpy_broken_or_embeddings.py`.
 - **A prompt to an assistant is not stored as a fact, and one already stored is not recalled**
   (NousResearch/hermes-agent#66380). A mail bridge stored each inbound email as "You are Henry, … You received an email
   at the AgentMail inbox and should handle it like a normal Henry request. EMAIL METADATA …", and recall brought every
