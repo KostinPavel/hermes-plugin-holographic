@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Fixed
+- **`auto_extract` no longer stores a reply to the assistant as a preference** (NousResearch/hermes-agent#22907).
+  "I like that, sounds good", "ok, I love it", "I prefer this one, let's go with it" and «ок, я люблю это» matched
+  "I like / love / prefer …", but what they like is whatever the assistant just said: stored, such a fact says nothing
+  on its own. A sentence whose object is "it", or this / that / these / those with at most one word, and whose clause
+  ends there (a degree word such as "better" or "a lot" may follow) is skipped, unless the rest of the sentence states
+  a preference of its own ("I like that, I always use tabs" is stored). Kept: "I like it when answers are short", "I
+  like that you ask before deleting files", "I use this laptop for work", "them" and «его» (more often people than a
+  proposal: "I love them, my kids are my everything"), and "I always check git status before committing" — a habit
+  said as one, which is what the "always / never / usually" pattern is there for. Measured: of the 91 sentences of the
+  test suite and benchmark results the patterns take, none of the earlier ones is skipped; of 36 preferences written
+  for the check, none. Tests: `tests/test_holographic_extract_reactions.py`.
+
+### Documented
+- **`auto_extract` runs after each turn.** README and the setup description said "at session end and before context
+  compression"; extraction also runs after every completed turn (`sync_turn`), and in `scope: user` only then.
+
 ## 0.25.2 — 2026-10-30
 
 ### Fixed
@@ -331,7 +348,7 @@ longer fails the first. With rerank off, recall changes only where the screen no
   uses since PR #10's last round, so every call failed and the table printed the fallback as if it were the
   reranker's. The published benchmark numbers were taken before that change and are not affected.
 
-### Docs
+### Documented
 
 - **Which rerank servers work.** It is tested against llama-server. Any server that answers the Cohere shape without
   a key should work; the client sends no key, so a cloud API that requires one (Cohere, Jina) refuses every call, and
@@ -425,7 +442,7 @@ differently.
   it and re-exports the names tests read from the package. Behaviour is unchanged. hermes-dreaming vendors part
   of the screen, takes its copy from this file from now on.
 
-### Docs
+### Documented
 
 - **Data and privacy names `rerank` too.** The README said nothing is sent anywhere unless `embeddings` is on; with
   `rerank: on` the message and candidate facts go to `rerank_url` as well.
