@@ -3,6 +3,19 @@
 ## Unreleased
 
 ### Fixed
+- **Starting the provider no longer imports numpy; the first search that scores by structure does.** PR #45 moved
+  the module-level imports to first use, but the first use still came at start: opening the store asked
+  `has_numpy()` (which imports) for its vector checks, the retriever asked it to settle its weights, and
+  `system_prompt_block()` asked it for the "numpy is not installed" line. Now `holographic.numpy_installed()`
+  answers those start-time questions without importing (the import's own answer once one was tried, else whether
+  Python can find the package); the retriever settles its weights on its first search; the store's vector repair
+  imports numpy only when there is a vector to write, and leaves the store as it was when that import fails (a
+  changed `hrr_dim` keeps the old size on record). On a store that needs no repair, the usual open, a provider that
+  only starts (a Windows Kanban worker, NousResearch/hermes-agent#145156) leaves numpy unloaded. Still loading it at
+  open: a store whose vectors need re-encoding (facts added without numpy, another `hrr_dim`, new entity rules), and
+  search by meaning when on (the endpoint check). That alone does not stop the hang there: the first recall still
+  loads numpy, and the fix is in core (NousResearch/hermes-agent#144287, #146471). Tests:
+  `tests/test_holographic_numpy_not_at_startup.py`.
 - **`auto_extract` no longer stores a reply to the assistant as a preference** (NousResearch/hermes-agent#22907).
   "I like that, sounds good", "ok, I love it", "I prefer this one, let's go with it" and «ок, я люблю это» matched
   "I like / love / prefer …", but what they like is whatever the assistant just said: stored, such a fact says nothing
@@ -348,7 +361,7 @@ longer fails the first. With rerank off, recall changes only where the screen no
   uses since PR #10's last round, so every call failed and the table printed the fallback as if it were the
   reranker's. The published benchmark numbers were taken before that change and are not affected.
 
-### Documented
+### Docs
 
 - **Which rerank servers work.** It is tested against llama-server. Any server that answers the Cohere shape without
   a key should work; the client sends no key, so a cloud API that requires one (Cohere, Jina) refuses every call, and
@@ -442,7 +455,7 @@ differently.
   it and re-exports the names tests read from the package. Behaviour is unchanged. hermes-dreaming vendors part
   of the screen, takes its copy from this file from now on.
 
-### Documented
+### Docs
 
 - **Data and privacy names `rerank` too.** The README said nothing is sent anywhere unless `embeddings` is on; with
   `rerank: on` the message and candidate facts go to `rerank_url` as well.
