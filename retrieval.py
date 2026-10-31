@@ -186,9 +186,8 @@ class FactRetriever:
     def __init__(self, store: MemoryStore, temporal_decay_half_life: int = 0,  # days, 0 = disabled
                  fts_weight: float = 0.4, jaccard_weight: float = 0.3, hrr_weight: float = 0.3, hrr_dim: int = 1024):
         self.store, self.half_life, self.hrr_dim = store, temporal_decay_half_life, hrr_dim
-        if hrr_weight > 0 and not hrr.has_numpy():  # redistribute weights without numpy
-            fts_weight, jaccard_weight, hrr_weight = 0.6, 0.4, 0.0
-        self.fts_weight, self.jaccard_weight, self.hrr_weight = fts_weight, jaccard_weight, hrr_weight
+        self._configured = (fts_weight, jaccard_weight, hrr_weight)
+        self._weights: tuple[float, float, float] | None = None  # settled on the first search, not here (#145156)
         # row id -> (text, Analysis), for word-level scans: one cache for the current facts, one for versions
         self._current = _Corpus("facts", (), "facts_fts", "fact_id", {})
         self._version_cache: dict[int, tuple[str, object]] = {}
@@ -197,6 +196,28 @@ class FactRetriever:
         # prefetch_clause_coverage (an experiment, off by default): relevant() gives a fact it left out a second look
         # against each of a message's two questions (_clause_rescue)
         self.clause_coverage = False
+
+    def _settled(self) -> tuple[float, float, float]:
+        """(fts, jaccard, hrr) weights, settled on first use: without numpy the HRR share goes to the words. Asking
+        has_numpy() here and not in __init__ keeps a provider that only starts from importing numpy (#145156)."""
+        if self._weights is None:
+            fts, jaccard, structure = self._configured
+            if structure > 0 and not hrr.has_numpy():
+                fts, jaccard, structure = 0.6, 0.4, 0.0
+            self._weights = (fts, jaccard, structure)
+        return self._weights
+
+    @property
+    def fts_weight(self) -> float:
+        return self._settled()[0]
+
+    @property
+    def jaccard_weight(self) -> float:
+        return self._settled()[1]
+
+    @property
+    def hrr_weight(self) -> float:
+        return self._settled()[2]
 
     def _as_of(self, day: str) -> _Corpus:
         if self.store._merges_ready():

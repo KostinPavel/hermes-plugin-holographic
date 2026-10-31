@@ -3,6 +3,19 @@
 ## Unreleased
 
 ### Fixed
+- **Starting the provider no longer imports numpy; the first search that scores by structure does.** PR #45 moved
+  the module-level imports to first use, but the first use still came at start: opening the store asked
+  `has_numpy()` (which imports) for its vector checks, the retriever asked it to settle its weights, and
+  `system_prompt_block()` asked it for the "numpy is not installed" line. Now `holographic.numpy_installed()`
+  answers those start-time questions without importing (the import's own answer once one was tried, else whether
+  Python can find the package); the retriever settles its weights on its first search; the store's vector repair
+  imports numpy only when there is a vector to write, and leaves the store as it was when that import fails (a
+  changed `hrr_dim` keeps the old size on record). On a store that needs no repair, the usual open, a provider that
+  only starts (a Windows Kanban worker, NousResearch/hermes-agent#145156) leaves numpy unloaded. Still loading it at
+  open: a store whose vectors need re-encoding (facts added without numpy, another `hrr_dim`, new entity rules), and
+  search by meaning when on (the endpoint check). That alone does not stop the hang there: the first recall still
+  loads numpy, and the fix is in core (NousResearch/hermes-agent#144287, #146471). Tests:
+  `tests/test_holographic_numpy_not_at_startup.py`.
 - **A Latin word or identifier written into Chinese text is found by itself** (NousResearch/hermes-agent#83593).
   FTS5 indexes `用户用keyring保存密钥` as one token, letters and characters together, and the substring path ran only
   for a query with Chinese in it, so `keyring`, `watchdog`, `ppid`, `HERMES_PARENT_PID` or `web_server` alone found
