@@ -707,6 +707,9 @@ class HolographicMemoryProvider(MemoryProvider):
         # sync_turn, and the exact line each tracked injection emitted (filled only while the gate is on).
         self._generations: dict[str, int] = {}
         self._presence_grace = 0  # suppressions by a snapshot that predates the injection (lag measurement)
+        self._presence_lag_events = 0  # condition 3: syncs that started after a LATER turn's prefetch already ran
+        self._presence_lag_turns = 0  # how many turns those syncs were behind, summed (measured apart from grace)
+        self._last_sync_origin: dict[str, int] = {}  # prefetch turn at which the previous sync started
         self._state_epoch = 0  # advances when tracked state is cleared: a snapshot captured earlier must not publish
         self._summary_signature: dict[str, str] = {}  # key -> signature of the last summary row a publish credited
         self._graced: dict[str, set] = {}  # key -> revisions whose grace fired once (issue #59: one turn, never more)
@@ -1148,7 +1151,10 @@ class HolographicMemoryProvider(MemoryProvider):
             # only what goes into the block counts as recalled: a skipped fact may come next turn; the line
             # rides along for the presence gate (the exact emitted form, cut and suffixes included)
             for fact, line in zip(fresh, lines):
-                self._remember(key, fact, turn, line if self._presence_gate else None)
+                if self._presence_gate:
+                    self._remember(key, fact, turn, line)  # gate on: the emitted form rides along
+                else:
+                    self._remember(key, fact, turn)  # gate off: main's exact call shape (state was identical already)
             self._last_recall = len(fresh)
             if not fresh:  # nothing emitted: no receipt, no journal transaction on a quiet turn (0.20.2)
                 self._experience_stages = []
@@ -1624,9 +1630,24 @@ class HolographicMemoryProvider(MemoryProvider):
                   turn_author: dict | None = None) -> None:
         """After a completed turn (the core runs it on a background worker): extraction, then, with search by meaning
         on, vectors for facts that have none (_catch_up_vectors, outside the provider lock)."""
-        snapshot = self._snapshot_of(messages, session_id=session_id) if self._presence_gate and messages else None
-        self._sync_turn(user_content, assistant_content, session_id=session_id, messages=messages,
-                        turn_author=turn_author, snapshot=snapshot)
+        if self._presence_gate:
+            key = self._presence_key(session_id)
+            origin = self._turns.get(key, 0)  # the turn this sync's view is bound to (condition 3 measurement)
+            previous = self._last_sync_origin.get(key)
+            if previous is not None and origin > previous + 1:
+                missed = origin - previous - 1  # a later turn's prefetch already ran before this sync started
+                self._presence_lag_events += 1
+                self._presence_lag_turns += missed
+                logger.debug("holographic: sync lag: started %d turn(s) after the last sync (prefetch turn %d, "
+                             "last sync at turn %d)", missed, origin, previous)
+            self._last_sync_origin[key] = origin
+            snapshot = self._snapshot_of(messages, session_id=session_id) if messages else None
+            self._sync_turn(user_content, assistant_content, session_id=session_id, messages=messages,
+                            turn_author=turn_author, snapshot=snapshot)
+        else:
+            # gate off: main's exact call shape - no snapshot argument is passed at all
+            self._sync_turn(user_content, assistant_content, session_id=session_id, messages=messages,
+                            turn_author=turn_author)
         self._catch_up_vectors()
 
     def _presence_key(self, session_id: str = "") -> str:
@@ -1773,11 +1794,13 @@ class HolographicMemoryProvider(MemoryProvider):
 
     def _forget_presence(self, sessions: set) -> None:
         """All presence state for keys of the given sessions - injected turns, emitted lines, snapshots,
-        generations and summary attributions dropped together, so nothing survives a reset (issue #59)."""
+        generations, summary attributions, grace marks and sync-origin bindings dropped together, so nothing
+        survives a reset (issue #59)."""
         for holder in (self._injected, self._emitted, self._snapshots):
             for key in [k for k in holder if k.split("|", 1)[0] in sessions]:
                 holder.pop(key, None)
-        for plain in (self._turns, self._generations, self._summary_signature, self._graced):
+        for plain in (self._turns, self._generations, self._summary_signature, self._graced,
+                      self._last_sync_origin):
             for key in [k for k in plain if k.split("|", 1)[0] in sessions]:
                 plain.pop(key, None)
 

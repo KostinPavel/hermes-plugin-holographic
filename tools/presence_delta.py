@@ -2,7 +2,8 @@
 
 The project records no baseline for ``sync_turn`` or prefetch latency (its timing tests pin the screen), so
 this harness measures the baseline itself: every scenario runs the gate off and on — same provider, same
-inputs, phases interleaved to cancel drift — and reports the added cost next to each phase's p50/p95.
+inputs, gate state reset before every timed call - neither phase inherits the other's - phases interleaved
+to cancel drift, and the added cost reported next to each phase's p50/p95.
 
 Inputs are synthetic and neutral, shaped the way the plugin and the core emit them: recall blocks wrapped by
 ``build_memory_context_block``, ``fact_store`` results in both encodings, noise rows without
@@ -25,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import statistics
 import sys
 import tempfile
@@ -50,8 +52,29 @@ _BIG_ROW = ("cache line " + "x" * 90) * 2300  # ~200 KB: the worst noise row for
 def _provider() -> HolographicMemoryProvider:
     db = Path(tempfile.mkdtemp(prefix="presence-delta-")) / "m.db"
     p = HolographicMemoryProvider(config={"db_path": str(db), "hrr_dim": 512})
+    p._tmp_dir = db.parent  # removed on cleanup: the harness leaves no temp directories behind
     p.initialize(session_id="s")
     return p
+
+
+def _cleanup(p: HolographicMemoryProvider) -> None:
+    p.shutdown()
+    shutil.rmtree(getattr(p, "_tmp_dir", ""), ignore_errors=True)
+
+
+def _reset_presence(p: HolographicMemoryProvider, key: str | None = None) -> None:
+    """Both phases start from identical gate state: tracked rows forgotten and the seed re-armed WITHOUT
+    touching the store (so retrieval never differs between off and on) - neither phase inherits the other's."""
+    for name in ("_injected", "_emitted", "_snapshots", "_generations", "_summary_signature",
+                 "_graced", "_turns", "_last_sync_origin"):
+        holder = getattr(p, name, None)
+        if isinstance(holder, dict):
+            holder.clear()
+    p._presence_grace = p._presence_lag_events = p._presence_lag_turns = 0
+    if key is not None:
+        for i in range(1, 6):
+            p._remember(key, {"fact_id": i, "content": _FACT.format(i)}, 1, _line(i))
+        p._turns[key] = 10  # the next prefetch is turn 11: 11 - 1 > 6, the window is long expired
 
 
 def _rows(n: int) -> list:
@@ -130,10 +153,12 @@ def main() -> int:
             msgs = _rows(n)
 
             def run_off(msgs=msgs):
+                _reset_presence(p)
                 p._presence_gate = False
                 p.sync_turn("u", "a", session_id="s", messages=msgs)
 
             def run_on(msgs=msgs):
+                _reset_presence(p)
                 p._presence_gate = True
                 p.sync_turn("u", "a", session_id="s", messages=msgs)
 
@@ -146,16 +171,19 @@ def main() -> int:
         scenarios = (
             ("prefetch no-snapshot", lambda: p._snapshots.pop(key, None)),
             ("prefetch snapshot", lambda: p._publish_snapshot(
-                {"key": key, "generation": 0, "turn": 10, "lines": set(), "pairs": set(), "summary": False})),
+                {"key": key, "generation": 0, "epoch": 0, "turn": 10, "lines": set(), "pairs": set(),
+                 "summary": None})),
         )
         for i, (name, arm) in enumerate(scenarios):
-            arm()  # arm the scenario once; _paired's warmup keeps it armed
+            arm()  # priming call; run_on re-arms after every reset, run_off measures the no-state baseline
 
-            def run_off(arm=arm, qi=i):
+            def run_off(arm=arm, qi=i, key=key):
+                _reset_presence(p, key)
                 p._presence_gate = False
                 _prefetch(p, _QUERIES[qi % len(_QUERIES)])
 
-            def run_on(arm=arm, qi=i):
+            def run_on(arm=arm, qi=i, key=key):
+                _reset_presence(p, key)
                 p._presence_gate = True
                 arm()
                 _prefetch(p, _QUERIES[qi % len(_QUERIES)])
@@ -164,7 +192,7 @@ def main() -> int:
             diff = [b - a for a, b in zip(off, on)]
             rows_out.append((name, off, on, diff))
     finally:
-        p.shutdown()
+        _cleanup(p)
 
     for name, off, on, diff in rows_out:
         print(f"{name:26} {_pct(off, .5):8.3f} {_pct(off, .95):8.3f} {_pct(on, .5):8.3f} "
@@ -184,7 +212,7 @@ def main() -> int:
         if off_out != on_out:
             return 1
     finally:
-        p.shutdown()
+        _cleanup(p)
 
     # -- state: what the gate keeps per tracked injection ------------------------------------------
     sample = [_line(i) for i in range(1, 6)]

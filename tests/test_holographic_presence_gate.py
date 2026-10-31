@@ -460,3 +460,20 @@ def test_the_same_fact_id_with_other_content_does_not_hold(gate):
                               "content": json.dumps({"found": [{"fact_id": 7,
                                                                 "content": "Y keeps the backup tape on the shelf"}]})}])
     assert gate._not_recent(key, mine, turn=10) is True
+
+
+def test_a_late_sync_counts_and_logs_the_missed_turns(gate, caplog):
+    """Condition 3 measurement (should-fix 6): the sync's origin turn is bound to its view, and a sync that
+    starts after a LATER turn's prefetch already ran counts the lag as its own number - separate from grace -
+    logging the exact missed-turn count."""
+    import logging as _logging
+
+    key = _key(gate)
+    view = [{"role": "user", "api_content": build_memory_context_block(LINE)}]
+    gate.sync_turn("u", "a", session_id="s", messages=view)   # baseline sync at prefetch turn 0
+    gate._turns[key] = 3                                       # two later prefetch turns ran meanwhile
+    with caplog.at_level(_logging.DEBUG):
+        gate.sync_turn("u", "a", session_id="s", messages=view)
+    assert gate._presence_lag_events == 1
+    assert gate._presence_lag_turns == 2
+    assert any("2 turn(s)" in r.getMessage() for r in caplog.records)  # exact missed-turn count in the log

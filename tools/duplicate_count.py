@@ -1,14 +1,18 @@
 """Condition 8 (issue #59): the duplicate metric, before and after the gate — structural and read-only.
 
-A key is ``(session, fact_id)``; a duplicate is a key whose fact line shows in two or more rows that are live now.
-Lines are read structurally only: ``<memory-context>`` blocks and the plugin's ``- #N [trust] `` line shape, never
-prose. Pair reports: same line text vs differing text under one ``#N`` (revision or two stores), byte-identical
-twins (both rows share the same ``api_content`` — kept in, per the maintainer), and the cause between a pair's
-rows — a summary row (``_compressed_summary = 1``) strictly between the two row ids means compaction-preceded,
-otherwise window expiry ("preceded by", not "caused by").
+A key is ``(session, fact_id, revision_text)``: the revision text is the line's text after ``]``, so two
+revisions of one fact are two keys — differing text under one ``#N`` is **not** a duplicate but a fact whose
+wording changed (counted separately, as information). A duplicate is one revision showing in two or more rows
+that are live now. Lines are read structurally only: ``<memory-context>`` blocks and the plugin's
+``- #N [trust] `` line shape, never prose; a cut rendering (``… (cut)``) counts as its own text, because that
+is what the message actually carried. Twins (both rows share the same ``api_content``) stay in the count, per
+the maintainer. The cause between a pair's rows — a summary row (``_compressed_summary = 1``) of the **same
+session** strictly between the two row ids means compaction-preceded, otherwise window expiry ("preceded by",
+not "caused by").
 
-Output is aggregates only: counts, a store fingerprint (sha256 of the path, not the path), row totals, and an
-optional run label — no session ids, no fact texts, no file paths. The database is opened read-only.
+Output is aggregates only: counts, a store fingerprint (sha256 of the path, not the path), row totals, and a
+sanitized run label (control characters stripped, capped at 64) — no session ids, no fact texts, no file paths.
+The database is opened read-only and every select shares one transaction (one consistent store view).
 
     python tools/duplicate_count.py [--db PATH] [--label TEXT]
 
@@ -37,18 +41,22 @@ def _default_db() -> Path:
 def _load(db: Path):
     con = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)
     try:
+        con.execute("BEGIN")  # one read transaction: every select sees the same store snapshot
         rows = con.execute("""
             SELECT id, session_id, active, api_content
             FROM messages
             WHERE api_content LIKE '%<memory-context>%' AND api_content IS NOT NULL
             ORDER BY id
         """).fetchall()
-        compaction_ids = {r[0] for r in con.execute("SELECT id FROM messages WHERE _compressed_summary = 1")}
+        compaction_by_session: dict[str, set[int]] = collections.defaultdict(set)
+        for cid, sess in con.execute("SELECT id, session_id FROM messages WHERE _compressed_summary = 1"):
+            compaction_by_session[sess].add(cid)
         sessions_all = con.execute("SELECT COUNT(DISTINCT session_id) FROM messages").fetchone()[0]
         messages_all = con.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+        con.execute("COMMIT")
     finally:
         con.close()
-    return rows, compaction_ids, sessions_all, messages_all
+    return rows, compaction_by_session, sessions_all, messages_all
 
 
 def main() -> int:
@@ -57,63 +65,62 @@ def main() -> int:
     ap.add_argument("--label", default="", help="run label printed with the numbers (e.g. 'before' / 'after')")
     args = ap.parse_args()
     db: Path = args.db.expanduser()
+    label = re.sub(r"[\x00-\x1f]", "", args.label)[:64]  # printed, not executed: a label carries no control chars
 
-    rows, compaction_ids, sessions_all, messages_all = _load(db)
+    rows, compaction_by_session, sessions_all, messages_all = _load(db)
 
-    # (session, fact_id) -> [(row_id, active, line_text, api_content)]
-    injections: dict[tuple[str, int], list] = collections.defaultdict(list)
+    # (session, fact_id, revision_text) -> [(row_id, active, api_content)]
+    injections: dict[tuple[str, int, str], list] = collections.defaultdict(list)
+    texts_per_fact: dict[tuple[str, int], set[str]] = collections.defaultdict(set)
     for rid, sess, active, api in rows:
         for block in _BLOCK.findall(api):
             for fid, text in _LINE.findall(block):
-                injections[(sess, int(fid))].append((rid, active, text.strip(), api))
+                text = text.strip()
+                injections[(sess, int(fid), text)].append((rid, active, api))
+                texts_per_fact[(sess, int(fid))].add(text)
 
-    # Primary grain is the KEY (a key = (session, fact_id) with >=2 live rows), matching the baseline definition:
-    # same/diff text and twins are per key; a key is compaction-preceded when a summary row falls strictly between
-    # its first and last live row. Pair totals follow as secondary detail.
-    keys = same_text_keys = diff_text_keys = twin_keys = 0
-    pairs = same_text_pairs = diff_text_pairs = twin_pairs = 0
+    # Primary grain is the KEY: one revision with >=2 live rows is a duplicate. Twins and cause are per key;
+    # cause consults compaction rows of the SAME session only (another session's compaction between two ids
+    # says nothing about this one). Pair totals follow as secondary detail.
+    keys = twin_keys = 0
+    pairs = twin_pairs = 0
     dup_sessions: set[str] = set()
     cause_keys: collections.Counter = collections.Counter()
     cause_pairs: collections.Counter = collections.Counter()
-    for (sess, _fid), items in injections.items():
-        live = sorted({(rid, text, api) for rid, active, text, api in items if active == 1})
+    for (sess, _fid, _text), items in injections.items():
+        live = sorted({(rid, api) for rid, active, api in items if active == 1})
         if len(live) < 2:
             continue
         keys += 1
         dup_sessions.add(sess)
-        texts = {t for _, t, _ in live}
-        apis = {a for _, _, a in live}
-        if len(texts) == 1:
-            same_text_keys += 1
-        else:
-            diff_text_keys += 1
-        if len(apis) == 1:
+        if len({a for _, a in live}) == 1:
             twin_keys += 1
-        ids = [rid for rid, _, _ in live]
-        between = any(ids[0] < c < ids[-1] for c in compaction_ids)
+        ids = [rid for rid, _ in live]
+        cids = compaction_by_session.get(sess, ())
+        between = any(ids[0] < c < ids[-1] for c in cids)
         cause_keys["compaction_preceded" if between else "window_expiry_or_other"] += 1
         for a, b in itertools.combinations(live, 2):
             pairs += 1
             if a[1] == b[1]:
-                same_text_pairs += 1
-            else:
-                diff_text_pairs += 1
-            if a[2] == b[2]:
                 twin_pairs += 1
-            p_between = any(a[0] < c < b[0] for c in compaction_ids)
+            p_between = any(a[0] < c < b[0] for c in cids)
             cause_pairs["compaction_preceded" if p_between else "window_expiry_or_other"] += 1
 
+    # Information, not duplicates: facts whose wording changed across live rows (each text is its own key).
+    multi_text_facts = sum(1 for v in texts_per_fact.values() if len(v) > 1)
+
     fingerprint = hashlib.sha256(str(db).encode("utf-8")).hexdigest()[:12]
-    label = f" [{args.label}]" if args.label else ""
-    print(f"duplicate_count{label}")
+    label_print = f" [{label}]" if label else ""
+    print(f"duplicate_count{label_print}")
     print(f"  store fingerprint: {fingerprint} | messages: {messages_all} | sessions in store: {sessions_all}")
-    print(f"  rows carrying <memory-context>: {len(rows)} | compaction rows: {len(compaction_ids)}")
-    print(f"  duplicate keys (session, fact_id) with >=2 live rows: {keys} | sessions involved: {len(dup_sessions)}")
-    print(f"  keys, same line text / differing text under one #N: {same_text_keys} / {diff_text_keys}")
-    print(f"  byte-identical twin keys (rows share api_content): {twin_keys} — kept in the count")
-    print(f"  cause, key-level: {dict(cause_keys)}")
-    print(f"  secondary, live row pairs: {pairs} | same text: {same_text_pairs} | differing: {diff_text_pairs}"
-          f" | twins: {twin_pairs} | cause: {dict(cause_pairs)}")
+    print(f"  rows carrying <memory-context>: {len(rows)} | compaction rows: "
+          f"{sum(len(v) for v in compaction_by_session.values())}")
+    print(f"  duplicate keys (session, fact_id, revision text) with >=2 live rows: {keys} | "
+          f"sessions involved: {len(dup_sessions)}")
+    print(f"  byte-identical twin keys (rows share api_content): {twin_keys} - kept in the count")
+    print(f"  cause, key-level (compaction rows scoped to the key's session): {dict(cause_keys)}")
+    print(f"  facts with >1 revision text among live rows (wording changed, NOT a duplicate): {multi_text_facts}")
+    print(f"  secondary, live row pairs: {pairs} | twins: {twin_pairs} | cause: {dict(cause_pairs)}")
     return 0
 
 
