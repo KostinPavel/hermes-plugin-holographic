@@ -43,6 +43,24 @@
   its frequency (Codex review on GitHub found the same: `keyring保存密钥` fell out of the recall for "keyring watchdog
   backend"). Codex review on GitHub: the list of such facts is built in linear time (a 30,000-character run with no
   letter after it took 16 s). Not covered: other forms of the word (`keyrings`). Tests: `tests/test_holographic_latin_in_cjk.py`.
+- **`auto_extract` no longer stores a reply to the assistant as a preference** (NousResearch/hermes-agent#22907).
+  "I like that, sounds good", "ok, I love it", "I prefer this one, let's go with it" and «ок, я люблю это» matched
+  "I like / love / prefer …", but what they like is whatever the assistant just said: stored, such a fact says nothing
+  on its own. A sentence whose object is "it", or this / that / these / those with at most one word, and whose clause
+  ends there (a degree word such as "better" or "a lot" may follow) is skipped, unless the rest of the sentence states
+  a preference of its own ("I like that, I always use tabs" is stored). Kept: "I like it when answers are short", "I
+  like that you ask before deleting files", "I use this laptop for work", "them" and «его» (more often people than a
+  proposal: "I love them, my kids are my everything"), and "I always check git status before committing" — a habit
+  said as one, which is what the "always / never / usually" pattern is there for. Measured: of the 91 sentences of the
+  test suite and benchmark results the patterns take, none of the earlier ones is skipped; of 36 preferences written
+  for the check, none. Codex review: the reply also ends at a dash or an emoji ("I like that 👍", "I love it — sounds
+  good"), and not at a dot inside a name ("I use this Node.js library for all my projects." is stored). Codex
+  review on GitHub: nor at a colon ("I prefer this format: JSON with two-space indentation." is stored). Tests:
+  `tests/test_holographic_extract_reactions.py`.
+
+### Documented
+- **`auto_extract` runs after each turn.** README and the setup description said "at session end and before context
+  compression"; extraction also runs after every completed turn (`sync_turn`), and in `scope: user` only then.
 
 ## 0.25.2 — 2026-10-30
 

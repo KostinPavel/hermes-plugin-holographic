@@ -218,6 +218,31 @@ _EXTRACT_CATEGORIES = (
                  r'(?:命名規則|命名规则|命名規範|命名规范|規範|规范|慣例|惯例)(?:是|為|为|採用|采用)[^。；！？?\n]{2,40}')],
      "project"),
 )
+# A reply to the assistant is not a preference (hermes-agent#22907): "I like that, sounds good", "ok, I love it", "I
+# prefer this one" like whatever the assistant just said, and stored they say nothing on their own. Their object is
+# "it", or this / that / these / those and at most one word, and the clause ends there (a degree word may follow:
+# "better", "a lot"). "I like it when …", "I like that you …" and "I use this laptop for work" go on, and are kept;
+# so are "them", «его», «их»: more often people ("I love them, my kids are my everything") than a proposal. The clause
+# ends at a mark, a dash or an emoji ("I like that 👍"), not at a dot inside a name ("this Node.js library"; Codex review)
+# nor at a colon, which says what the object is ("I prefer this format: JSON with two-space indentation."; Codex review
+# on GitHub).
+_REACTION_END = (r'(?:\s+(?:better|more|most|best|too|a\s+lot|very\s+much|so\s+much))*\s*'
+                 r'(?:[,;…)—–]|[.!](?!\w)|-(?=\s)|[☀-➿\U0001f300-\U0001faff]|$)')
+_RE_REACTION = re.compile(
+    r'\bI\s+(?:really\s+|also\s+|just\s+|totally\s+|do\s+)?(?:prefer|like|love|use)\s+'
+    r'(?:it|(?:this|that|these|those)(?:\s+[^\W\d_]+)?)' + _REACTION_END +
+    r'|(?:^|\s)я\s+(?:тоже\s+|очень\s+)?(?:предпочитаю|люблю|использую)\s+'
+    r'(?:это|то|такое|(?:этот|эта|это|эти|тот|та|те)\s+[^\W\d_]+)' + _REACTION_END,
+    re.IGNORECASE)
+
+
+def _reaction(sentence: str) -> bool:
+    """A sentence that states no preference but a reply to the assistant (_RE_REACTION), with nothing left that
+    would be extracted once the reply is taken out ("I like that, I always use tabs" keeps its second half)."""
+    if not _RE_REACTION.search(sentence):
+        return False
+    rest = _RE_REACTION.sub(" ", sentence)
+    return not any(p.search(rest) for patterns, _ in _EXTRACT_CATEGORIES for p in patterns)
 
 
 class _UnreadConfig(dict):
@@ -708,7 +733,7 @@ class HolographicMemoryProvider(MemoryProvider):
         return [
             {"key": "db_path", "description": "SQLite database path", "default": current("db_path", _DEFAULT_DB_PATH)},
             {"key": "auto_extract", "description": "Store user sentences that state a preference or decision "
-             "(English/Russian patterns), at session end and before context compression",
+             "(English, Russian and Chinese patterns) after each turn, before context compression and at session end",
              "default": current("auto_extract", "false"), "choices": ["true", "false"]},
             {"key": "default_trust", "description": "Default trust score for new facts", "default": current("default_trust", "0.5")},
             {"key": "hrr_dim", "description": "HRR vector dimensions", "default": current("hrr_dim", "1024")},
@@ -2244,7 +2269,7 @@ class HolographicMemoryProvider(MemoryProvider):
                 continue
             for sentence in (m.group(0).strip() for m in _RE_SENTENCE.finditer(content)):
                 if len(sentence) < _extract_floor(sentence) or len(sentence) > _EXTRACT_MAX_CHARS \
-                        or _fact_problem(sentence) or _RE_QUESTION.search(sentence):
+                        or _fact_problem(sentence) or _RE_QUESTION.search(sentence) or _reaction(sentence):
                     continue
                 for patterns, category in _EXTRACT_CATEGORIES:
                     if any(p.search(sentence) for p in patterns):
