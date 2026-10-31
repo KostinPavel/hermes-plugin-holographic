@@ -180,7 +180,7 @@ class MemoryStore(EntityMixin, HistoryMixin, ExperienceMixin):
         self.db_path = Path(db_path).expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.default_trust, self.hrr_dim = _clamp_trust(default_trust), hrr_dim
-        self._hrr_available = hrr.has_numpy()
+        self._hrr_override: bool | None = None  # _hrr_available asks numpy on first use, not at open (#145156)
         self.tz = tz  # local dates of the history (recorded_on, "today"); None = UTC
         try:  # resolve() so symlinked/relative paths to the same file share ONE connection
             self._key = str(self.db_path.resolve())
@@ -288,21 +288,38 @@ class MemoryStore(EntityMixin, HistoryMixin, ExperienceMixin):
         self._write("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                     (key, value))
 
+    @property
+    def _hrr_available(self) -> bool:
+        """Whether HRR vectors can be computed: imports numpy on the first ask (has_numpy), so a store that is only
+        opened and read never loads it. Assignable, for a store that must not compute them (and for tests)."""
+        override = getattr(self, "_hrr_override", None)
+        return hrr.has_numpy() if override is None else override
+
+    @_hrr_available.setter
+    def _hrr_available(self, value: bool) -> None:
+        self._hrr_override = bool(value)
+
+    def _vectors_possible(self) -> bool:
+        """The open-time gate of the vector repairs: numpy present, asked without importing it. A repair imports numpy
+        only when there is a vector to write, and does nothing when that import fails."""
+        override = getattr(self, "_hrr_override", None)
+        return hrr.numpy_installed() if override is None else override
+
     def _check_vectors(self) -> None:
         """Re-encode vectors whose size does not match hrr_dim (another version or setting wrote them)."""
-        if not self._hrr_available:
+        if not self._vectors_possible():
             return
         sizes = (4 + 4 * self.hrr_dim, 8 * self.hrr_dim)
         stale = self._conn.execute("SELECT fact_id, content FROM facts WHERE hrr_vector IS NULL OR LENGTH(hrr_vector) NOT IN (?, ?)",
                                    sizes).fetchall()
-        if stale:
+        if stale and self._hrr_available:  # work to do: numpy is imported now, and a broken one leaves them as they are
             with self._tx():
                 for row in stale:
                     self._compute_hrr_vector(row["fact_id"], row["content"])
 
     def _sync_hrr_dim(self) -> None:
         """Record hrr_dim; re-encode every vector when the configured dimension differs from the stored one."""
-        if not self._hrr_available:
+        if not self._vectors_possible():
             return
         stored = self._meta("hrr_dim")
         if stored is None:  # before 0.4.0: infer from a stored blob (prefixed float32 or legacy float64)
@@ -311,6 +328,8 @@ class MemoryStore(EntityMixin, HistoryMixin, ExperienceMixin):
                 data = bytes(blob["hrr_vector"])
                 stored = str((len(data) - 4) // 4 if data.startswith(b"HRR1") else len(data) // 8)
         if stored is not None and stored != str(self.hrr_dim):
+            if not self._hrr_available:  # found but not importable: keep the old size on record, nothing re-encoded
+                return
             logger.warning("holographic: hrr_dim changed (%s -> %s), re-encoding stored vectors", stored, self.hrr_dim)
             for row in self._conn.execute("SELECT fact_id, content FROM facts").fetchall():
                 self._compute_hrr_vector(row["fact_id"], row["content"])
