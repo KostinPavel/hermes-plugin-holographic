@@ -31,7 +31,10 @@ _ROLE_ENTITY, _ROLE_CONTENT = hrr.ROLE_ENTITY, hrr.ROLE_CONTENT
 _FTS_OPERATORS = str.maketrans({c: " " for c in '"()*^:-+'})
 _RE_UNSEGMENTED = UNSEGMENTED
 # A letter or digit written against unsegmented script ("用keyring保存"): FTS5 holds the two as one token (_glued).
-_GLUED = re.compile(rf"[a-z0-9](?:{UNSEGMENTED.pattern})|(?:{UNSEGMENTED.pattern})[a-z0-9]")
+# One character of that script, not a run (Codex review on GitHub: UNSEGMENTED's runs made a long run with no letter
+# after it n² steps, 16 s for 30,000 characters).
+_UNSEGMENTED_CHAR = "[" + "".join(re.findall(r"\[([^\]]*)\]", UNSEGMENTED.pattern)) + "]"
+_GLUED = re.compile(rf"[a-z0-9]{_UNSEGMENTED_CHAR}|{_UNSEGMENTED_CHAR}[a-z0-9]")
 
 
 def _glued_at(text: str, start: int, end: int) -> bool:

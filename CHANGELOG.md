@@ -40,7 +40,9 @@
   and `hr-vpsのメモリはどれくらい？` also recalls the other `hr-vps` fact, as the English, Russian and Chinese questions
   do. Codex review: a letter of another script next to the word is no edge (`яkeyring保存` holds no `keyring`), and
   a fact the index already finds by the word (`keyring保存`, a prefix; the word also written apart) counts once in
-  its frequency. Not covered: other forms of the word (`keyrings`). Tests: `tests/test_holographic_latin_in_cjk.py`.
+  its frequency (Codex review on GitHub found the same: `keyring保存密钥` fell out of the recall for "keyring watchdog
+  backend"). Codex review on GitHub: the list of such facts is built in linear time (a 30,000-character run with no
+  letter after it took 16 s). Not covered: other forms of the word (`keyrings`). Tests: `tests/test_holographic_latin_in_cjk.py`.
 
 ## 0.25.2 — 2026-10-30
 

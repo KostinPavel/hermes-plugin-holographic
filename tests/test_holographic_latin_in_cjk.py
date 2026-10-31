@@ -148,3 +148,25 @@ def test_a_fact_is_counted_once_in_the_words_frequency(provider):
     _add(provider, "用户的猫叫小白")
     term = query_terms("keyring")[0]
     assert provider._retriever._doc_freqs([term]) == {term: 3}
+
+
+def test_the_gate_keeps_a_fact_counted_once(provider):
+    """Codex review on GitHub, its example: counted twice, `keyring保存密钥` (an FTS prefix match too) weighed less in a
+    two-fact store and fell below the gate for "keyring watchdog backend"."""
+    keyring = _add(provider, "keyring保存密钥")
+    watchdog = _add(provider, "The watchdog monitors the backend")
+    retriever = provider._retriever
+    candidates = [dict(f) for f in provider._store.list_facts(min_trust=0.0, limit=10)]
+    kept = {f["fact_id"] for f in retriever.relevant("keyring watchdog backend", candidates)}
+    assert kept == {keyring, watchdog}
+
+
+def test_a_long_run_without_latin_is_read_in_linear_time():
+    """Codex review on GitHub: the pattern that finds a letter against the script took a whole run of it at each
+    position, so a run of n characters with no letter after it took n² steps (9 ms for 1,000 characters)."""
+    import time
+    from hermes_plugin_holographic import retrieval
+    run = "用户保存密钥" * 5000  # 30,000 characters, no Latin letter
+    start = time.perf_counter()
+    assert retrieval._GLUED.search(run) is None
+    assert time.perf_counter() - start < 0.5
