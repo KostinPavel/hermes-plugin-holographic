@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Fixed
+- **A prompt to an assistant is not stored as a fact, and one already stored is not recalled**
+  (NousResearch/hermes-agent#66380). A mail bridge stored each inbound email as "You are Henry, … You received an email
+  at the AgentMail inbox and should handle it like a normal Henry request. EMAIL METADATA …", and recall brought every
+  one back, framed as stored data, as a live task in each later session for weeks. A text that opens by telling its
+  reader who it is ("You are …", «Ты — …») and hands it a task (an email, a message or a task it received, "should
+  handle it", an `EMAIL METADATA` block) is refused by `add`, `change`, `correct`, `update`, `auto_extract` and the
+  mirror of built-in memory, with a reason that says to store what is true instead; one written before is left out of
+  the recall before a turn (logged once), and `search` and `list` still show it, to change or forget. Either half alone
+  is no prompt: "You are allowed to push to main", "You are Mia, the family assistant", "You received a parcel from
+  DHL" are stored as before. English and Russian. Measured: none of the 7,065 strings of the test suite and benchmark
+  results is refused; of 13 second-person rules and facts written for the check, none. A separate check after
+  `_fact_problem`, whose decisions stay 0.22.0's (`tests/test_holographic_screen_speed.py`). Tests:
+  `tests/test_holographic_role_prompt.py`.
+
 ## 0.25.2 — 2026-10-30
 
 ### Fixed
