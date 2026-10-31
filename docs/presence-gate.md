@@ -18,7 +18,8 @@ to suppress repeats of injections the provider tracks.
 ## What the gate does
 
 A fact is suppressed only if **this key** injected it (`_injected`, keyed by `_revision(fact)`) **and** it is
-either visible in the current-generation snapshot or was injected after that snapshot was taken (grace window).
+either visible in the current-generation snapshot or was injected after that snapshot was taken (grace: that
+injection's FIRST expiry decision only - one turn, never more).
 Everything else follows today's rules: not-injected facts, other stores' `#N`, foreign blocks, prose — nothing
 changes for them.
 
@@ -28,14 +29,18 @@ changes for them.
   and suffixed as built — plus the turn. A list per revision, because `(by meaning)` depends on the retrieval
   path of that event: the same revision can be emitted with and without the suffix, and each event must match
   its own row.
-- A **compaction generation** counter advanced by `on_pre_compress`. With the gate on the hook does not clear
-  `_injected`; it marks the snapshot stale (condition 0).
-- `_snapshots[key] = (generation, visible)` filled by `sync_turn`: copy the live `messages` at the very start of
-  the method, parse **outside** the provider lock on that copy, publish the result under the lock with a
-  generation check (the maintainer's implementation note). The snapshot counts for the current generation only
-  if it shows it belongs there — it contains that compaction's summary row (`_compressed_summary = 1`,
-  core `state.db`). Otherwise it is stale and the gate falls back to today's behaviour; the same fallback covers
-  `messages=None`, an empty list and a sync that never ran.
+- A **compaction generation** counter advanced by `on_pre_compress`, plus a **state epoch** advanced whenever
+  tracked state is cleared (reset/rewind). With the gate on the hook does not clear `_injected`; it drops the
+  snapshot and advances the generation (condition 0).
+- `_snapshots[key] = {generation, epoch, turn, lines, pairs, summary}` filled by `sync_turn`: key, generation,
+  epoch and turn are captured **under the lock before the view is copied**, the copy is parsed **outside** the
+  lock, and the publish under the lock rejects the snapshot if any captured value moved - a compaction landing
+  mid-parse fails the check instead of publishing the old view as current (the maintainer's implementation
+  note). Past a compaction (`generation > 0`) the publish also requires a summary row this key has not been
+  credited with yet: the summary's **signature** (sha1 of the row text) must differ from the last one credited -
+  the previous compaction's row, or a paste of it, proves nothing. A held view is never replaced by an older
+  turn's. And a turn arriving with `messages=None` or `messages=[]` now **drops** the held snapshot outright:
+  empty turns prove nothing. Every rejection leaves the gate on today's window.
 
 ## Two zones, two representations — no cross-form search
 
@@ -46,6 +51,12 @@ changes for them.
 
 Neither form ever appears in the other zone, so nothing is searched in both versions; the gate never
 reconstructs a representation it did not produce itself.
+
+Provenance decides whether a row is read at all: a recall line counts only inside a `<memory-context>` block in
+a **user row's `api_content`** that carries the core's system note (a pasted block - in `api_content` or in
+`content` - carries none), and a pair counts only from a `tool` row whose `tool_name` is exactly `fact_store`.
+Anything unattributable (no `tool_name`, malformed JSON, an unknown block) is skipped: the gate fails open to
+today's window.
 
 - **`export` is out of scope**: its markdown carries a 500-char cut plus entity and source suffixes, so
   `(fact_id, content)` cannot be compared there. Documented, not matched (a cut→cut comparison would only
@@ -85,8 +96,9 @@ opt-in spill (`tools/hook_output_spill.py`, as the maintainer named it) replaces
 treating that as "not visible" would hide and re-show the facts on alternating turns. For recall specifically the
 call sits in `memory_manager.py` (`spill_if_oversized`, "Opt-in spill limits recall replayed with the user turn's
 api_content"): the base cap (default 10 000) applies only when the core's `memory.prefetch_spill_enabled` is
-true — otherwise it is raised to ×10 / ≥100 000. Order verified: `_remember` runs inside `prefetch`, the core
-spills after it returns. Test: no flip-flop.
+true — otherwise it is raised to ×10 / ≥100 000. Order verified: `_remember` runs inside `prefetch`, the core spills after it returns. Test: the gate's two
+verdicts equal the gate-off verdicts across a spilled preview - a fixed preview; a turn-by-turn flip-flop
+simulation is not built (say so rather than promise it).
 
 ## Gate placement
 
@@ -102,6 +114,12 @@ entity). With nothing visible the behaviour is exactly today's window, top-5 inc
 - A fact whose text contains the literal fence (`<memory-context>`) may be trimmed by the core's
   `sanitize_context`; its stored line then fails to appear — a rare edge whose only effect is a missed
   suppression.
+- System-prompt copies are **not** a visibility zone: MEMORY.md / USER.md sit in the system prompt in full, so a
+  fact stored in both places can be re-injected once its block leaves. Prose stays out of scope by the
+  maintainer's decision; whether a third zone is wanted belongs in #59, not in this PR.
+- A forged, never-before-seen `[CONTEXT COMPACTION ...]` text typed inside a compaction window could still pass
+  as that compaction's summary (no database flag arrives with a live message); a paste of an already-credited
+  row cannot.
 
 ## Tests (condition 7, plus design-specific ones)
 
@@ -119,7 +137,13 @@ Built the way the core builds context (`build_memory_context_block` wrapped into
 7. a line emitted with `(by meaning)` matches only its own row, never the suffix-less one;
 8. a legacy `\uXXXX` tool result still counts as visible (pre-#62 messages);
 9. `export` output does not count as visibility;
-10. `messages=None` / empty / stale snapshot — byte-identical behaviour, pinned.
+10. `messages=None` / `messages=[]` — the held snapshot is dropped (fail open to the window), pinned; a
+    snapshot whose generation moved during its parse never publishes;
+11. only a NEW summary row proves the new compaction: the already-credited one keeps the publish rejected;
+12. a pasted block (no core note, either field), malformed fact_store JSON and an id-only match are never
+    visibility; the same id with other content stays a different fact;
+13. grace holds the injection's first expiry decision only, then today's window decides again;
+14. fully suppressed: the off path returns the block (the candidate is retrievable), the on path returns `""`.
 
 ## Metrics
 
@@ -152,7 +176,8 @@ without `<memory-context>`, one 200 KB tool row); the output is aggregates only.
 | prefetch, snapshot present | 1.366 ms | 1.368 ms | ~0 (within noise) |
 
 Byte-identity without a snapshot: **True** (off == on per call). State per tracked injection: ~55 bytes of
-emitted-line text (512-revision cap ⇒ ≈28 KB worst case per session key). Against the core's budgets — a 5 s
+emitted-line text **on these sample lines** (real lines run longer, so this is a sample figure, not a bound;
+caps: 512 revisions x 8 emitted lines per revision, 16 sessions). Against the core's budgets — a 5 s
 sync drain, a 30 s background stall — 1000 rows add ≈0.04% of the drain bound. Two runs (30/40 pairs) reproduced
 every figure within ±0.5%. One machine, fixed inputs: a cost, reproducible in any CI — **not** a live-session
 p95.
@@ -162,8 +187,9 @@ p95.
 - **No after-numbers**: the gate has never run live; the counting script and protocol ship, the numbers come
   from one store's run with the flag on.
 - **No lag numbers**: with extraction off `sync_turn` leaves no trace in the store, replay was ruled out, and a
-  scheduler cannot be measured synthetically — the PR ships the instrumentation (late-sync event + the grace
-  `lag +N` counter); lower-bound readings follow a live run only.
+  scheduler cannot be measured synthetically. What ships is the grace counter `_presence_grace` (debug-logged
+  with the snapshot's turn); a late-sync event distinct from grace is **not implemented yet** (condition 3's
+  lag readings need it) and readings themselves follow a live run only.
 - Latency figures are fixed-input compute costs on one machine, not a live p95.
 
 ## Implementation checkpoints

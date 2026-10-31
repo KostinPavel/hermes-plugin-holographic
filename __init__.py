@@ -385,6 +385,7 @@ _RERANK_WIDEN = 4
 _PREFETCH_LINE_CHARS = 300
 _COUNT_FLUSH_AT = 25  # buffered recall counts are written in one go at this many, and at session boundaries
 _MAX_TRACKED_SESSIONS, _MAX_TRACKED_FACTS = 16, 512
+_MAX_EMITTED_PER_REV = 8  # emitted lines kept per revision: the renderings a session can show
 _MAX_OPEN_STORES = 16  # per-user stores kept open; the least recently used one is closed beyond this
 # Vectors made after a turn (search by meaning): at most this many requests and seconds (embedding_catch_up_seconds),
 # on the core's background worker; the last second is kept for taking the provider lock and storing what came back.
@@ -460,18 +461,25 @@ def _revision(fact: dict) -> tuple:
 _RE_CONTEXT_BLOCK = re.compile(r"<memory-context>(.*?)</memory-context>", re.S)
 _RE_OUR_LINE = re.compile(r"- #\d+ \[")
 _SUMMARY_MARK = "[CONTEXT COMPACTION"  # the core's compaction summary row as it reads in a live message
+_CORE_NOTE = "[System note: The following is recalled memory context"  # the fence memory_context.build_memory_context_block wraps recall in: a user's pasted block carries no note
 
 
-def _summary_row(messages: list) -> bool:
-    """Whether the view shows a compaction summary row: the marker column when the core passes it, or the summary
-    text itself (a live message list may not carry the database's `_compressed_summary`)."""
+def _summary_row(messages: list) -> str | None:
+    """Signature of the compaction summary row the view shows: the marker column when the core passes it, or the
+    summary text itself (a live message list may not carry `_compressed_summary`) - the first flagged row wins,
+    otherwise the earliest marker row (after a compaction the reference sits at the top). None when the view
+    shows none: freshness then proves no compaction and the gate falls back to today's window."""
+    flagged: str | None = None
+    earliest: str | None = None
     for m in messages:
-        if m.get("_compressed_summary") or m.get("compressed_summary"):
-            return True
         text = m.get("api_content") or m.get("content") or ""
-        if isinstance(text, str) and _SUMMARY_MARK in text:
-            return True
-    return False
+        if not isinstance(text, str) or not text:
+            continue
+        if m.get("_compressed_summary") or m.get("compressed_summary"):
+            flagged = flagged or hashlib.sha1(text.encode()).hexdigest()[:12]
+        elif _SUMMARY_MARK in text and earliest is None:
+            earliest = hashlib.sha1(text.encode()).hexdigest()[:12]
+    return flagged or earliest
 
 
 def _iter_fact_pairs(payload):
@@ -699,6 +707,9 @@ class HolographicMemoryProvider(MemoryProvider):
         # sync_turn, and the exact line each tracked injection emitted (filled only while the gate is on).
         self._generations: dict[str, int] = {}
         self._presence_grace = 0  # suppressions by a snapshot that predates the injection (lag measurement)
+        self._state_epoch = 0  # advances when tracked state is cleared: a snapshot captured earlier must not publish
+        self._summary_signature: dict[str, str] = {}  # key -> signature of the last summary row a publish credited
+        self._graced: dict[str, set] = {}  # key -> revisions whose grace fired once (issue #59: one turn, never more)
         self._snapshots: OrderedDict[str, dict] = OrderedDict()
         self._emitted: OrderedDict[str, OrderedDict] = OrderedDict()
         self._withheld: set = set()  # fact ids recall left out (_recall_problem), logged once each
@@ -1486,16 +1497,21 @@ class HolographicMemoryProvider(MemoryProvider):
         """Presence gate (issue #59): hold back what this key injected when the model can still read it - the exact
         line the injection emitted is whole in a `<memory-context>` block of the snapshot, or the fact's
         (fact_id, content) sits in one of our fact_store results there. Injected after the snapshot was taken:
-        absence there proves nothing, so the injection stays held until a snapshot catches up (condition 3, grace;
-        its lag is counted for the PR's measurement). No snapshot: today's window alone."""
+        absence there proves nothing, so grace holds that injection's FIRST expiry decision - one turn of extra
+        hold, never an indefinite one (condition 3); every later decision falls to visibility and today's window.
+        No snapshot: today's window alone."""
         snapshot = self._snapshots.get(session)
         if snapshot is None:
             return False
         if injected_turn > snapshot["turn"]:
-            self._presence_grace += 1
-            logger.debug("holographic: presence grace: injected turn %d after the snapshot turn %d (lag +%d)",
-                         injected_turn, snapshot["turn"], injected_turn - snapshot["turn"])
-            return True
+            graced = self._graced.setdefault(session, set())
+            if _revision(fact) not in graced:
+                graced.add(_revision(fact))
+                self._presence_grace += 1
+                logger.debug("holographic: presence grace: injected turn %d after the snapshot turn %d (lag +%d)",
+                             injected_turn, snapshot["turn"], injected_turn - snapshot["turn"])
+                return True
+            # grace spent for this revision: only an earlier emission's own line still counts as visibility below
         emitted = self._emitted.get(session, {}).get(_revision(fact), ())
         if any(line in snapshot["lines"] for line in emitted):
             return True
@@ -1507,12 +1523,15 @@ class HolographicMemoryProvider(MemoryProvider):
         rev = _revision(fact)
         facts[rev] = turn
         facts.move_to_end(rev)
+        self._graced.get(session, set()).discard(rev)  # a fresh injection may earn its one grace turn again
         if line is not None:  # presence gate: the exact line this event emitted (cut and suffixes included)
             emitted = self._emitted.setdefault(session, OrderedDict())
             self._emitted.move_to_end(session)
             seen = emitted.setdefault(rev, [])
             if line not in seen:
                 seen.append(line)
+            while len(seen) > _MAX_EMITTED_PER_REV:  # bound the list: the renderings a session can show
+                seen.pop(0)
         while len(facts) > _MAX_TRACKED_FACTS:
             dropped_rev, _ = facts.popitem(last=False)
             if session in self._emitted:
@@ -1523,6 +1542,8 @@ class HolographicMemoryProvider(MemoryProvider):
             self._emitted.pop(dropped, None)
             self._snapshots.pop(dropped, None)
             self._generations.pop(dropped, None)
+            self._summary_signature.pop(dropped, None)
+            self._graced.pop(dropped, None)
 
     @_serialized
     def recall_status(self):
@@ -1608,45 +1629,73 @@ class HolographicMemoryProvider(MemoryProvider):
                         turn_author=turn_author, snapshot=snapshot)
         self._catch_up_vectors()
 
+    def _presence_key(self, session_id: str = "") -> str:
+        return f"{session_id or self._session_id or ''}|{self._scope_key or ''}"
+
     def _snapshot_of(self, messages, *, session_id: str = "") -> dict:
-        """Presence gate (issue #59): a copy of the live messages, parsed OUTSIDE the provider lock - the list the
-        core hands us is what will be replayed, best-effort. Whole lines of our own shape (`- #N [`) inside
-        `<memory-context>` blocks (api_content, falling back to content), and (fact_id, content) pairs of our own
-        fact_store results (json.loads undoes any escaping, ensure_ascii included)."""
+        """Presence gate (issue #59): key, generation, state epoch and turn are captured UNDER the lock BEFORE the
+        view is copied, so a compaction landing mid-parse fails the publish check instead of publishing the old
+        view as current. The copy is parsed OUTSIDE the lock: whole lines of our own shape (`- #N [`) inside a
+        `<memory-context>` block the core fenced (its system note, in a user row's api_content - a pasted block
+        proves nothing), and (fact_id, content) pairs of this provider's fact_store results only (json.loads undoes
+        any escaping, ensure_ascii included). Anything malformed or unattributable is skipped: fail open."""
+        key = self._presence_key(session_id)
+        with self._op_lock:
+            generation = self._generations.get(key, 0)
+            epoch = self._state_epoch
+            turn = self._turns.get(key, 0)
         view = [dict(m) for m in messages if isinstance(m, dict)]
-        key = f"{session_id or self._session_id or ''}|{self._scope_key or ''}"
         lines: set = set()
         pairs: set = set()
         for m in view:
-            text = m.get("api_content") or m.get("content") or ""
-            if not isinstance(text, str):
-                continue
-            for block in _RE_CONTEXT_BLOCK.findall(text):
-                for line in block.split("\n"):
-                    line = line.rstrip("\r")
-                    if _RE_OUR_LINE.match(line):
-                        lines.add(line)
-            if m.get("role") == "tool" and m.get("tool_name") in (None, "fact_store"):
+            if m.get("role") == "user":
+                text = m.get("api_content")
+                if isinstance(text, str):
+                    for block in _RE_CONTEXT_BLOCK.findall(text):
+                        if _CORE_NOTE not in block:
+                            continue  # only blocks the core built carry its note; a user's paste does not
+                        for line in block.split("\n"):
+                            line = line.rstrip("\r")
+                            if _RE_OUR_LINE.match(line):
+                                lines.add(line)
+            if m.get("role") == "tool" and m.get("tool_name") == "fact_store":
+                text = m.get("content")
+                if not isinstance(text, str):
+                    continue
                 try:
                     payload = json.loads(text)
                     if isinstance(payload, str):  # a result wrapped as a JSON string parses once more
                         payload = json.loads(payload)
                 except ValueError:
-                    continue
+                    continue  # malformed result: no pairs, the window alone decides
                 for pair in _iter_fact_pairs(payload):
                     pairs.add(pair)
-        return {"key": key, "generation": self._generations.get(key, 0), "turn": self._turns.get(key, 0),
+        return {"key": key, "generation": generation, "epoch": epoch, "turn": turn,
                 "lines": lines, "pairs": pairs, "summary": _summary_row(view)}
 
     def _publish_snapshot(self, snapshot: dict) -> None:
-        """Presence gate, under the provider lock: the snapshot counts only while its generation is still current
-        (no compaction since it was taken) and - past any compaction - when it shows that compaction's summary row
-        (issue #59, condition 1). Anything else is stale and the gate falls back to today's window."""
+        """Presence gate, under the provider lock: the snapshot counts only while the generation and the state
+        epoch captured before its parse still hold, never as a replacement older than the held view, and - past
+        any compaction - only when it shows a summary row this key has not been credited with yet: the previous
+        compaction's row, or a paste of it, proves nothing (issue #59, condition 1). Anything else is stale and
+        the gate falls back to today's window."""
         key = snapshot["key"]
+        if snapshot["epoch"] != self._state_epoch:
+            return  # tracked state was cleared while the view was parsed
         if snapshot["generation"] != self._generations.get(key, 0):
             return
-        if snapshot["generation"] and not snapshot["summary"]:
-            return
+        held = self._snapshots.get(key)
+        if held is not None and snapshot["turn"] < held["turn"]:
+            return  # an older view never replaces the held one
+        summary = snapshot["summary"]
+        if snapshot["generation"]:
+            if summary is None:
+                return  # past a compaction the view must show a summary row
+            prior = self._summary_signature.get(key)
+            if prior is not None and summary == prior:
+                return  # already credited: not proof that THIS compaction's row landed
+        if summary is not None:
+            self._summary_signature[key] = summary
         self._snapshots[key] = snapshot
         self._snapshots.move_to_end(key)
         while len(self._snapshots) > _MAX_TRACKED_SESSIONS:
@@ -1657,8 +1706,14 @@ class HolographicMemoryProvider(MemoryProvider):
                    turn_author: dict | None = None, snapshot: dict | None = None) -> None:
         """Extraction per completed turn, filed under whoever wrote it. In user scope a turn by a bot, or an
         anonymous turn in a shared conversation, is skipped rather than stored in somebody's memory."""
-        if snapshot is not None:  # presence gate: publish first - recall is independent of extraction
-            self._publish_snapshot(snapshot)
+        if self._presence_gate:  # presence gate: publish first - recall is independent of extraction
+            if snapshot is not None:
+                self._publish_snapshot(snapshot)
+            else:
+                # A turn without messages proves nothing about the view: drop the held one rather than keep it in
+                # force (issue #59 - a fact must never stay held because an empty turn said nothing).
+                with self._op_lock:
+                    self._snapshots.pop(self._presence_key(session_id), None)
         if not self._extracting() or not user_content:
             return
         if self._scope != "user":  # profile: the shared store; chat / thread: this chat's store, never the shared one
@@ -1712,11 +1767,19 @@ class HolographicMemoryProvider(MemoryProvider):
         old = self._session_id
         self._session_id, self._recall_error = new_session_id, ""  # the last session's failure is not this one's
         if reset or rewound:
-            for key in [k for k in self._injected if k.split("|", 1)[0] in {old, new_session_id}]:
-                self._injected.pop(key, None)
-            for key in [k for k in self._turns if k.split("|", 1)[0] in {old, new_session_id}]:
-                self._turns.pop(key, None)
+            self._state_epoch += 1  # snapshots captured before this must never publish again (issue #59)
+            self._forget_presence({old, new_session_id})
         self._flush_counts()
+
+    def _forget_presence(self, sessions: set) -> None:
+        """All presence state for keys of the given sessions - injected turns, emitted lines, snapshots,
+        generations and summary attributions dropped together, so nothing survives a reset (issue #59)."""
+        for holder in (self._injected, self._emitted, self._snapshots):
+            for key in [k for k in holder if k.split("|", 1)[0] in sessions]:
+                holder.pop(key, None)
+        for plain in (self._turns, self._generations, self._summary_signature, self._graced):
+            for key in [k for k in plain if k.split("|", 1)[0] in sessions]:
+                plain.pop(key, None)
 
     @_serialized
     def on_memory_write(self, action: str, target: str, content: str, metadata: dict | None = None) -> None:
@@ -2097,6 +2160,15 @@ class HolographicMemoryProvider(MemoryProvider):
         for facts in self._injected.values():
             for key in [k for k in facts if k[0] == fact_id]:
                 facts.pop(key, None)
+        for events in self._emitted.values():  # a forgotten fact's text leaves the caches too (issue #59)
+            for rev in [r for r in events if r[0] == fact_id]:
+                events.pop(rev, None)
+        for graced in self._graced.values():
+            for rev in [r for r in graced if r[0] == fact_id]:
+                graced.discard(rev)
+        for snap in self._snapshots.values():
+            snap["pairs"] = {pair for pair in snap["pairs"] if pair[0] != fact_id}
+            snap["lines"] = {line for line in snap["lines"] if not line.startswith(f"- #{fact_id} ")}
         for pending in self._pending.values():
             pending.pop(fact_id, None)
 
