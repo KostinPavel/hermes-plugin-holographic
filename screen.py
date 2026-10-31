@@ -985,8 +985,8 @@ _STEP_VERBS = (r"(?:read|updated|edited|created|ran|run|executed|checked|fixed|w
                r"|deleted|removed|modified|changed|added|applied|committed|pushed|restarted|searched|looked\s+(?:at|through)"
                r"|reviewed|renamed|moved|copied|downloaded|uploaded|sent|replied|tested|refactored|patched|deployed"
                r"|cleaned\s+up)")
-_RE_OWN_STEP = re.compile(r"\bI(?:['’]ve|\s+have)?\s+(?:just\s+|now\s+|already\s+)?" + _STEP_VERBS + r"\b", re.IGNORECASE)
-_RE_FOR_YOU = re.compile(r"\bas\s+(?:you\s+)?(?:requested|asked|instructed)\b(?!\s+by\s+(?!you\b))"
+_RE_OWN_STEP = re.compile(r"\bI(?:['’]ve|\s+have)?\s+(?:(?:just|now|already)\s+)*" + _STEP_VERBS + r"\b", re.IGNORECASE)
+_RE_FOR_YOU = re.compile(r"\bas\s+(?:you\s+)?(?:requested|asked|instructed)\b(?!\s+by\s+(?!\s*you\b))"
                          r"|\bper\s+your\s+(?:request|instructions?)\b|\bas\s+you\s+(?:said|wanted)\b", re.IGNORECASE)
 
 
@@ -996,12 +996,14 @@ def _role_prompt(content: str) -> bool:
     return _RE_ROLE_OPEN.search(text) is not None and _RE_ROLE_TASK.search(text) is not None
 
 
-def _not_a_fact(content: str) -> str | None:
-    """Why *content*, though nothing in it is unsafe, is no fact to store (asked after _fact_problem), or None."""
+def _not_a_fact(content: str, person: bool = False) -> str | None:
+    """Why *content*, though nothing in it is unsafe, is no fact to store (asked after _fact_problem), or None.
+    *person*: the person wrote or said it (origin 'said' or 'confirmed', auto_extract), so "I" is the person and a
+    report of steps is theirs to keep ("I updated my passport in March as you asked"; Codex review)."""
     if _role_prompt(content):
         return ("reads like a prompt to an assistant (who it is and a task it received), not a fact: store what is true, "
                 "e.g. 'Henry handles the deal-flow inbox', and keep tasks out of memory")
-    if _RE_OWN_STEP.search(content or "") and _RE_FOR_YOU.search(content or ""):
+    if not person and _RE_OWN_STEP.search(content or "") and _RE_FOR_YOU.search(content or ""):
         return ("reads like a report of steps taken for the person, not a fact: store what is now true, e.g. 'The "
                 "config uses port 8080', or nothing")
     return None

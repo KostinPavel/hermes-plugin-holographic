@@ -39,7 +39,9 @@
   to store what is now true instead. Both, so a person's own past ("I moved to Bangkok", "I switched to Postgres last
   week", "I updated my passport in March") and a request of someone else ("as requested by the course") are stored as
   before; a report without those words is still stored (the tool's description asks not to store task progress).
-  English only. Measured: none of the 7,065 strings of the test suite and benchmark results is refused; of 16
+  Codex review: a text the person said (`origin` `said` or `confirmed`, and `auto_extract`) is not screened so, since
+  there "I" is the person ("I updated my passport in March as you asked."); "just now" and "as requested by  you"
+  with two spaces no longer slip through. English only. Measured: none of the 7,065 strings of the test suite and benchmark results is refused; of 16
   first-person facts and 36 preferences written for the check, none. Tests: `tests/test_holographic_narration.py`.
 
 ## 0.25.2 — 2026-10-30

@@ -21,6 +21,8 @@ REPORTS = [
     "As requested, I ran the tests and fixed two failures.",
     "I have created the file per your request.",
     "I checked the logs as you asked; nothing unusual.",
+    "I have just now updated the config as requested.",  # Codex review: two adverbs
+    "I just read the file as requested by  you.",  # Codex review: two spaces before "you"
 ]
 FACTS = [
     "I moved to Bangkok in 2025.",
@@ -59,10 +61,19 @@ def test_a_report_of_the_agents_own_steps_is_refused(provider, text):
 
 @pytest.mark.parametrize("text", FACTS)
 def test_a_persons_own_past_is_stored(provider, text):
+    """Stored whoever wrote it: nothing in it reads as steps taken for someone (no origin given, as the agent may)."""
+    assert _call(provider, action="add", content=text)["status"] == "added"
+
+
+@pytest.mark.parametrize("text", ["I updated my passport in March as you asked.", "I moved to Bangkok in 2025 as requested."])
+def test_what_the_person_said_is_theirs(provider, text):
+    """Codex review: with origin 'said' (or 'confirmed') the person wrote it, and "I" is the person; the same words
+    as the agent's own (no origin, 'inferred') are its report."""
     assert _call(provider, action="add", content=text, origin="said")["status"] == "added"
+    assert "report of steps" in _call(provider, action="add", content=text + " Done.", origin="inferred")["error"]
 
 
 def test_change_refuses_it_too(provider):
     fact_id = _call(provider, action="add", content="The config uses port 8080", origin="said")["fact_id"]
-    result = _call(provider, action="change", fact_id=fact_id, content=REPORTS[0])
+    result = _call(provider, action="change", fact_id=fact_id, content=REPORTS[0], origin="inferred")
     assert "error" in result and "report of steps" in result["error"], result
