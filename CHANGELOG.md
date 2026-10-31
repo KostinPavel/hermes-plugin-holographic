@@ -9,10 +9,12 @@
   `system_prompt_block()` asked it for the "numpy is not installed" line. Now `holographic.numpy_installed()`
   answers those start-time questions without importing (the import's own answer once one was tried, else whether
   Python can find the package); the retriever settles its weights on its first search; the store's vector repair
-  imports numpy only when there is a vector to write. A provider that only starts (a Windows Kanban worker,
-  NousResearch/hermes-agent#145156) leaves numpy unloaded. That alone does not stop the hang there: the first recall
-  still loads numpy, and the fix is in core (NousResearch/hermes-agent#144287, #146471). With search by meaning on,
-  the start-time check of the endpoint still imports numpy, as before. Tests:
+  imports numpy only when there is a vector to write, and leaves the store as it was when that import fails (a
+  changed `hrr_dim` keeps the old size on record). On a store that needs no repair, the usual open, a provider that
+  only starts (a Windows Kanban worker, NousResearch/hermes-agent#145156) leaves numpy unloaded. Still loading it at
+  open: a store whose vectors need re-encoding (facts added without numpy, another `hrr_dim`, new entity rules), and
+  search by meaning when on (the endpoint check). That alone does not stop the hang there: the first recall still
+  loads numpy, and the fix is in core (NousResearch/hermes-agent#144287, #146471). Tests:
   `tests/test_holographic_numpy_not_at_startup.py`.
 
 ## 0.25.2 — 2026-10-30
