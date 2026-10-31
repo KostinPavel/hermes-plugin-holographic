@@ -996,7 +996,7 @@ class HolographicMemoryProvider(MemoryProvider):
                          "reason, correction?: one short line}; useful (reason other) only when they say it was "
                          "right. Not every turn. It is your report, not their confirmation, and changes no fact: a "
                          "wrong fact still needs change/correct, with their say-so.")
-        if not hrr.has_numpy():
+        if not hrr.numpy_installed():  # asked without importing it: building the prompt must not load numpy
             lines.append("- numpy is not installed: keyword recall only (no structural 'related').")
         if self._scope == "user":
             lines.append("- Facts are kept per user: what one person tells you is not recalled for another.")
