@@ -222,8 +222,10 @@ _EXTRACT_CATEGORIES = (
 # prefer this one" like whatever the assistant just said, and stored they say nothing on their own. Their object is
 # "it", or this / that / these / those and at most one word, and the clause ends there (a degree word may follow:
 # "better", "a lot"). "I like it when …", "I like that you …" and "I use this laptop for work" go on, and are kept;
-# so are "them", «его», «их»: more often people ("I love them, my kids are my everything") than a proposal.
-_REACTION_END = r'(?:\s+(?:better|more|most|best|too|a\s+lot|very\s+much|so\s+much))*\s*(?:[,.!;:…)]|$)'
+# so are "them", «его», «их»: more often people ("I love them, my kids are my everything") than a proposal. The clause
+# ends at a mark, a dash or an emoji ("I like that 👍"), not at a dot inside a name ("this Node.js library"; Codex review).
+_REACTION_END = (r'(?:\s+(?:better|more|most|best|too|a\s+lot|very\s+much|so\s+much))*\s*'
+                 r'(?:[,;:…)—–]|[.!](?!\w)|-(?=\s)|[☀-➿\U0001f300-\U0001faff]|$)')
 _RE_REACTION = re.compile(
     r'\bI\s+(?:really\s+|also\s+|just\s+|totally\s+|do\s+)?(?:prefer|like|love|use)\s+'
     r'(?:it|(?:this|that|these|those)(?:\s+[^\W\d_]+)?)' + _REACTION_END +

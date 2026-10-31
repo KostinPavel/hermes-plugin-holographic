@@ -26,7 +26,9 @@
   proposal: "I love them, my kids are my everything"), and "I always check git status before committing" — a habit
   said as one, which is what the "always / never / usually" pattern is there for. Measured: of the 91 sentences of the
   test suite and benchmark results the patterns take, none of the earlier ones is skipped; of 36 preferences written
-  for the check, none. Tests: `tests/test_holographic_extract_reactions.py`.
+  for the check, none. Codex review: the reply also ends at a dash or an emoji ("I like that 👍", "I love it — sounds
+  good"), and not at a dot inside a name ("I use this Node.js library for all my projects." is stored). Tests:
+  `tests/test_holographic_extract_reactions.py`.
 
 ### Documented
 - **`auto_extract` runs after each turn.** README and the setup description said "at session end and before context

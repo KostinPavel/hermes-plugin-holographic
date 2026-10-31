@@ -31,7 +31,9 @@ REACTIONS = [
     "I love it!",
     "Great, I like this approach better.",
     "I prefer this one, let's go with it",
-    "Yes I really like that idea",
+    "Yes, I like that idea",
+    "I like that 👍",  # Codex review: an emoji or a dash ends the reply as a comma does
+    "I love it — sounds good",
     "I like those a lot, thanks",
     "Ок, я люблю это",
 ]
@@ -51,6 +53,7 @@ PREFERENCES = [
     "I like that you ask before deleting files",  # "that" as a conjunction: a clause follows
     "I use this laptop for work and the desktop for games",
     "I like Node.js a lot",
+    "I use this Node.js library for all my projects.",  # Codex review: a dot inside a name ends nothing
     "Я люблю это кафе на Джомтьене за тишину",
     "I love them, my kids are my everything",  # "them", «его»: people more often than a proposal
     "Я люблю его, это мой брат",
