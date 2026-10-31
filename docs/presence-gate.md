@@ -114,9 +114,10 @@ entity). With nothing visible the behaviour is exactly today's window, top-5 inc
 - A fact whose text contains the literal fence (`<memory-context>`) may be trimmed by the core's
   `sanitize_context`; its stored line then fails to appear — a rare edge whose only effect is a missed
   suppression.
-- System-prompt copies are **not** a visibility zone: MEMORY.md / USER.md sit in the system prompt in full, so a
-  fact stored in both places can be re-injected once its block leaves. Prose stays out of scope by the
-  maintainer's decision; whether a third zone is wanted belongs in #59, not in this PR.
+- System-prompt copies are **not** a visibility zone - although facts from MEMORY.md can be there and in the
+  plugin's store at the same time: MEMORY.md / USER.md sit in the system prompt in full, so such a fact can be
+  re-injected once its block leaves. Prose stays out of scope by the maintainer's decision; whether a third
+  zone is wanted belongs in #59, not in this PR.
 - A forged, never-before-seen `[CONTEXT COMPACTION ...]` text typed inside a compaction window could still pass
   as that compaction's summary (no database flag arrives with a live message); a paste of an already-credited
   row cannot.
