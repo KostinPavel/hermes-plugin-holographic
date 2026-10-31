@@ -54,6 +54,8 @@ PREFERENCES = [
     "I use this laptop for work and the desktop for games",
     "I like Node.js a lot",
     "I use this Node.js library for all my projects.",  # Codex review: a dot inside a name ends nothing
+    "I use this Node.js package for every backend.",
+    "I prefer this format: JSON with two-space indentation.",  # Codex review on GitHub: a colon explains
     "Я люблю это кафе на Джомтьене за тишину",
     "I love them, my kids are my everything",  # "them", «его»: people more often than a proposal
     "Я люблю его, это мой брат",

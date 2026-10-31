@@ -38,7 +38,8 @@
   said as one, which is what the "always / never / usually" pattern is there for. Measured: of the 91 sentences of the
   test suite and benchmark results the patterns take, none of the earlier ones is skipped; of 36 preferences written
   for the check, none. Codex review: the reply also ends at a dash or an emoji ("I like that 👍", "I love it — sounds
-  good"), and not at a dot inside a name ("I use this Node.js library for all my projects." is stored). Tests:
+  good"), and not at a dot inside a name ("I use this Node.js library for all my projects." is stored). Codex
+  review on GitHub: nor at a colon ("I prefer this format: JSON with two-space indentation." is stored). Tests:
   `tests/test_holographic_extract_reactions.py`.
 
 ### Documented
