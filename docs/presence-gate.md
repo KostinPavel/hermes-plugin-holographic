@@ -107,8 +107,9 @@ entity). With nothing visible the behaviour is exactly today's window, top-5 inc
 
 Built the way the core builds context (`build_memory_context_block` wrapped into `api_content`):
 
-1. compacted head, kept tail — the tail's fact is not re-injected, the head's one is; **this test fails on
-   current `main`** (stated in the PR);
+1. compacted head, kept tail — the tail's fact is not re-injected, the head's one is; its off-path branch runs
+   main's logic and pins the duplicate (`out[False] == (True, True)`); the file itself needs this branch's
+   `_remember(..., line)` signature, so it does not run on `main` as-is (stated in the PR);
 2. another provider's block and a user message containing `#5 [` — no effect;
 3. two `user`-scope stores with the same fact id — independent;
 4. a revised fact — old text visible does not suppress the new revision (`test_a_reworded_fact_is_recalled_again`

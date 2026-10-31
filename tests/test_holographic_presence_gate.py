@@ -1,8 +1,8 @@
 """Block I of the presence gate (issue #59): the state around it. Off by default and byte-identical while off;
 with the flag on a compaction keeps `_injected` and marks the snapshot stale instead (condition 0); the snapshot
 is parsed outside the provider lock and published only for the current compaction generation, past any compaction
-with that compaction's summary row in view (condition 1). The gate decision itself lives in `_not_recent` and
-lands with Block II."""
+with that compaction's summary row in view (condition 1). The gate decision itself lives in `_not_recent` — the
+single choke point all four call sites share (condition 5)."""
 
 from __future__ import annotations
 
