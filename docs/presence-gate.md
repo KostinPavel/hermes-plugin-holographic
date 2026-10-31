@@ -19,7 +19,7 @@ to suppress repeats of injections the provider tracks.
 
 A fact is suppressed only if **this key** injected it (`_injected`, keyed by `_revision(fact)`) **and** it is
 either visible in the current-generation snapshot or was injected after that snapshot was taken (grace: that
-injection's FIRST expiry decision only - one turn, never more).
+injection's first expiry decision, answered for ONE prefetch - revision + turn keyed, never more).
 Everything else follows today's rules: not-injected facts, other stores' `#N`, foreign blocks, prose — nothing
 changes for them.
 
@@ -37,10 +37,12 @@ changes for them.
   lock, and the publish under the lock rejects the snapshot if any captured value moved - a compaction landing
   mid-parse fails the check instead of publishing the old view as current (the maintainer's implementation
   note). Past a compaction (`generation > 0`) the publish also requires a summary row this key has not been
-  credited with yet: the summary's **signature** (sha1 of the row text) must differ from the last one credited -
-  the previous compaction's row, or a paste of it, proves nothing. A held view is never replaced by an older
-  turn's. And a turn arriving with `messages=None` or `messages=[]` now **drops** the held snapshot outright:
-  empty turns prove nothing. Every rejection leaves the gate on today's window.
+  credited with yet: the summary's **signature** (sha1 of the row text) must not be one credited to an EARLIER
+  generation - within the generation that first showed it the row keeps its place at the top of the context, so
+  the same signature must keep publishing (round 2: crediting it once froze the gate on that first view); the
+  previous compaction's row, or a paste of it, proves nothing. A turn with `messages=None` / `messages=[]`, a
+  view over the line/pair caps (1024 each) or any other rejection now **drops** the held snapshot outright:
+  nothing unpublishable keeps holding, and every rejection falls back to today's window.
 
 ## Two zones, two representations — no cross-form search
 
@@ -80,12 +82,12 @@ Consequence: the gate never needs to know which characters are escaped anywhere.
 
 The cap is `_PREFETCH_LINE_CHARS = 300`; a longer line becomes `flat[:limit - 1] + "…"` — 299 characters and an
 ellipsis. The 299 is derived (`limit - 1`), not stored: no second constant is introduced, so the cap cannot
-drift from its cut. Presence code and test arithmetic derive the boundary from `_PREFETCH_LINE_CHARS` /
-`_one_line`; exactly one pinned test asserts `299 + "…"` so a silent cap change fails CI.
+drift from its cut. Presence code derives the boundary from `_PREFETCH_LINE_CHARS` / `_one_line`; no exact-digit test pins
+`299 + "…"` - the cap is covered by behaviour only, not CI-pinned (do not read it as pinned).
 
 **Cut-line policy — option (a)** (the maintainer's pick-one): compare the stored cut line against the cut form
 of the revision in question; two revisions differing only past the cap share one line, which yields a rare false
-"visible" — accepted, documented and tested. Option (b) (a cut line proves nothing) is rejected because every
+"visible" — accepted and documented; the rare false-"visible" case is not separately pinned. Option (b) (a cut line proves nothing) is rejected because every
 fact longer than 299 characters would then never suppress, i.e. the very duplicates this gate exists to stop.
 
 ## Spill policy
@@ -134,29 +136,38 @@ Built the way the core builds context (`build_memory_context_block` wrapped into
 4. a revised fact — old text visible does not suppress the new revision (`test_a_reworded_fact_is_recalled_again`
    stays meaningful);
 5. prefetch before the snapshot arrives — grace window, not silence;
-6. spilled block — the policy above, no flip-flop;
+6. spilled block — the policy above; the gate's two verdicts equal gate-off's for the fixed preview (a turn-by-turn flip-flop simulation is not built);
 7. a line emitted with `(by meaning)` matches only its own row, never the suffix-less one;
 8. a legacy `\uXXXX` tool result still counts as visible (pre-#62 messages);
-9. `export` output does not count as visibility;
+9. `export` output does not count as visibility (documented; no presence test pins it yet);
 10. `messages=None` / `messages=[]` — the held snapshot is dropped (fail open to the window), pinned; a
     snapshot whose generation moved during its parse never publishes;
-11. only a NEW summary row proves the new compaction: the already-credited one keeps the publish rejected;
-12. a pasted block (no core note, either field), malformed fact_store JSON and an id-only match are never
-    visibility; the same id with other content stays a different fact;
-13. grace holds the injection's first expiry decision only, then today's window decides again;
-14. fully suppressed: the off path returns the block (the candidate is retrievable), the on path returns `""`.
+11. past a compaction an UNSEEN summary signature passes (one credited to an earlier generation is refused),
+    while the same generation's row keeps publishing - a second view of one generation refreshes the snapshot;
+12. a pasted block (no core note, either field), malformed fact_store JSON, an unhashable `fact_id` and an
+    id-only match are never visibility; the same id with other content stays a different fact. Pinned known
+    limit: a pasted COMPLETE block, note included, is text, not provenance - it counts (documented);
+13. grace answers the injection's first expiry decision of ONE prefetch - keyed (revision, turn), so every call site of that turn gets the same answer - then today's window decides again;
+14. fully suppressed: the off path returns the block (the candidate is retrievable), the on path returns `""`;
+15. round 2: ANY rejected publish drops the held view; a forget advances the state epoch (an in-flight view of
+    forgotten text never publishes); the grace answer is stable across all call sites of one prefetch;
+16. eviction pins (revision -> grace mark, session -> sync origin, snapshot -> signature + generation), the
+    line/pair caps (an oversized view publishes nothing), and a duplicate_count unit test (suffix stability,
+    cut non-merge, live-only wording).
 
 ## Metrics
 
-Definitions: a duplicate = a `(session, fact_id)` key whose fact shows in ≥2 rows live now (`active = 1`),
-lines read structurally (`<memory-context>`, our `- #N [trust]` shape only). Snapshot of this store, 2026-10-30:
-**115 keys in 11 sessions** (101 in 10 the same morning — the store grew); of them **5 row-byte-identical twins
-(kept in, per the maintainer)**, **106 identical line text**, **9 differing text under one `#N`** (a revision or
-two stores sharing an id — the replayed row does not name its store, so pairs are grouped by text and the 9 stay
-a labeled residual); cause between first and last live row: **8 compaction-preceded, 107 other** — window expiry
-in uncompacted context dominates ("preceded by", not "caused by"). This is a structural proxy — rows live at
-once, not observed re-injections — and the cause split is an operational signature (a summary row between the
-live rows), not causation. The **after** number needs a live run with the gate on: the counting script and the
+Definitions (round 2): a duplicate = a `(session, fact_id, revision text)` key with ≥2 rows live now
+(`active = 1`); the revision text is the line's text after `]` with the recall suffix stripped, cut renderings
+excluded (a cut carries no stable text - it can neither split nor merge a revision). Differing wording under one
+`#N` is **not** a duplicate - it is counted separately. Snapshot of this store, 2026-10-31 (read-only, one
+transaction): **114 duplicate keys in 10 sessions**, of them **5 row-byte-identical twins (kept in, per the
+maintainer)**; cause between first and last live row (compaction rows scoped to the key's own session): **0
+compaction-preceded, 114 other** - the previous cross-session reading (8 compaction) was false attribution from
+another session's compaction between the ids; **9 facts with more than one live revision text** (information,
+not duplicates). This is a structural proxy - rows live at once, not observed re-injections - and the cause
+split is an operational signature (a summary row between the live rows), not causation. The **after** number
+needs a live run with the gate on: the counting script and the
 protocol ship with the PR, and the numbers follow from that run on one store — the maintainer's decision input
 (condition 8).
 
@@ -188,9 +199,10 @@ p95.
 - **No after-numbers**: the gate has never run live; the counting script and protocol ship, the numbers come
   from one store's run with the flag on.
 - **No lag numbers**: with extraction off `sync_turn` leaves no trace in the store, replay was ruled out, and a
-  scheduler cannot be measured synthetically. What ships is the grace counter `_presence_grace` (debug-logged
-  with the snapshot's turn); a late-sync event distinct from grace is **not implemented yet** (condition 3's
-  lag readings need it) and readings themselves follow a live run only.
+  scheduler cannot be measured synthetically. What ships: `_presence_grace` (grace firings) plus
+  `_presence_lag_events` / `_presence_lag_turns` - labeled honestly as **gaps between consecutive sync starts**
+  (every sync is bound to its origin turn), NOT a worker-lateness measurement: they cannot tell a late worker
+  from a missing one, and readings still follow a live run.
 - Latency figures are fixed-input compute costs on one machine, not a live p95.
 
 ## Implementation checkpoints

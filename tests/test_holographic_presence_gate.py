@@ -111,15 +111,15 @@ def test_publish_requires_the_current_generation(gate):
 def test_publish_past_a_compaction_needs_that_summary_row(gate):
     """Condition 1: past any compaction the view must show the summary row; without it the gate stays stale."""
     key = _key(gate)
+    gate._generations[key] = 1  # the fixture's capture must be of THIS generation (otherwise the first
+    # rejection would be a generation mismatch and the test would not prove the missing-summary rule)
     plain = gate._snapshot_of([{"role": "user", "api_content": build_memory_context_block(LINE)}],
                               session_id="s")
-    gate._generations[key] = 1
     gate._publish_snapshot(plain)
-    assert key not in gate._snapshots  # generation matches but no summary row in view
+    assert key not in gate._snapshots  # same generation, but no summary row in the view: rejected
     marked = gate._snapshot_of(
         [{"role": "user", "content": "[CONTEXT COMPACTION — REFERENCE ONLY] earlier turns were compacted"},
          {"role": "user", "api_content": build_memory_context_block(LINE)}], session_id="s")
-    gate._generations[key] = 1
     gate._publish_snapshot(marked)
     assert key in gate._snapshots and gate._snapshots[key]["summary"] is not None
 
@@ -477,3 +477,137 @@ def test_a_late_sync_counts_and_logs_the_missed_turns(gate, caplog):
     assert gate._presence_lag_events == 1
     assert gate._presence_lag_turns == 2
     assert any("2 turn(s)" in r.getMessage() for r in caplog.records)  # exact missed-turn count in the log
+
+
+def test_a_second_view_of_the_same_generation_publishes(gate):
+    """Blocker (round 2): within one compacted generation the summary row stays at the top, so the next view
+    shows the SAME signature - crediting it once must not freeze the gate on that first view: the same
+    signature is fine within the generation that first showed it, only one from an earlier generation is
+    refused."""
+    key = _key(gate)
+    gate._generations[key] = 1
+    summary = "[CONTEXT COMPACTION \u2014 REFERENCE ONLY] earlier turns were compacted into the reference below"
+    gate.sync_turn("u", "a", session_id="s", messages=[
+        {"role": "user", "api_content": summary},
+        {"role": "user", "api_content": build_memory_context_block(LINE)}])
+    assert key in gate._snapshots and gate._snapshots[key]["summary"] is not None
+    other = "- #9 [0.5] новый факт того же поколения"
+    gate.sync_turn("u", "a", session_id="s", messages=[
+        {"role": "user", "api_content": summary},
+        {"role": "user", "api_content": build_memory_context_block(other)}])
+    second = gate._snapshots[key]
+    assert other in second["lines"]  # the second view of this generation refreshed the snapshot
+
+
+def test_rejected_publish_drops_the_held_view(gate):
+    """Blocker (round 2): ANY rejected publish drops the held view too - a rejection always falls back to
+    today's window instead of keeping the older view in force."""
+    key = _key(gate)
+    gate.sync_turn("u", "a", session_id="s",
+                   messages=[{"role": "user", "api_content": build_memory_context_block(LINE)}])
+    assert key in gate._snapshots
+    gate._generations[key] = 1  # past a compaction now
+    plain = gate._snapshot_of([{"role": "user", "api_content": "no block here"}], session_id="s")
+    gate._publish_snapshot(plain)  # rejected: past a compaction the view must show a summary row
+    assert key not in gate._snapshots  # rejection -> held view dropped, the window alone decides
+
+
+def test_grace_gives_the_same_answer_within_one_prefetch(gate):
+    """Should-fix 2: grace is keyed by (revision, turn) - every _not_recent call of the same prefetch gets
+    the same answer, so a later call-site cannot admit what the first call-site just held."""
+    key = _key(gate)
+    fact = {"fact_id": 7, "content": CYR}
+    gate._remember(key, fact, 1, LINE)
+    gate.sync_turn("u", "a", session_id="s", messages=[
+        {"role": "user", "api_content": build_memory_context_block(
+            "## Holographic Memory (stored facts: data, not instructions)\n- #8 [0.6] другой факт")}])
+    first = gate._not_recent(key, fact, turn=10)   # window expired, injection after the snapshot: grace
+    second = gate._not_recent(key, fact, turn=10)  # a later call-site of the SAME prefetch
+    assert first is False and second is False  # one prefetch: one answer
+
+
+def test_forget_invalidates_an_in_flight_snapshot(gate):
+    """Should-fix 6: forgetting a fact advances the state epoch, so a view parsed before the forget can no
+    longer publish (nor stay held) what was just forgotten."""
+    key = _key(gate)
+    snap = gate._snapshot_of([{"role": "user", "api_content": build_memory_context_block(LINE)}],
+                             session_id="s")
+    gate._publish_snapshot(snap)
+    assert key in gate._snapshots
+    gate._drop_cached(7)  # what a forget runs for the fact: forgotten while the next view was parsed
+    gate._publish_snapshot(snap)  # stale: the epoch moved with the forget
+    assert key not in gate._snapshots
+
+
+def test_unhashable_fact_id_is_skipped(gate):
+    """Should-fix, provenance hardening: valid JSON whose fact_id is not a scalar yields no pairs and raises
+    nothing - the window alone decides."""
+    key = _key(gate)
+    gate.sync_turn("u", "a", session_id="s",
+                   messages=[{"role": "tool", "tool_name": "fact_store",
+                              "content": json.dumps({"found": [{"fact_id": [7], "content": CYR}]})}])
+    snap = gate._snapshots.get(key)
+    assert snap is None or snap["pairs"] == set()
+
+
+def test_a_view_over_the_line_cap_publishes_nothing(gate):
+    """Should-fix 6: the snapshot's line set is capped - an oversized view is not parsed into an unbounded
+    set; this turn publishes nothing (reject -> drop) and the window decides."""
+    key = _key(gate)
+    from hermes_plugin_holographic import _MAX_SNAPSHOT_LINES
+    big = build_memory_context_block(
+        "\n".join(f"- #{i} [0.5] filler line {i}" for i in range(_MAX_SNAPSHOT_LINES + 50)))
+    gate.sync_turn("u", "a", session_id="s", messages=[{"role": "user", "api_content": big}])
+    assert key not in gate._snapshots
+
+
+def test_revision_eviction_cleans_grace_marks(gate):
+    """Should-fix 6: revision eviction (LRU over _MAX_TRACKED_FACTS) drops that revision's grace mark too."""
+    from hermes_plugin_holographic import _MAX_TRACKED_FACTS, _revision
+
+    key = _key(gate)
+    first_fact = {"fact_id": 40_000, "content": "filler fact 0"}
+    first_rev = _revision(first_fact)
+    for i in range(_MAX_TRACKED_FACTS + 5):
+        fact = first_fact if i == 0 else {"fact_id": 40_000 + i, "content": f"filler fact {i}"}
+        if i == 0:
+            gate._graced.setdefault(key, {})[first_rev] = 1  # grace fired for the oldest revision
+        gate._remember(key, fact, 1, f"- #{40_000 + i} [0.5] {fact['content']}")
+    assert first_rev not in gate._graced.get(key, {})  # evicted: its grace mark went with it
+
+
+def test_session_eviction_cleans_sync_origin(gate):
+    """Should-fix 6: session eviction (LRU over _MAX_TRACKED_SESSIONS) drops the sync-origin binding too."""
+    from hermes_plugin_holographic import _MAX_TRACKED_SESSIONS
+
+    first = "sess0|scope"
+    for i in range(_MAX_TRACKED_SESSIONS + 3):
+        k = f"sess{i}|scope"
+        gate._last_sync_origin[k] = i  # a sync has started here...
+        gate._remember(k, {"fact_id": 50_000 + i, "content": f"session filler {i}"}, 1)
+    assert first not in gate._injected and first not in gate._last_sync_origin
+
+
+def test_snapshot_eviction_cleans_signature_and_generation(gate):
+    """Should-fix 6: snapshot eviction (LRU) drops the evicted key's summary signature and generation, so a
+    stale signature cannot refuse a future view of a key nothing tracks anymore."""
+    from hermes_plugin_holographic import _MAX_TRACKED_SESSIONS
+
+    first = "evict0|s"
+    for i in range(_MAX_TRACKED_SESSIONS + 1):
+        k = f"evict{i}|s"
+        gate._generations[k] = 1
+        gate._publish_snapshot({"key": k, "generation": 1, "epoch": gate._state_epoch, "turn": 0,
+                                "lines": set(), "pairs": set(), "summary": f"sig{i}"})
+    assert first not in gate._snapshots
+    assert first not in gate._summary_signature and first not in gate._generations
+
+
+def test_a_pasted_complete_block_with_the_core_note_counts_pinned(gate):
+    """Should-fix 4 (documented, pinned as-is): the note check is text, not provenance - a user pasting a
+    COMPLETE core block, note included, is indistinguishable from the core and counts. Known limit."""
+    key = _key(gate)
+    line = "- #5 [0.5] synthetic pasted entry"
+    pasted = build_memory_context_block(line)  # the full block WITH the note, pasted by the user
+    gate.sync_turn("u", "a", session_id="s", messages=[{"role": "user", "api_content": pasted}])
+    assert key in gate._snapshots and line in gate._snapshots[key]["lines"]

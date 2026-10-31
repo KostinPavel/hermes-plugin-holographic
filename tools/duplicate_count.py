@@ -31,6 +31,7 @@ from pathlib import Path
 
 _BLOCK = re.compile(r"<memory-context>(.*?)</memory-context>", re.S)
 _LINE = re.compile(r"^- #(\d+) \[[^\]]*\] (.*)$", re.M)
+_SUFFIX = re.compile(r" \(recorded [^)]*\)$")  # the recall suffix is presentation, not the revision
 
 
 def _default_db() -> Path:
@@ -76,8 +77,12 @@ def main() -> int:
         for block in _BLOCK.findall(api):
             for fid, text in _LINE.findall(block):
                 text = text.strip()
+                if text.endswith("(cut)"):
+                    continue  # a cut rendering carries no stable revision text: it must never merge
+                text = _SUFFIX.sub("", text)  # suffix changes do not split one revision either
                 injections[(sess, int(fid), text)].append((rid, active, api))
-                texts_per_fact[(sess, int(fid))].add(text)
+                if active == 1:  # the wording info is over LIVE rows only (its label says so)
+                    texts_per_fact[(sess, int(fid))].add(text)
 
     # Primary grain is the KEY: one revision with >=2 live rows is a duplicate. Twins and cause are per key;
     # cause consults compaction rows of the SAME session only (another session's compaction between two ids

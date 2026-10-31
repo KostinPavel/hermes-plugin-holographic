@@ -98,19 +98,24 @@ def _rows(n: int) -> list:
     return rows
 
 
-def _paired(run_off, run_on, runs: int, warmup: int = 3):
-    """Interleaved off/on on one process; the median of paired differences is the gate's added cost."""
+def _paired(run_off, run_on, runs: int, setup_off=None, setup_on=None, warmup: int = 3):
+    """Interleaved off/on on one process; the median of paired differences is the gate's added cost.
+    Setup (state reset, gate flag, arming) runs OUTSIDE the timed window - only the work under test is
+    measured, and both phases start from identical state (review round 2)."""
+    def _call(fn, setup):
+        if setup is not None:
+            setup()
+        t0 = time.perf_counter()
+        fn()
+        return (time.perf_counter() - t0) * 1000
+
     for _ in range(warmup):
-        run_off()
-        run_on()
+        _call(run_off, setup_off)
+        _call(run_on, setup_on)
     off, on = [], []
     for _ in range(runs):
-        t0 = time.perf_counter()
-        run_off()
-        off.append((time.perf_counter() - t0) * 1000)
-        t0 = time.perf_counter()
-        run_on()
-        on.append((time.perf_counter() - t0) * 1000)
+        off.append(_call(run_off, setup_off))
+        on.append(_call(run_on, setup_on))
     return off, on
 
 
@@ -152,17 +157,21 @@ def main() -> int:
         for n in (10, 100, 1000):
             msgs = _rows(n)
 
-            def run_off(msgs=msgs):
+            def setup_off():
                 _reset_presence(p)
                 p._presence_gate = False
+
+            def setup_on():
+                _reset_presence(p)
+                p._presence_gate = True
+
+            def run_off(msgs=msgs):
                 p.sync_turn("u", "a", session_id="s", messages=msgs)
 
             def run_on(msgs=msgs):
-                _reset_presence(p)
-                p._presence_gate = True
                 p.sync_turn("u", "a", session_id="s", messages=msgs)
 
-            off, on = _paired(run_off, run_on, runs)
+            off, on = _paired(run_off, run_on, runs, setup_off, setup_on)
             diff = [b - a for a, b in zip(off, on)]
             rows_out.append((f"sync rows={n}", off, on, diff))
 
@@ -175,20 +184,24 @@ def main() -> int:
                  "summary": None})),
         )
         for i, (name, arm) in enumerate(scenarios):
-            arm()  # priming call; run_on re-arms after every reset, run_off measures the no-state baseline
 
-            def run_off(arm=arm, qi=i, key=key):
+            def setup_off(arm=arm, key=key):
                 _reset_presence(p, key)
                 p._presence_gate = False
-                _prefetch(p, _QUERIES[qi % len(_QUERIES)])
+                arm()  # both phases arm: identical state, only the gate flag differs (review round 2)
 
-            def run_on(arm=arm, qi=i, key=key):
+            def setup_on(arm=arm, key=key):
                 _reset_presence(p, key)
                 p._presence_gate = True
                 arm()
+
+            def run_off(qi=i):
                 _prefetch(p, _QUERIES[qi % len(_QUERIES)])
 
-            off, on = _paired(run_off, run_on, runs)
+            def run_on(qi=i):
+                _prefetch(p, _QUERIES[qi % len(_QUERIES)])
+
+            off, on = _paired(run_off, run_on, runs, setup_off, setup_on)
             diff = [b - a for a, b in zip(off, on)]
             rows_out.append((name, off, on, diff))
     finally:

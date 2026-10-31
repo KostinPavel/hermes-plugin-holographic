@@ -385,7 +385,9 @@ _RERANK_WIDEN = 4
 _PREFETCH_LINE_CHARS = 300
 _COUNT_FLUSH_AT = 25  # buffered recall counts are written in one go at this many, and at session boundaries
 _MAX_TRACKED_SESSIONS, _MAX_TRACKED_FACTS = 16, 512
-_MAX_EMITTED_PER_REV = 8  # emitted lines kept per revision: the renderings a session can show
+_MAX_EMITTED_PER_REV = 8
+_MAX_SNAPSHOT_LINES = 1024  # a snapshot's line set is bounded: over the cap this turn publishes nothing
+_MAX_SNAPSHOT_PAIRS = 1024  # (reject -> drop -> today's window) instead of keeping an unbounded set  # emitted lines kept per revision: the renderings a session can show
 _MAX_OPEN_STORES = 16  # per-user stores kept open; the least recently used one is closed beyond this
 # Vectors made after a turn (search by meaning): at most this many requests and seconds (embedding_catch_up_seconds),
 # on the core's background worker; the last second is kept for taking the provider lock and storing what came back.
@@ -485,7 +487,8 @@ def _summary_row(messages: list) -> str | None:
 def _iter_fact_pairs(payload):
     """(fact_id, content) of every fact object inside a plugin tool result, at any nesting."""
     if isinstance(payload, dict):
-        if "fact_id" in payload and isinstance(payload.get("content"), str):
+        if ("fact_id" in payload and isinstance(payload.get("content"), str)
+                and isinstance(payload["fact_id"], (int, str))):  # a scalar id: unhashable ids yield nothing
             yield payload["fact_id"], payload["content"]
         for value in payload.values():
             yield from _iter_fact_pairs(value)
@@ -712,7 +715,8 @@ class HolographicMemoryProvider(MemoryProvider):
         self._last_sync_origin: dict[str, int] = {}  # prefetch turn at which the previous sync started
         self._state_epoch = 0  # advances when tracked state is cleared: a snapshot captured earlier must not publish
         self._summary_signature: dict[str, str] = {}  # key -> signature of the last summary row a publish credited
-        self._graced: dict[str, set] = {}  # key -> revisions whose grace fired once (issue #59: one turn, never more)
+        self._graced: dict[str, dict] = {}  # key -> revision -> prefetch turn whose decision grace answered
+        # (issue #59): one prefetch, one answer for every call site of that turn, never an indefinite one
         self._snapshots: OrderedDict[str, dict] = OrderedDict()
         self._emitted: OrderedDict[str, OrderedDict] = OrderedDict()
         self._withheld: set = set()  # fact ids recall left out (_recall_problem), logged once each
@@ -1493,30 +1497,34 @@ class HolographicMemoryProvider(MemoryProvider):
     def _not_recent(self, session: str, fact: dict, turn: int) -> bool:
         seen = self._injected.get(session, {}).get(_revision(fact))
         keep = seen is None or turn - seen > self._repeat_turns
-        if keep and seen is not None and self._presence_gate and self._presence_holds(session, fact, seen):
+        if keep and seen is not None and self._presence_gate and self._presence_holds(session, fact, seen, turn):
             keep = False  # injected by us, window expired, still held: a repeat (issue #59)
         if not keep:
             self._observe("rejected_repeat", [fact])
         return keep
 
-    def _presence_holds(self, session: str, fact: dict, injected_turn: int) -> bool:
+    def _presence_holds(self, session: str, fact: dict, injected_turn: int, turn: int) -> bool:
         """Presence gate (issue #59): hold back what this key injected when the model can still read it - the exact
         line the injection emitted is whole in a `<memory-context>` block of the snapshot, or the fact's
         (fact_id, content) sits in one of our fact_store results there. Injected after the snapshot was taken:
-        absence there proves nothing, so grace holds that injection's FIRST expiry decision - one turn of extra
-        hold, never an indefinite one (condition 3); every later decision falls to visibility and today's window.
+        absence there proves nothing, so grace answers that injection's FIRST expiry decision of ONE prefetch -
+        keyed by (revision, turn), so every call site of that prefetch gets the same answer - never an indefinite
+        one (condition 3); every later decision falls to visibility and today's window.
         No snapshot: today's window alone."""
         snapshot = self._snapshots.get(session)
         if snapshot is None:
             return False
         if injected_turn > snapshot["turn"]:
-            graced = self._graced.setdefault(session, set())
-            if _revision(fact) not in graced:
-                graced.add(_revision(fact))
+            graced = self._graced.setdefault(session, {})
+            decided_at = graced.get(_revision(fact))
+            if decided_at is None:
+                graced[_revision(fact)] = turn  # this prefetch's first decision: hold it, once
                 self._presence_grace += 1
                 logger.debug("holographic: presence grace: injected turn %d after the snapshot turn %d (lag +%d)",
                              injected_turn, snapshot["turn"], injected_turn - snapshot["turn"])
                 return True
+            if decided_at == turn:
+                return True  # same prefetch turn: a later call site must get the same answer (review round 2)
             # grace spent for this revision: only an earlier emission's own line still counts as visibility below
         emitted = self._emitted.get(session, {}).get(_revision(fact), ())
         if any(line in snapshot["lines"] for line in emitted):
@@ -1529,7 +1537,9 @@ class HolographicMemoryProvider(MemoryProvider):
         rev = _revision(fact)
         facts[rev] = turn
         facts.move_to_end(rev)
-        self._graced.get(session, set()).discard(rev)  # a fresh injection may earn its one grace turn again
+        graced_session = self._graced.get(session)
+        if graced_session is not None:
+            graced_session.pop(rev, None)  # a fresh injection may earn its one grace answer again
         if line is not None:  # presence gate: the exact line this event emitted (cut and suffixes included)
             emitted = self._emitted.setdefault(session, OrderedDict())
             self._emitted.move_to_end(session)
@@ -1542,6 +1552,8 @@ class HolographicMemoryProvider(MemoryProvider):
             dropped_rev, _ = facts.popitem(last=False)
             if session in self._emitted:
                 self._emitted[session].pop(dropped_rev, None)
+            if session in self._graced:
+                self._graced[session].pop(dropped_rev, None)  # the evicted revision's grace mark goes with it
         while len(self._injected) > _MAX_TRACKED_SESSIONS:
             dropped, _ = self._injected.popitem(last=False)
             self._turns.pop(dropped, None)
@@ -1550,6 +1562,7 @@ class HolographicMemoryProvider(MemoryProvider):
             self._generations.pop(dropped, None)
             self._summary_signature.pop(dropped, None)
             self._graced.pop(dropped, None)
+            self._last_sync_origin.pop(dropped, None)
 
     @_serialized
     def recall_status(self):
@@ -1660,9 +1673,9 @@ class HolographicMemoryProvider(MemoryProvider):
         `<memory-context>` block the core fenced (its system note, in a user row's api_content - a pasted block
         proves nothing), and (fact_id, content) pairs of this provider's fact_store results only (json.loads undoes
         any escaping, ensure_ascii included). Anything malformed or unattributable is skipped: fail open."""
-        key = self._presence_key(session_id)
         with self._op_lock:
-            generation = self._generations.get(key, 0)
+            key = self._presence_key(session_id)  # inside the same locked capture (review round 2): no
+            generation = self._generations.get(key, 0)  # session switch can pair an old key with a new epoch
             epoch = self._state_epoch
             turn = self._turns.get(key, 0)
         view = [dict(m) for m in messages if isinstance(m, dict)]
@@ -1679,6 +1692,8 @@ class HolographicMemoryProvider(MemoryProvider):
                             line = line.rstrip("\r")
                             if _RE_OUR_LINE.match(line):
                                 lines.add(line)
+                                if len(lines) > _MAX_SNAPSHOT_LINES:
+                                    return None  # oversized view: nothing publishes, the window decides
             if m.get("role") == "tool" and m.get("tool_name") == "fact_store":
                 text = m.get("content")
                 if not isinstance(text, str):
@@ -1691,36 +1706,43 @@ class HolographicMemoryProvider(MemoryProvider):
                     continue  # malformed result: no pairs, the window alone decides
                 for pair in _iter_fact_pairs(payload):
                     pairs.add(pair)
+                    if len(pairs) > _MAX_SNAPSHOT_PAIRS:
+                        return None  # oversized view: nothing publishes, the window decides
         return {"key": key, "generation": generation, "epoch": epoch, "turn": turn,
                 "lines": lines, "pairs": pairs, "summary": _summary_row(view)}
 
     def _publish_snapshot(self, snapshot: dict) -> None:
         """Presence gate, under the provider lock: the snapshot counts only while the generation and the state
-        epoch captured before its parse still hold, never as a replacement older than the held view, and - past
-        any compaction - only when it shows a summary row this key has not been credited with yet: the previous
-        compaction's row, or a paste of it, proves nothing (issue #59, condition 1). Anything else is stale and
-        the gate falls back to today's window."""
+        epoch captured before its parse still hold, and - past any compaction - only when it shows a summary row
+        this key has not credited to an EARLIER generation yet: within one generation the row keeps its place at
+        the top of the context, so the same signature must keep publishing (review round 2 - crediting it once
+        froze the gate on the first view). The previous compaction's row, or a paste of it, proves nothing
+        (issue #59, condition 1). ANY rejection drops the held view as well, so a rejection always falls back to
+        today's window."""
         key = snapshot["key"]
         if snapshot["epoch"] != self._state_epoch:
-            return  # tracked state was cleared while the view was parsed
+            self._snapshots.pop(key, None)
+            return  # tracked state was cleared while the view was parsed: today's window alone
         if snapshot["generation"] != self._generations.get(key, 0):
-            return
-        held = self._snapshots.get(key)
-        if held is not None and snapshot["turn"] < held["turn"]:
-            return  # an older view never replaces the held one
+            self._snapshots.pop(key, None)
+            return  # a compaction landed mid-parse (or a reset): today's window alone
         summary = snapshot["summary"]
         if snapshot["generation"]:
             if summary is None:
+                self._snapshots.pop(key, None)
                 return  # past a compaction the view must show a summary row
             prior = self._summary_signature.get(key)
-            if prior is not None and summary == prior:
-                return  # already credited: not proof that THIS compaction's row landed
+            if prior is not None and prior[1] == summary and prior[0] < snapshot["generation"]:
+                self._snapshots.pop(key, None)
+                return  # credited to an EARLIER generation: not proof THIS compaction's row landed
         if summary is not None:
-            self._summary_signature[key] = summary
+            self._summary_signature[key] = (snapshot["generation"], summary)
         self._snapshots[key] = snapshot
         self._snapshots.move_to_end(key)
         while len(self._snapshots) > _MAX_TRACKED_SESSIONS:
-            self._snapshots.popitem(last=False)
+            dropped_key, _ = self._snapshots.popitem(last=False)
+            self._summary_signature.pop(dropped_key, None)  # no residue: a stale signature would refuse
+            self._generations.pop(dropped_key, None)        # future views of a key nothing tracks
 
     @_serialized
     def _sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "", messages=None,
@@ -1731,8 +1753,9 @@ class HolographicMemoryProvider(MemoryProvider):
             if snapshot is not None:
                 self._publish_snapshot(snapshot)
             else:
-                # A turn without messages proves nothing about the view: drop the held one rather than keep it in
-                # force (issue #59 - a fact must never stay held because an empty turn said nothing).
+                # A turn without messages - or one whose view was oversized or unparsable into a snapshot -
+                # proves nothing about the view: drop the held one rather than keep it in force (issue #59 - a
+                # fact must never stay held because a turn said nothing).
                 with self._op_lock:
                     self._snapshots.pop(self._presence_key(session_id), None)
         if not self._extracting() or not user_content:
@@ -2188,12 +2211,15 @@ class HolographicMemoryProvider(MemoryProvider):
                 events.pop(rev, None)
         for graced in self._graced.values():
             for rev in [r for r in graced if r[0] == fact_id]:
-                graced.discard(rev)
+                graced.pop(rev, None)
         for snap in self._snapshots.values():
             snap["pairs"] = {pair for pair in snap["pairs"] if pair[0] != fact_id}
             snap["lines"] = {line for line in snap["lines"] if not line.startswith(f"- #{fact_id} ")}
         for pending in self._pending.values():
             pending.pop(fact_id, None)
+        # A view parsed before the forget would still carry the forgotten text: move the epoch so any in-flight
+        # publish is rejected (and drops its held view) - forgetting invalidates every snapshot (review r2).
+        self._state_epoch += 1
 
     def _search(self, a: dict) -> str:
         self._experience_stages = []
