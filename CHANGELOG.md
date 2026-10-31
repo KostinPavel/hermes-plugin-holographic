@@ -27,6 +27,36 @@
   on by words, the log says `numpy is installed but did not load (…)` once per process, and `stats` gives the reason
   (`structural_recall: off (numpy did not load: …)`, search by meaning `unavailable: numpy did not load (…)`). Tests:
   `tests/test_holographic_numpy_broken_or_embeddings.py`.
+- **A Latin word or identifier written into Chinese text is found by itself** (NousResearch/hermes-agent#83593).
+  FTS5 indexes `用户用keyring保存密钥` as one token, letters and characters together, and the substring path ran only
+  for a query with Chinese in it, so `keyring`, `watchdog`, `ppid`, `HERMES_PARENT_PID` or `web_server` alone found
+  nothing while `密钥` did, and an English question about them recalled nothing before the turn. Search now also looks
+  for the query's ASCII words in the facts where a letter or digit touches Chinese, Japanese, Korean or Thai script,
+  as a whole word (`key` is not in `keyring`, `pid` not in `ppid`), and the recall gate counts those facts as holding
+  the word. The list of such facts is kept until a fact's text may have changed (a write other than the recall counts,
+  or a commit by another process), so a store without them reads nothing more per message: on 3,000 English facts
+  search and prefetch take the same time as before. On the multilingual quality set (450 questions in 18 languages) two
+  answers changed, both toward the other languages: `HR24 Copilot能做什么` ranks the fact that ends in `HR24` higher,
+  and `hr-vpsのメモリはどれくらい？` also recalls the other `hr-vps` fact, as the English, Russian and Chinese questions
+  do. Codex review: a letter of another script next to the word is no edge (`яkeyring保存` holds no `keyring`), and
+  a fact the index already finds by the word (`keyring保存`, a prefix; the word also written apart) counts once in
+  its frequency (Codex review on GitHub found the same: `keyring保存密钥` fell out of the recall for "keyring watchdog
+  backend"). Codex review on GitHub: the list of such facts is built in linear time (a 30,000-character run with no
+  letter after it took 16 s). Not covered: other forms of the word (`keyrings`). Tests: `tests/test_holographic_latin_in_cjk.py`.
+- **`auto_extract` no longer stores a reply to the assistant as a preference** (NousResearch/hermes-agent#22907).
+  "I like that, sounds good", "ok, I love it", "I prefer this one, let's go with it" and «ок, я люблю это» matched
+  "I like / love / prefer …", but what they like is whatever the assistant just said: stored, such a fact says nothing
+  on its own. A sentence whose object is "it", or this / that / these / those with at most one word, and whose clause
+  ends there (a degree word such as "better" or "a lot" may follow) is skipped, unless the rest of the sentence states
+  a preference of its own ("I like that, I always use tabs" is stored). Kept: "I like it when answers are short", "I
+  like that you ask before deleting files", "I use this laptop for work", "them" and «его» (more often people than a
+  proposal: "I love them, my kids are my everything"), and "I always check git status before committing" — a habit
+  said as one, which is what the "always / never / usually" pattern is there for. Measured: of the 91 sentences of the
+  test suite and benchmark results the patterns take, none of the earlier ones is skipped; of 36 preferences written
+  for the check, none. Codex review: the reply also ends at a dash or an emoji ("I like that 👍", "I love it — sounds
+  good"), and not at a dot inside a name ("I use this Node.js library for all my projects." is stored). Codex
+  review on GitHub: nor at a colon ("I prefer this format: JSON with two-space indentation." is stored). Tests:
+  `tests/test_holographic_extract_reactions.py`.
 - **A prompt to an assistant is not stored as a fact, and one already stored is not recalled**
   (NousResearch/hermes-agent#66380). A mail bridge stored each inbound email as "You are Henry, … You received an email
   at the AgentMail inbox and should handle it like a normal Henry request. EMAIL METADATA …", and recall brought every
@@ -54,6 +84,10 @@
   there "I" is the person ("I updated my passport in March as you asked."); "just now" and "as requested by  you"
   with two spaces no longer slip through. English only. Measured: none of the 7,065 strings of the test suite and benchmark results is refused; of 16
   first-person facts and 36 preferences written for the check, none. Tests: `tests/test_holographic_narration.py`.
+
+### Documented
+- **`auto_extract` runs after each turn.** README and the setup description said "at session end and before context
+  compression"; extraction also runs after every completed turn (`sync_turn`), and in `scope: user` only then.
 
 ## 0.25.2 — 2026-10-30
 
