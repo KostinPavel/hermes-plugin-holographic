@@ -57,6 +57,22 @@
   good"), and not at a dot inside a name ("I use this Node.js library for all my projects." is stored). Codex
   review on GitHub: nor at a colon ("I prefer this format: JSON with two-space indentation." is stored). Tests:
   `tests/test_holographic_extract_reactions.py`.
+- **A prompt to an assistant is not stored as a fact, and one already stored is not recalled**
+  (NousResearch/hermes-agent#66380). A mail bridge stored each inbound email as "You are Henry, … You received an email
+  at the AgentMail inbox and should handle it like a normal Henry request. EMAIL METADATA …", and recall brought every
+  one back, framed as stored data, as a live task in each later session for weeks. A text that opens by telling its
+  reader who it is ("You are …", «Ты — …», «Вы — …») and hands it a task it received (an email, a message or a task,
+  an `EMAIL METADATA` block) is refused by `add`, `change`, `correct`, `update`, `revert`, `auto_extract` and the mirror
+  of built-in memory, with a reason that says to store what is true instead; `auto_extract` skips such a message whole.
+  One written before is left out of the recall before a turn (logged once), and `search` and `list` still show it, to
+  change or forget. Either half alone is no prompt: "You are allowed to push to main", "You are Mia, the family
+  assistant", "You received a parcel from DHL" are stored as before. English and Russian. Codex review: a standing
+  rule ("when I forward a message, you should handle it …") is no task received, so "should handle it" alone no
+  longer counts; «Вы — … Вам пришло письмо» does; the sentences of a pasted prompt are not extracted one by one; and
+  `revert` does not make such an earlier version current again. Measured: none of the 7,065 strings of the test suite
+  and benchmark results is refused; of 15 second-person rules and facts written for the check, none. A separate check
+  after `_fact_problem`, whose decisions stay 0.22.0's (`tests/test_holographic_screen_speed.py`). Tests:
+  `tests/test_holographic_role_prompt.py`.
 
 ### Documented
 - **`auto_extract` runs after each turn.** README and the setup description said "at session end and before context
