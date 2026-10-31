@@ -961,18 +961,18 @@ def _recall_problem(content: str) -> str | None:
 # A prompt to an assistant stored as a fact (hermes-agent#66380): a mail bridge stored each inbound email as "You are
 # Henry, … You received an email at the AgentMail inbox and should handle it like a normal Henry request. EMAIL
 # METADATA …", and recall brought every one back as a live task for weeks. The text opens by telling its reader who it
-# is ("You are …", «Ты — …») and hands it a task: an email, a message or a task it received, or "should handle it".
-# Both: a rule for the assistant ("You are allowed to push to main") and a second-person fact ("You received a parcel
-# from DHL") stay facts. English and Russian. Not in _fact_problem: its decisions are 0.22.0's to the string, which
+# is ("You are …", «Ты — …», «Вы — …») and hands it a task it received: an email, a message or a task, or an EMAIL
+# METADATA block. Both: a rule for the assistant ("You are allowed to push to main"; "when I forward a message, you
+# should handle it …", Codex review) and a second-person fact ("You received a parcel from DHL") stay facts. English
+# and Russian. Not in _fact_problem: its decisions are 0.22.0's to the string, which
 # tests/test_holographic_screen_speed.py holds them to; the writes and recall ask both.
-_RE_ROLE_OPEN = re.compile(r"\A\s*(?:you\s+are|you['’]re|ты\s*[—–-]?|вы\s*[—–-])\s*\S", re.IGNORECASE)
+_RE_ROLE_OPEN = re.compile(r"\A\s*(?:you\s+are|you['’]re|(?:ты|вы)\s*[—–-])\s*\S", re.IGNORECASE)
 _RE_ROLE_TASK = re.compile(
     r"\byou\s+(?:have\s+)?(?:just\s+)?received\s+(?:an?\s+|a\s+new\s+)?(?:e-?mail|message|task|request|ticket)"
     r"|\byou\s+have\s+(?:an?\s+)?new\s+(?:e-?mail|message|task|request|ticket)"
-    r"|(?:\byou|\band)\s+(?:should|must|will)\s+(?:handle|process|answer|reply\s+to|respond\s+to)\s+(?:it|this|them)\b"
     r"|^\s*(?:e-?mail|message|task)\s+metadata\s*$"
-    r"|тебе\s+(?:пришло|пришла|пришёл|поступило|поступила)\s+(?:новое\s+|новая\s+)?(?:письмо|сообщение|задача|задание"
-    r"|заявка)|\b(?:обработай|ответь\s+на)\s+(?:его|её|ее|это|их)\b",
+    r"|(?:тебе|вам)\s+(?:пришло|пришла|пришёл|поступило|поступила)\s+(?:новое\s+|новая\s+)?(?:письмо|сообщение|задача"
+    r"|задание|заявка)",
     re.IGNORECASE | re.MULTILINE)
 
 
@@ -985,7 +985,7 @@ def _role_prompt(content: str) -> bool:
 def _not_a_fact(content: str) -> str | None:
     """Why *content*, though nothing in it is unsafe, is no fact to store (asked after _fact_problem), or None."""
     if _role_prompt(content):
-        return ("reads like a prompt to an assistant (who it is and a task to handle), not a fact: store what is true, "
+        return ("reads like a prompt to an assistant (who it is and a task it received), not a fact: store what is true, "
                 "e.g. 'Henry handles the deal-flow inbox', and keep tasks out of memory")
     return None
 

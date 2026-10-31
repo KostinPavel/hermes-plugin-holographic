@@ -2201,7 +2201,8 @@ class HolographicMemoryProvider(MemoryProvider):
             "end": lambda self, a: self._fact_call(a, lambda fact_id: json.dumps(
                 self._store.end_fact(fact_id, valid_to=a.get("valid_to")))),
             "correct": lambda self, a: self._correct(a),
-            "revert": lambda self, a: self._fact_call(a, lambda fact_id: json.dumps(self._store.revert_fact(fact_id))),
+            "revert": lambda self, a: self._fact_call(a, lambda fact_id: json.dumps(self._store.revert_fact(
+                fact_id, screen=_write_problem))),
             "forget": lambda self, a: self._forget(a),
             "merge": lambda self, a: self._merge(a),
             "history": lambda self, a: self._fact_call(a, lambda fact_id: json.dumps(self._store.history(fact_id))),
@@ -2246,8 +2247,8 @@ class HolographicMemoryProvider(MemoryProvider):
                 content = pre
             elif content is None or is_compaction_summary_message(msg):
                 continue
-            if not isinstance(content, str) or len(content) < _extract_floor(content):
-                continue
+            if not isinstance(content, str) or len(content) < _extract_floor(content) or _role_prompt(content):
+                continue  # a prompt pasted whole: its sentences pass one by one (Codex review), none is the user's
             for sentence in (m.group(0).strip() for m in _RE_SENTENCE.finditer(content)):
                 if len(sentence) < _extract_floor(sentence) or len(sentence) > _EXTRACT_MAX_CHARS \
                         or _write_problem(sentence) or _RE_QUESTION.search(sentence):
